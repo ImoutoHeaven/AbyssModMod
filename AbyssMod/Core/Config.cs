@@ -48,6 +48,10 @@ namespace AbyssMod
         public static ConfigEntry<string> MTEndpoint;
         public static ConfigEntry<string> MTModel;
         public static ConfigEntry<int> MTTimeout;
+        public static ConfigEntry<int> MTRequestPerSecond;
+        public static ConfigEntry<int> MTRequestMaxInFlight;
+        public static ConfigEntry<int> MTTranslatePeriod;
+        public static ConfigEntry<int> MTRetryCount;
         #endregion
 
         /// <summary>
@@ -198,6 +202,30 @@ namespace AbyssMod
                 "TimeoutSeconds",
                 30,
                 "单次翻译请求超时秒数"
+            );
+            MTRequestPerSecond = Plugin.ConfigFile.Bind(
+                "MachineTranslation",
+                "llmRequestPerSecond",
+                2,
+                "每秒最多向 LLM Endpoint 发起的请求数"
+            );
+            MTRequestMaxInFlight = Plugin.ConfigFile.Bind(
+                "MachineTranslation",
+                "llmRequestMaxInFlight",
+                10,
+                "同时等待 LLM 响应的请求上限"
+            );
+            MTTranslatePeriod = Plugin.ConfigFile.Bind(
+                "MachineTranslation",
+                "llmTranslatePeriod",
+                30,
+                "待翻译队列的周期清理和重试间隔（秒）"
+            );
+            MTRetryCount = Plugin.ConfigFile.Bind(
+                "MachineTranslation",
+                "llmRetryCount",
+                3,
+                "请求失败后的快速低优先级重试次数；超过后只在周期清理时重试"
             );
             #endregion
         }

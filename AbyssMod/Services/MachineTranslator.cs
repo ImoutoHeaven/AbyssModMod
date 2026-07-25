@@ -40,14 +40,16 @@ public static class MachineTranslator
     /// <summary>模板（已数字占位）-> 译文模板。内存单一查找字典。</summary>
     private static readonly ConcurrentDictionary<string, string> _cache = new();
 
-    /// <summary>待翻译模板 -> category（格式升级版）。</summary>
-    private static readonly ConcurrentDictionary<string, string> _pending = new();
+    /// <summary>待翻译模板及其重试状态。</summary>
+    private static readonly TranslationQueue _pending = new();
+    private static readonly SemaphoreSlim _queueSignal = new(0);
+    private static readonly RequestStartRateLimiter _requestRateLimiter = new();
+    private static readonly RequestInFlightGate _inFlightGate = new();
+    private static readonly object _pendingFileLock = new();
+    private static readonly MachineTranslationLogCounters _logCounters = new();
 
     private static int _cacheDirty;
-    private static int _pendingDirty;
     private const int SaveCacheEvery    = 10;
-    private const int RescanIntervalMs  = 30000;
-    private const int BetweenRequestsMs = 50;
 
     // ──────────────────────────────────────────────────
     // 初始化
@@ -78,12 +80,12 @@ public static class MachineTranslator
         PruneGraduatedKeys(); // 移除已被 add-on/ 收录的重复 key
         LoadPending();
 
-        if (Config.MTEnabled.Value)
-            Task.Run(PretranslateLoop);
+        Task.Run(TranslationLoop);
+        Task.Run(PeriodicQueueLoop);
 
         var langLabel = IsTraditional ? "zh_Hant (繁體)" : "zh_Hans (簡體)";
         Logger.Info(
-            $"MachineTranslator (batch mode) initialized. Enabled={Config.MTEnabled.Value}, "
+            $"MachineTranslator (event queue mode) initialized. Enabled={Config.MTEnabled.Value}, "
                 + $"language={langLabel}, cached={_cache.Count}, pending={_pending.Count}"
         );
     }
@@ -107,7 +109,7 @@ public static class MachineTranslator
     // ──────────────────────────────────────────────────
 
     /// <summary>
-    /// 在 TMP set_text 拦截点调用：命中机翻缓存返回中文，否则收集该文本待下次预翻。
+    /// 在 TMP set_text 拦截点调用：命中机翻缓存返回中文，否则将日文候选加入事件队列。
     /// </summary>
     public static string Handle(string category, string text)
     {
@@ -116,7 +118,7 @@ public static class MachineTranslator
         // 角色名不机翻：片假名音译不可靠，仅由 TextTranslator 收集 raw 供人工翻译后补入 names。
         if (category == TextClassifier.Name)
             return text;
-        if (!HasKana(text))
+        if (!MachineTranslationTextProtection.HasKana(text))
             return text;
 
         var (template, numbers) = Normalize(text);
@@ -131,10 +133,11 @@ public static class MachineTranslator
         if (!Config.MTEnabled.Value)
             return text;
 
-        if (_pending.TryAdd(template, category))
+        if (_pending.Enqueue(template, category, foreground: true))
         {
-            if (Interlocked.Increment(ref _pendingDirty) % 20 == 0)
-                SavePending();
+            _logCounters.RecordEventEnqueued();
+            _queueSignal.Release();
+            SavePending();
         }
 
         return text;
@@ -148,74 +151,150 @@ public static class MachineTranslator
     }
 
     // ──────────────────────────────────────────────────
-    // 后台批翻
+    // 后台队列调度
     // ──────────────────────────────────────────────────
 
-    private static async Task PretranslateLoop()
+    private static async Task TranslationLoop()
     {
-        await Task.Delay(3000);
-
         while (_initialized)
         {
             try
             {
-                if (Config.MTEnabled.Value)
-                    await TranslatePendingOnce();
+                await _queueSignal.WaitAsync();
+                await DispatchQueuedTranslations();
             }
             catch (Exception e)
             {
-                Logger.Error($"MT batch error: {e.Message}");
+                Logger.Error($"MT queue error: {e.Message}");
             }
-            await Task.Delay(RescanIntervalMs);
         }
     }
 
-    private static async Task TranslatePendingOnce()
+    private static async Task PeriodicQueueLoop()
     {
-        var todo = _pending
-            .Where(kv => !_cache.ContainsKey(kv.Key))
-            .Select(kv => (template: kv.Key, category: kv.Value))
-            .ToList();
-
-        if (todo.Count == 0)
-            return;
-
-        Logger.Info($"MT pretranslate: {todo.Count} pending templates...");
-        int done = 0;
-
-        foreach (var (template, category) in todo)
+        await Task.Delay(3000);
+        while (_initialized)
         {
-            if (!Config.MTEnabled.Value)
-                break;
+            _logCounters.RecordPeriodicEnqueued(EnqueuePeriodicPending());
+            LogTranslationStats();
+            await Task.Delay(TranslatePeriod);
+        }
+    }
 
-            if (_cache.ContainsKey(template))
+    private static async Task DispatchQueuedTranslations()
+    {
+        while (_initialized && Config.MTEnabled.Value && _pending.HasQueuedWork)
+        {
+            while (_initialized
+                   && !_inFlightGate.TryAcquire(Math.Max(1, Config.MTRequestMaxInFlight.Value)))
+                await Task.Delay(10);
+
+            if (!_initialized || !Config.MTEnabled.Value)
             {
-                _pending.TryRemove(template, out _);
-                continue;
+                _inFlightGate.Release();
+                return;
             }
 
-            var translated = await TranslateAsync(template);
+            var delay = _requestRateLimiter.ReserveDelay(
+                DateTime.UtcNow,
+                Math.Max(1, Config.MTRequestPerSecond.Value)
+            );
+            if (delay > TimeSpan.Zero)
+                await Task.Delay(delay);
+
+            if (!_initialized || !Config.MTEnabled.Value)
+            {
+                _inFlightGate.Release();
+                return;
+            }
+
+            if (!_pending.TryDequeue(out var job))
+            {
+                _inFlightGate.Release();
+                continue;
+            }
+            _ = TranslateQueuedAsync(job);
+        }
+    }
+
+    private static async Task TranslateQueuedAsync(TranslationJob job)
+    {
+        try
+        {
+            if (_cache.ContainsKey(job.Template))
+            {
+                _pending.CompleteSuccess(job);
+                SavePending();
+                return;
+            }
+
+            var translated = await TranslateAsync(job.Template);
             if (!string.IsNullOrEmpty(translated))
             {
-                _cache[template] = translated;
-                _pending.TryRemove(template, out _);
-                done++;
-
-                // 按类别写入 other/{category}/<lang>.json
-                WriteToCategoryFile(category, template, translated);
+                _cache[job.Template] = translated;
+                _pending.CompleteSuccess(job);
+                WriteToCategoryFile(job.Category, job.Template, translated);
 
                 if (Interlocked.Increment(ref _cacheDirty) % SaveCacheEvery == 0)
                     SaveAllCaches();
-            }
-            await Task.Delay(BetweenRequestsMs);
-        }
 
-        if (done > 0)
-        {
-            SaveAllCaches();
+                SavePending();
+                _logCounters.RecordTranslated();
+                return;
+            }
+
+            var retry = _pending.CompleteFailure(job, Math.Max(0, Config.MTRetryCount.Value));
+            if (retry == TranslationFailureDisposition.FastRetry)
+            {
+                _logCounters.RecordFastRetry();
+                _queueSignal.Release();
+            }
+            else
+                _logCounters.RecordPeriodicOnlyRetry();
             SavePending();
-            Logger.Info($"MT pretranslate done: +{done} translated, cache={_cache.Count}");
         }
+        catch (Exception e)
+        {
+            Logger.Warn($"MT queued request failed: {e.Message}");
+            var retry = _pending.CompleteFailure(job, Math.Max(0, Config.MTRetryCount.Value));
+            if (retry == TranslationFailureDisposition.FastRetry)
+            {
+                _logCounters.RecordFastRetry();
+                _queueSignal.Release();
+            }
+            else
+                _logCounters.RecordPeriodicOnlyRetry();
+            SavePending();
+        }
+        finally
+        {
+            _inFlightGate.Release();
+        }
+    }
+
+    private static TimeSpan TranslatePeriod =>
+        TimeSpan.FromSeconds(Math.Max(1, Config.MTTranslatePeriod.Value));
+
+    private static int EnqueuePeriodicPending()
+    {
+        var queued = _pending.EnqueuePeriodicPending();
+        for (var i = 0; i < queued; i++)
+            _queueSignal.Release();
+        return queued;
+    }
+
+    private static void LogTranslationStats()
+    {
+        var stats = _logCounters.Drain(_pending.Count);
+        if (!stats.HasActivity && stats.Pending == 0)
+            return;
+
+        Logger.Info(
+            $"MT translate: pending={stats.Pending}, eventQueued={stats.EventEnqueued}, "
+            + $"periodicQueued={stats.PeriodicEnqueued}, translated={stats.Translated}, "
+            + $"fastRetries={stats.FastRetries}, periodicOnlyRetries={stats.PeriodicOnlyRetries}, "
+            + $"cache={_cache.Count}"
+        );
     }
 
     // ──────────────────────────────────────────────────
@@ -345,10 +424,10 @@ public static class MachineTranslator
         if (totalPruned > 0)
         {
             int pendingPruned = 0;
-            foreach (var key in _pending.Keys.ToList())
+            foreach (var key in _pending.Snapshot().Keys)
                 if (_cache.ContainsKey(key) == false && IsInAnyAddOn(addOnDir, key))
                 {
-                    _pending.TryRemove(key, out _);
+                    _pending.Remove(key);
                     pendingPruned++;
                 }
 
@@ -404,7 +483,7 @@ public static class MachineTranslator
     }
 
     // ──────────────────────────────────────────────────
-    // Pending 文件（{模板: category} 映射）
+    // Pending 文件（{模板: { category, fastRetryCount, periodicOnly }} 映射）
     // ──────────────────────────────────────────────────
 
     private static void LoadPending()
@@ -415,7 +494,22 @@ public static class MachineTranslator
         {
             var json = File.ReadAllText(_pendingPath, Utf8NoBom);
 
-            // 尝试新格式：{ "template": "category" }
+            // 当前格式：{ "template": { "category": "...", ... } }
+            try
+            {
+                var dict = JsonSerializer.Deserialize<Dictionary<string, PendingTranslation>>(json);
+                if (dict != null)
+                {
+                    foreach (var kv in dict)
+                        if (!_cache.ContainsKey(kv.Key))
+                            _pending.AddPending(kv.Key, kv.Value);
+                    Logger.Info($"MT pending loaded: {dict.Count} entries");
+                    return;
+                }
+            }
+            catch { }
+
+            // 兼容上一版格式：{ "template": "category" }
             try
             {
                 var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
@@ -423,8 +517,8 @@ public static class MachineTranslator
                 {
                     foreach (var kv in dict)
                         if (!_cache.ContainsKey(kv.Key))
-                            _pending.TryAdd(kv.Key, kv.Value);
-                    Logger.Info($"MT pending loaded (new format): {dict.Count} entries");
+                            _pending.AddPending(kv.Key, new PendingTranslation { Category = kv.Value });
+                    Logger.Info($"MT pending loaded (legacy map): {dict.Count} entries");
                     return;
                 }
             }
@@ -436,7 +530,7 @@ public static class MachineTranslator
             {
                 foreach (var t in list)
                     if (!_cache.ContainsKey(t))
-                        _pending.TryAdd(t, TextClassifier.UiMisc);
+                        _pending.AddPending(t, new PendingTranslation { Category = TextClassifier.UiMisc });
                 Logger.Info($"MT pending loaded (legacy list format): {list.Count} entries");
             }
         }
@@ -448,8 +542,8 @@ public static class MachineTranslator
 
     private static void SavePending()
     {
-        var dict = new Dictionary<string, string>(_pending);
-        WriteJson(_pendingPath, dict);
+        lock (_pendingFileLock)
+            WriteJson(_pendingPath, _pending.Snapshot());
     }
 
     // ──────────────────────────────────────────────────
@@ -460,14 +554,23 @@ public static class MachineTranslator
     {
         try
         {
+            var protectedText = MachineTranslationTextProtection.Protect(text);
             var engine = (Config.MTEngine.Value ?? "openai").Trim().ToLowerInvariant();
-            return engine switch
+            var translated = engine switch
             {
-                "claude" => await TranslateClaude(text),
-                "sugoi"  => await TranslateSugoi(text),
-                "libre"  => await TranslateLibre(text),
-                _ => await TranslateOpenAI(text),
+                "claude" => await TranslateClaude(protectedText.Text),
+                "sugoi"  => await TranslateSugoi(protectedText.Text),
+                "libre"  => await TranslateLibre(protectedText.Text),
+                _ => await TranslateOpenAI(protectedText.Text),
             };
+            if (string.IsNullOrEmpty(translated))
+                return null;
+            if (!protectedText.TryRestore(translated, out var restored))
+            {
+                Logger.Warn("MT response rejected because protected runtime tokens changed.");
+                return null;
+            }
+            return restored;
         }
         catch (Exception e)
         {
@@ -486,16 +589,14 @@ public static class MachineTranslator
     private const string SystemPromptHans =
         "你是手机游戏《ドットアビス》的日译简体中文本地化译者。"
         + "请把用户给出的日文翻译成简体中文，只输出译文本身，不要解释、不要加引号、不要输出英文。"
-        + "最重要：原文中形如 {0} {1} 的花括号占位符必须连同花括号原样保留，位置和数量都不能改；"
-        + "<...> 标签、【】符号、\\n 换行也都原样保留。"
+        + "最重要：原文中形如 __ABYSS_TOKEN_0__ 的占位符必须逐字原样保留，位置、数量和顺序都不能改。"
         + "术语：紋章=纹章，衝撃=冲击，情熱=热情，会心=会心，スキル=技能，マナ=魔力，"
         + "バリア=护盾，付与=附加，上昇=提升，永続=永续，リトライ=重试，パーティ=队伍，ソート=排序。";
 
     private const string SystemPromptHant =
         "你是手機遊戲《ドットアビス》的日譯繁體中文（台灣）在地化譯者。"
         + "請把使用者給出的日文翻譯成台灣慣用的繁體中文，只輸出譯文本身，不要解釋、不要加引號、不要輸出英文或簡體字。"
-        + "最重要：原文中形如 {0} {1} 的花括號佔位符必須連同花括號原樣保留，位置和數量都不能改；"
-        + "<...> 標籤、【】符號、\\n 換行也都原樣保留。"
+        + "最重要：原文中形如 __ABYSS_TOKEN_0__ 的佔位符必須逐字原樣保留，位置、數量和順序都不能改。"
         + "術語：紋章=紋章，衝撃=衝擊，情熱=熱情，会心=會心，スキル=技能，マナ=魔力，"
         + "バリア=護盾，付与=附加，上昇=提升，永続=永續，リトライ=重試，パーティ=隊伍，ソート=排序。";
 
@@ -503,18 +604,18 @@ public static class MachineTranslator
 
     private static readonly object[] FewShotHans =
     {
-        new { role = "user", content = "自身の攻撃力が【{0}】上昇" },
-        new { role = "assistant", content = "自身攻击力提升【{0}】" },
-        new { role = "user", content = "紋章：衝撃を【{0}】付与 / 自身に最大HP【{1}】分の回復" },
-        new { role = "assistant", content = "附加纹章：冲击【{0}】 / 回复自身最大HP的【{1}】" },
+        new { role = "user", content = "自身の攻撃力が【__ABYSS_TOKEN_0__】上昇" },
+        new { role = "assistant", content = "自身攻击力提升【__ABYSS_TOKEN_0__】" },
+        new { role = "user", content = "紋章：衝撃を【__ABYSS_TOKEN_0__】付与 / 自身に最大HP【__ABYSS_TOKEN_1__】分の回復" },
+        new { role = "assistant", content = "附加纹章：冲击【__ABYSS_TOKEN_0__】 / 回复自身最大HP的【__ABYSS_TOKEN_1__】" },
     };
 
     private static readonly object[] FewShotHant =
     {
-        new { role = "user", content = "自身の攻撃力が【{0}】上昇" },
-        new { role = "assistant", content = "自身攻擊力提升【{0}】" },
-        new { role = "user", content = "紋章：衝撃を【{0}】付与 / 自身に最大HP【{1}】分の回復" },
-        new { role = "assistant", content = "附加紋章：衝擊【{0}】 / 回復自身最大HP的【{1}】" },
+        new { role = "user", content = "自身の攻撃力が【__ABYSS_TOKEN_0__】上昇" },
+        new { role = "assistant", content = "自身攻擊力提升【__ABYSS_TOKEN_0__】" },
+        new { role = "user", content = "紋章：衝撃を【__ABYSS_TOKEN_0__】付与 / 自身に最大HP【__ABYSS_TOKEN_1__】分の回復" },
+        new { role = "assistant", content = "附加紋章：衝擊【__ABYSS_TOKEN_0__】 / 回復自身最大HP的【__ABYSS_TOKEN_1__】" },
     };
 
     /// <summary>
@@ -716,11 +817,4 @@ public static class MachineTranslator
         }
     }
 
-    private static bool HasKana(string s)
-    {
-        foreach (char c in s)
-            if ((c >= '\u3040' && c <= '\u309F') || (c >= '\u30A0' && c <= '\u30FF'))
-                return true;
-        return false;
-    }
 }
