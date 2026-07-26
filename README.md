@@ -33,8 +33,8 @@
 
 | Repo | 內容 | 說明 |
 |------|------|------|
-| **[s88037zz/AbyssMod](https://github.com/s88037zz/AbyssMod)** | 插件本體 C# 原始碼 | 此 repo，含 Release 下載 |
-| **[s88037zz/dotabyss-translation](https://github.com/s88037zz/dotabyss-translation)** | 劇情 / UI 翻譯 JSON | 啟動時從 CDN 自動下載 |
+| **[ImoutoHeaven/AbyssModMod](https://github.com/ImoutoHeaven/AbyssModMod)** | 插件本體 C# 原始碼 | 此 repo，含 Release 下載 |
+| **[anosu/dotabyss-translation](https://github.com/anosu/dotabyss-translation)** | 簡體中文翻譯 JSON | 啟動時從上游自動下載 |
 
 翻譯資料不包含在 Release 壓縮包內，插件啟動時會依 `AbyssMod.cfg` 的 `CDN` 設定自動下載到：
 
@@ -42,7 +42,7 @@
 BepInEx/plugins/AbyssMod/cache/translations/
 ```
 
-其中 `other/{category}/` 也會自動同步；命中 other/ 缓存的译文**无需开启机翻**即可显示。
+其中 `add-on/{category}/` 為本地人工覆蓋，`other/{category}/` 為本地 LLM 快取；兩者不會從遠端同步。
 
 ---
 
@@ -54,7 +54,7 @@ BepInEx/plugins/AbyssMod/cache/translations/
 
 ### 2. 下載 Release
 
-前往 [Releases](https://github.com/s88037zz/AbyssMod/releases) 頁面，找到最新版本（綠色 `Latest` 標識），展開 `Assets` 下載 `AbyssMod-v1.0.8.zip`。
+前往 [Releases](https://github.com/ImoutoHeaven/AbyssModMod/releases) 頁面，找到最新版本（綠色 `Latest` 標識），展開 `Assets` 下載對應壓縮包。
 
 > ⚠️ 請下載 `.zip` 壓縮包，**不要**下載 `Source code`（那是原始碼，需要自行編譯）
 
@@ -86,19 +86,19 @@ BepInEx/plugins/AbyssMod/cache/translations/
 
 > ⚠️ 若使用 ACGP 等加速器，控制台可能出現紅色報錯（無法連接 BepInEx 官網），請開啟代理後重試
 
-### 5. 設定翻譯 CDN
+### 5. 翻譯來源
 
-首次啟動後會自動生成 `BepInEx\config\AbyssMod.cfg`。由於 Release 不含翻譯資料，需手動設定 CDN：
+首次啟動後會自動生成 `BepInEx\config\AbyssMod.cfg`。插件固定使用上游簡體中文翻譯：
 
 ```ini
 [Translation]
-CDN      = https://raw.githubusercontent.com/s88037zz/dotabyss-translation/main/translations
-Language = zh_Hant
+CDN      = https://raw.githubusercontent.com/anosu/dotabyss-translation/refs/heads/main/translations
+Language = zh_Hans
 ```
 
-存檔後重啟遊戲，插件會從 CDN 下載翻譯並套用。
+這兩個設定會由插件強制還原為上游值；翻譯資料將自動下載並套用。
 
-> 🌐 若 GitHub 連線困難，請參考下方 [常見問題](#-常見問題) 中的 CDN 鏡像方案
+> 🌐 若 GitHub 連線困難，請先確認代理或網路設定；插件不支援自訂 CDN 鏡像。
 
 ---
 
@@ -120,8 +120,8 @@ Language = zh_Hant
 | 配置項     | 可選值                                                         | 預設值       | 說明                                         |
 | ---------- | -------------------------------------------------------------- | ------------ | -------------------------------------------- |
 | `Enabled`  | `true` / `false`                                               | `true`       | 是否開啟遊戲內翻譯                           |
-| `CDN`      | 任意有效 URL                                                   | （作者 CDN） | 翻譯資料來源，請改為你的 translation repo    |
-| `Language` | `zh_Hans`（簡體） / `zh_Hant`（繁體台灣）                     | `zh_Hans`    | 翻譯語言，機翻輸出語言也會跟著切換          |
+| `CDN`      | 上游固定 URL                                                    | an osu 上游  | 自動強制為 an osu 翻譯資料來源               |
+| `Language` | `zh_Hans`                                                       | `zh_Hans`    | 上游僅發布簡體中文，機翻也固定輸出簡體       |
 
 ### `[Translation.Font]`
 
@@ -184,7 +184,7 @@ Language = zh_Hant
 5. `<...>` 標籤、`{0}` 格式參數及實際/轉義換行會轉成受驗證的 `__ABYSS_TOKEN_n__`；模型未完整保留時不寫入快取並視為失敗。
 6. 成功結果按類別寫入 `translations/other/{類別}/`，畫面下一次文字刷新命中快取後即替換為中文。
 
-機翻輸出語言跟隨 `Language` 設定：`zh_Hans` 輸出簡體，`zh_Hant` 輸出繁體台灣用語。
+機翻固定輸出簡體中文，以便與上游 `zh_Hans` 人工譯文一致。
 
 > ⚠️ 機翻品質不及人工校對。角色名（`name_raw.json`）不走機翻，需人工翻譯後補入 `names/` 字典。
 
@@ -253,32 +253,20 @@ Language = zh_Hant
 
 翻譯 JSON 存放於獨立 repo：
 
-**[s88037zz/dotabyss-translation](https://github.com/s88037zz/dotabyss-translation)**
+**[anosu/dotabyss-translation](https://github.com/anosu/dotabyss-translation)**
 
 目錄結構：
 
 ```
 translations/
-├── names/          角色名（作者維護）
-├── titles/         劇情標題（作者維護）
-├── descriptions/   劇情概要（作者維護）
-├── ability_descriptions/  技能 / 覺醒描述（作者維護）
-├── novels/         劇情對話（作者維護）
-└── add-on/         社群自訂分類翻譯（本 fork 新增）
-    ├── items/      道具說明
-    ├── equipment_effect/  裝備效果
-    ├── bar/        酒館系統
-    ├── facility/   設施
-    ├── mission/    任務
-    ├── materials/  素材
-    ├── abyss_code/ 深淵代碼
-    ├── dialogue/   NPC 台詞
-    ├── system/     系統文字
-    ├── ui/         通用 UI
-    └── ui_misc/    其餘 UI
+├── manifest/zh_Hans.json  資源雜湊清單
+├── static/zh_Hans.json    MasterData 欄位翻譯合併包
+├── names/zh_Hans.json     角色名
+├── ui_texts/zh_Hans.json  UI 文字
+└── novels/{id}/zh_Hans.json  劇情對話
 ```
 
-`add-on/` 的翻譯優先級高於機翻（`other/`）。機翻補翻的內容一旦人工校對後，可直接放進對應 `add-on/` 子目錄即生效。
+本地人工覆蓋存放於 `cache/translations/add-on/{category}/zh_Hans.json`；LLM 快取存放於 `cache/translations/other/{category}/zh_Hans.json`。兩者不會上傳或從遠端同步。
 
 ---
 
@@ -297,27 +285,18 @@ translations/
 <details>
 <summary><b>無法連接 GitHub 下載翻譯</b></summary>
 <ul>
-  <li>可使用 GitHub 鏡像加速站，如 <code>https://gh-proxy.com</code>，將 CDN 改為：<br>
-  <code>https://gh-proxy.com/https://raw.githubusercontent.com/s88037zz/dotabyss-translation/main/translations</code></li>
-  <li>或將 CDN 改為 Gitee 等其他鏡像（需自行同步翻譯資料）</li>
+  <li>請確認 GitHub 可正常連線；插件固定使用 an osu 上游翻譯資料。</li>
 </ul>
 </details>
 
 <details>
-<summary><b>繁體中文與簡體中文如何切換</b></summary>
-編輯 <code>BepInEx\config\AbyssMod.cfg</code>：<br>
-繁體：<code>Language = zh_Hant</code><br>
-簡體：<code>Language = zh_Hans</code>
-</details>
-
-<details>
-<summary><b>機翻輸出語言不正確（出現簡體）</b></summary>
-確認 <code>AbyssMod.cfg</code> 中 <code>Language = zh_Hant</code>（而非 <code>zh_Hans</code>）。機翻提示詞會依此自動切換，重啟遊戲即生效。
+<summary><b>為何機翻輸出簡體中文</b></summary>
+插件固定使用 an osu 上游發布的 <code>zh_Hans</code> 翻譯資料，因此 LLM 快取也固定輸出簡體中文。
 </details>
 
 <details>
 <summary><b>crash / 崩潰怎麼排查</b></summary>
-查看 <code>BepInEx\ErrorLog.log</code> 與 <code>BepInEx\LogOutput.log</code>，搜尋 <code>Exception</code> 或 <code>Stack overflow</code>，然後在 <a href="https://github.com/s88037zz/AbyssMod/issues">Issues</a> 附上 log 回報。
+查看 <code>BepInEx\ErrorLog.log</code> 與 <code>BepInEx\LogOutput.log</code>，搜尋 <code>Exception</code> 或 <code>Stack overflow</code>，然後在 <a href="https://github.com/ImoutoHeaven/AbyssModMod/issues">Issues</a> 附上 log 回報。
 </details>
 
 ---
@@ -387,7 +366,7 @@ git push origin v1.0.8
 ## 💬 社群
 
 - 海外詢問：添加 Discord 好友 `.lienchu9420`（Lienchu 恋曲）
-- Issues：[GitHub Issues](https://github.com/s88037zz/AbyssMod/issues)
+- Issues：[GitHub Issues](https://github.com/ImoutoHeaven/AbyssModMod/issues)
 
 ---
 

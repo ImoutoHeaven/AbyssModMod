@@ -78,7 +78,7 @@ public static class GeneralTextPatch
     /// <summary>
     /// 周期性扫描当前场景的 TMP 文本，翻译未命中条目。
     /// 经 m_text 直写（TmpTextHelper），不调用 SetText，避免递归崩溃。
-    /// 由 Hotkey.Update 节流调用，也用于翻译加载完成后的一次性刷新。
+    /// 仅由 Hotkey.Update 在 Unity 主线程上节流调用。
     /// </summary>
     public static void RefreshVisibleText()
     {
@@ -118,9 +118,6 @@ public static class GeneralTextPatch
             Logger.Warn($"RefreshVisibleText failed: {e.Message}");
         }
     }
-
-    /// <summary>翻译加载完成后的一次性刷新（兼容旧调用名）。</summary>
-    public static void RefreshAllVisibleText() => RefreshVisibleText();
 
     // ──────────────────────────────────────────────────
     // 共用处理逻辑

@@ -30,6 +30,8 @@ public class TranslationManager
 
     private readonly ConcurrentDictionary<string, Task> _loadingNovels = new();
     private readonly Dictionary<string, Dictionary<string, string>> _tables = new();
+    private readonly Dictionary<string, Dictionary<string, Dictionary<string, string>>> _fieldTables =
+        new();
 
     public Dictionary<string, string> Names { get; private set; } = [];
     public Dictionary<string, string> Titles { get; private set; } = [];
@@ -80,6 +82,11 @@ public class TranslationManager
         return _tables.TryGetValue(type, out var table) ? table : null;
     }
 
+    public Dictionary<string, string> GetFieldTable(string type, string field)
+    {
+        return StaticBundleProtocol.GetFieldTable(_fieldTables, type, field) ?? GetTable(type);
+    }
+
     public async Task LoadTranslationAsync()
     {
         if (!Config.Translation.Value)
@@ -87,23 +94,27 @@ public class TranslationManager
 
         await _cache.FetchManifestAsync();
 
-        var tasks = new Dictionary<string, Task<Dictionary<string, string>>>();
-        foreach (string type in TranslationPaths.EnumerateMasterDictTypes())
-            tasks[type] = _cache.LoadAsync(type);
-
-        foreach (
-            string legacy in new[]
-            {
-                TranslationPaths.Titles,
-                TranslationPaths.Descriptions,
-                TranslationPaths.AnotherName,
-                TranslationPaths.AbilityDescriptions,
-            }
-        )
+        var bundle = await _cache.LoadStaticBundleAsync();
+        if (bundle != null)
         {
-            if (!tasks.ContainsKey(legacy))
-                tasks[legacy] = _cache.LoadAsync(legacy);
+            foreach (var (type, fields) in bundle)
+            {
+                _fieldTables[type] = fields;
+                _tables[type] = StaticBundleProtocol.Flatten(fields);
+            }
+            Logger.Info($"Static translation bundle loaded. Tables: {_fieldTables.Count}");
         }
+        else
+        {
+            Logger.Warn("MasterData static translation bundle load failed.");
+            Toast.Warn("加载失败", "MasterData 静态翻译合并包加载失败");
+        }
+
+        var tasks = new Dictionary<string, Task<Dictionary<string, string>>>
+        {
+            [TranslationPaths.Names] = _cache.LoadAsync(TranslationPaths.Names),
+            [TranslationPaths.UiTexts] = _cache.LoadAsync(TranslationPaths.UiTexts),
+        };
 
         await Task.WhenAll(tasks.Values);
 
@@ -123,22 +134,15 @@ public class TranslationManager
         }
 
         Names = GetTable(TranslationPaths.Names) ?? [];
-        Titles = GetTable(TranslationPaths.Titles) ?? [];
-        Descriptions = GetTable(TranslationPaths.Descriptions) ?? [];
-        AbilityDescriptions =
-            GetTable(TranslationPaths.AbilityDescriptions)
-            ?? GetTable("m_ability_details")
-            ?? [];
+        Titles = [];
+        Descriptions = [];
+        AbilityDescriptions = GetFieldTable("m_ability_details", "description") ?? [];
 
-        await _cache.SyncLegacyUiMiscAsync();
-        await _cache.SyncAddOnFromCdnAsync();
-        await _cache.SyncOtherFromCdnAsync();
         MachineTranslator.ReloadFromDisk();
 
         await MergeLocalAddOnFallbackAsync();
         AbilityTextMatcher.Rebuild(AbilityDescriptions);
         TemplateTextMatcher.Rebuild(Texts, Titles, Descriptions);
-        GeneralTextPatch.RefreshAllVisibleText();
     }
 
     private async Task MergeLocalAddOnFallbackAsync()
@@ -152,19 +156,13 @@ public class TranslationManager
                 MergeInto(merged, table, type, skipKeys);
         }
 
-        // 1. legacy 底稿（后层 m_* 会覆盖同 key）
-        MergeTable(TranslationPaths.Titles);
-        MergeTable(TranslationPaths.Descriptions);
-        MergeTable(TranslationPaths.AnotherName);
-        MergeTable(TranslationPaths.AbilityDescriptions);
-
         var language = Config.TranslationLanguage.Value;
         var localCategories = TranslationPaths
             .EnumerateLocalCategories(_cache.CacheDir, language)
             .Where(cat => cat != TranslationPaths.Ui)
             .ToList();
 
-        // 2. add-on：不写入已在任一 m_* 表中的 key
+        // 本地 add-on 只补充上游 static bundle 未覆盖的文本。
         if (localCategories.Count > 0)
         {
             var localTasks = localCategories.Select(cat => _cache.LoadAsync(cat)).ToList();
@@ -178,18 +176,20 @@ public class TranslationManager
                 );
         }
 
-        // 3. 全部 m_* 权威层（始终覆盖 legacy / add-on）
-        foreach (string type in TranslationPaths.EnumerateMasterDictTypes())
+        // 上游 static bundle 是所有 MasterData 字典的权威层。
+        foreach (string type in _fieldTables.Keys)
         {
             if (type.StartsWith("m_", StringComparison.Ordinal))
                 MergeTable(type);
         }
 
-        // 4. names / ui_texts 仅补 m_* 未覆盖的 key
+        // names / ui_texts 仅补 MasterData 未覆盖的 key。
         MergeTable(TranslationPaths.Names, masterKeys);
         MergeTable(TranslationPaths.UiTexts, masterKeys);
 
         Texts = merged;
+        Titles = Texts;
+        Descriptions = Texts;
         Logger.Info(
             $"Non-story text fallback merged. Total: {Texts.Count} "
                 + $"(add-on: {localCategories.Count}, m_* keys: {masterKeys.Count})"
@@ -199,7 +199,7 @@ public class TranslationManager
     private HashSet<string> BuildMasterDataKeySet()
     {
         var keys = new HashSet<string>();
-        foreach (string type in TranslationPaths.EnumerateMasterDictTypes())
+        foreach (string type in _fieldTables.Keys)
         {
             if (!type.StartsWith("m_", StringComparison.Ordinal))
                 continue;

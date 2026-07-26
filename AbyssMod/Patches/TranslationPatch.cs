@@ -1,12 +1,16 @@
 using HarmonyLib;
+using Absf;
+using Absf.Novel;
 using Il2CppSystem;
 using Il2CppSystem.Collections.Generic;
 using Il2CppSystem.Threading;
 using AbyssMod.Services;
+using Project;
 using Project.Library;
 using Project.MainStory;
 using Project.Novel;
 using Project.Outgame;
+using Project.User;
 
 namespace AbyssMod.Patches;
 
@@ -16,6 +20,8 @@ namespace AbyssMod.Patches;
 [HarmonyPatch]
 public static class TranslationPatch
 {
+    private const string UserPlaceholder = "<user>";
+    private const string HiddenUserPlaceholder = "%user%";
     private static NovelController _novelController;
     private static NovelViewMessageWindow _messageWindow;
     private static NovelText _messageText;
@@ -39,9 +45,18 @@ public static class TranslationPatch
         out System.Collections.Generic.Dictionary<string, string> translation
     )
     {
+        return TryGetNovel(NovelId, out translation);
+    }
+
+    private static bool TryGetNovel(
+        string novelId,
+        out System.Collections.Generic.Dictionary<string, string> translation
+    )
+    {
         translation = null;
         return Config.Translation.Value
-            && Plugin.Trans.Novels.TryGetValue(NovelId, out translation);
+            && !string.IsNullOrEmpty(novelId)
+            && Plugin.Trans.Novels.TryGetValue(novelId, out translation);
     }
 
     [HarmonyPostfix]
@@ -226,8 +241,8 @@ public static class TranslationPatch
         if (_refreshingMessage)
             return false;
 
-        charaName = charaName?.Replace("<user>", "%user%");
-        message = message?.Replace("<user>", "%user%");
+        charaName = HideUserPlaceholder(charaName);
+        message = HideUserPlaceholder(message);
         return true;
     }
 
@@ -238,10 +253,10 @@ public static class TranslationPatch
         List<NovelLogData> list = new();
         foreach (var data in dataList)
         {
-            string name = data.Name?.Replace("%user%", "<user>");
-            string message = data.Message?.Replace("%user%", "<user>");
+            string name = RestoreUserPlaceholder(data.Name);
+            string message = RestoreUserPlaceholder(data.Message);
 
-            if (TryGetCurrentNovel(out var translation))
+            if (TryGetNovel(data.ScriptId, out var translation))
             {
                 if (
                     !string.IsNullOrEmpty(name)
@@ -288,20 +303,29 @@ public static class TranslationPatch
 
     [HarmonyPrefix]
     [HarmonyPatch(
-        typeof(NovelMessageTextComponent),
-        nameof(NovelMessageTextComponent.SetMessageText)
+        typeof(NovelCmdMessageTextCenter),
+        nameof(NovelCmdMessageTextCenter.OnCommandStartASync)
     )]
-    public static void SetTextCenter(NovelModelCommon common, CommandMessageTextData data)
+    public static void HideCenterTextUserPlaceholder(NovelArguments args)
     {
-        if (TryGetCurrentNovel(out var translation))
-        {
-            string message = data.Message;
-            if (
-                !string.IsNullOrEmpty(message)
-                && translation.TryGetValue(message, out string tMessage)
-            )
-                data.Message = tMessage;
-        }
+        string message = args.GetString(2);
+        if (ContainsUserPlaceholder(message))
+            args._list[2] = NovelArgument.SetString(HideUserPlaceholder(message));
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(typeof(NovelModelMessageText), nameof(NovelModelMessageText.SetMessage))]
+    public static void TranslateCenterText(CommandMessageTextData data)
+    {
+        data.Message = RestoreUserPlaceholder(data.Message);
+
+        if (TryGetCurrentNovel(out var translation)
+            && !string.IsNullOrEmpty(data.Message)
+            && translation.TryGetValue(data.Message, out string translated))
+            data.Message = translated;
+
+        if (ContainsUserPlaceholder(data.Message))
+            data.Message = ExpandUserPlaceholder(data.Message, GetDisplayUserName());
     }
 
     [HarmonyPostfix]
@@ -342,5 +366,35 @@ public static class TranslationPatch
             )
                 __instance._storyDescription.text = tDescription;
         }
+    }
+
+    private static bool ContainsUserPlaceholder(string value) =>
+        !string.IsNullOrEmpty(value) && value.Contains(UserPlaceholder, System.StringComparison.Ordinal);
+
+    private static string HideUserPlaceholder(string value) =>
+        value?.Replace(UserPlaceholder, HiddenUserPlaceholder, System.StringComparison.Ordinal);
+
+    private static string RestoreUserPlaceholder(string value) =>
+        value?.Replace(HiddenUserPlaceholder, UserPlaceholder, System.StringComparison.Ordinal);
+
+    private static string GetDisplayUserName()
+    {
+        try
+        {
+            string userName = Engine.Get<UserData>().UserStatus.Name.Value;
+            return StringUtility.ToDisplayUserName(userName);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string ExpandUserPlaceholder(string value, string displayName)
+    {
+        if (string.IsNullOrEmpty(value) || string.IsNullOrEmpty(displayName))
+            return value;
+
+        return value.Replace(UserPlaceholder, displayName, System.StringComparison.Ordinal);
     }
 }

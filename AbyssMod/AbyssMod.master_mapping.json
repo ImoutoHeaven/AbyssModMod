@@ -228,14 +228,9 @@
       }
     },
     "MChapterQuests": {
-      "name": [
-        {
-          "dict": "m_chapter_quests"
-        },
-        {
-          "dict": "m_chapter_quests"
-        }
-      ]
+      "name": {
+        "dict": "m_chapter_quests"
+      }
     },
     "MChapterRepeatQuests": {
       "name": {
@@ -253,6 +248,9 @@
       }
     },
     "MCharacterActionSkills": {
+      "name": {
+        "dict": "m_character_action_skills"
+      },
       "description": {
         "dict": "m_character_action_skills",
         "seal": true
@@ -288,7 +286,7 @@
     },
     "MCharacters": {
       "name": {
-        "dict": "names"
+        "dict": "m_characters"
       }
     },
     "MContentTypeDetails": {
@@ -910,7 +908,7 @@
     },
     "MTavernDialogue": {
       "name": {
-        "dict": "names"
+        "dict": "m_tavern_dialogue"
       },
       "dialogue": {
         "dict": "m_tavern_dialogue"
@@ -918,6 +916,9 @@
     },
     "MTavernTextColor": {
       "word": {
+        "dict": "m_tavern_text_color"
+      },
+      "color": {
         "dict": "m_tavern_text_color"
       }
     },

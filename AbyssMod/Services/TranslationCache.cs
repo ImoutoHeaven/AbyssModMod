@@ -170,333 +170,6 @@ namespace AbyssMod.Services
         }
 
         /// <summary>
-        /// 从 CDN 同步 <c>legacy/add-on/ui_misc</c> 兜底缓存（manifest.add_on.ui_misc）。
-        /// </summary>
-        public async Task SyncLegacyUiMiscAsync()
-        {
-            if (string.IsNullOrWhiteSpace(_cdn))
-                return;
-
-            const string category = TranslationPaths.LegacyUiMisc;
-            string cacheKey = $"{_language}/legacy/add-on/{category}";
-            string legacyCachePath = TranslationPaths.BuildLegacyAddOnCachePath(
-                _cacheDir,
-                category,
-                _language
-            );
-            string addOnCachePath = TranslationPaths.BuildAddOnCachePath(
-                _cacheDir,
-                category,
-                _language
-            );
-            string remoteUrl = TranslationPaths.BuildLegacyAddOnRemoteUrl(_cdn, category, _language);
-            string expectedHash = GetAddOnManifestHash(category);
-
-            var semaphore = _locks.GetOrAdd(cacheKey, _ => new SemaphoreSlim(1, 1));
-            await semaphore.WaitAsync();
-            try
-            {
-                if (expectedHash != null && File.Exists(legacyCachePath))
-                {
-                    string localHash = HashFile(legacyCachePath);
-                    if (localHash == expectedHash)
-                    {
-                        CopyLegacyToAddOnIfNewer(legacyCachePath, addOnCachePath);
-                        Logger.Info("legacy/add-on/ui_misc cache hit");
-                        return;
-                    }
-                }
-
-                Dictionary<string, string> remote;
-                try
-                {
-                    var response = await _client.GetAsync(remoteUrl);
-                    if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                    {
-                        // 过渡期：legacy 路径不存在时回退 add-on/ui_misc
-                        remoteUrl = TranslationPaths.BuildAddOnRemoteUrl(_cdn, category, _language);
-                        response = await _client.GetAsync(remoteUrl);
-                    }
-
-                    if (!response.IsSuccessStatusCode)
-                        return;
-
-                    var json = await response.Content.ReadAsStringAsync();
-                    remote = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
-                    if (remote == null || remote.Count == 0)
-                        return;
-                }
-                catch (Exception e)
-                {
-                    Logger.Warn($"legacy/add-on/{category} fetch failed: {e.Message}");
-                    return;
-                }
-
-                Dictionary<string, string> local = File.Exists(legacyCachePath)
-                    ? LoadFromFile(legacyCachePath) ?? new Dictionary<string, string>()
-                    : File.Exists(addOnCachePath)
-                        ? LoadFromFile(addOnCachePath) ?? new Dictionary<string, string>()
-                        : new Dictionary<string, string>();
-
-                var merged = new Dictionary<string, string>(local);
-                foreach (var kv in remote)
-                    merged[kv.Key] = kv.Value;
-
-                SaveToFile(legacyCachePath, merged);
-                SaveToFile(addOnCachePath, merged);
-                Logger.Info(
-                    $"legacy/add-on/{category} synced: +{remote.Count} remote, {merged.Count} total"
-                );
-            }
-            finally
-            {
-                semaphore.Release();
-                CleanupLocksIfNeeded();
-            }
-        }
-
-        private static void CopyLegacyToAddOnIfNewer(string legacyPath, string addOnPath)
-        {
-            if (!File.Exists(legacyPath))
-                return;
-
-            var legacy = LoadFromFile(legacyPath);
-            if (legacy == null || legacy.Count == 0)
-                return;
-
-            Dictionary<string, string> addOn = File.Exists(addOnPath)
-                ? LoadFromFile(addOnPath) ?? new Dictionary<string, string>()
-                : new Dictionary<string, string>();
-
-            var merged = new Dictionary<string, string>(addOn);
-            foreach (var kv in legacy)
-                merged[kv.Key] = kv.Value;
-            SaveToFile(addOnPath, merged);
-        }
-
-        /// <summary>
-        /// 从 CDN 同步 <c>add-on/{category}/</c> 社群精翻缓存。
-        /// 远程条目覆盖本地同 key；本地独有 key 保留。
-        /// </summary>
-        public async Task SyncAddOnFromCdnAsync()
-        {
-            if (string.IsNullOrWhiteSpace(_cdn))
-                return;
-
-            var categories = CollectAddOnCategoryCandidates().ToList();
-            if (categories.Count == 0)
-                return;
-
-            Logger.Info($"Syncing add-on/ from CDN ({categories.Count} categories)...");
-            var tasks = categories.Select(SyncAddOnCategoryAsync);
-            await Task.WhenAll(tasks);
-        }
-
-        private IEnumerable<string> CollectAddOnCategoryCandidates()
-        {
-            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var cat in TextClassifier.AllCustomCategories)
-                set.Add(cat);
-
-            set.Add(TranslationPaths.Items);
-            set.Add(TranslationPaths.Ui);
-            set.Add("dictionary");
-
-            set.Add(TranslationPaths.LegacyUiMisc);
-            set.Add("ui_misc");
-
-            foreach (var cat in TranslationPaths.EnumerateLocalCategories(_cacheDir, _language))
-                set.Add(cat);
-
-            if (_manifest?.AddOn != null)
-            {
-                foreach (var cat in _manifest.AddOn.Keys)
-                    set.Add(cat);
-            }
-
-            return set;
-        }
-
-        private async Task SyncAddOnCategoryAsync(string category)
-        {
-            string cacheKey  = $"{_language}/add-on/{category}";
-            string cachePath = TranslationPaths.BuildAddOnCachePath(_cacheDir, category, _language);
-            string remoteUrl = TranslationPaths.BuildAddOnRemoteUrl(_cdn, category, _language);
-            string expectedHash = GetAddOnManifestHash(category);
-
-            var semaphore = _locks.GetOrAdd(cacheKey, _ => new SemaphoreSlim(1, 1));
-            await semaphore.WaitAsync();
-            try
-            {
-                if (expectedHash != null && File.Exists(cachePath))
-                {
-                    string localHash = HashFile(cachePath);
-                    if (localHash == expectedHash)
-                    {
-                        Logger.Info($"add-on/{category} cache hit");
-                        return;
-                    }
-                }
-
-                Dictionary<string, string> remote;
-                try
-                {
-                    var response = await _client.GetAsync(remoteUrl);
-                    if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                        return;
-
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        Logger.Warn($"add-on/{category} fetch returned {response.StatusCode}");
-                        return;
-                    }
-
-                    var json = await response.Content.ReadAsStringAsync();
-                    remote = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
-                    if (remote == null || remote.Count == 0)
-                        return;
-                }
-                catch (Exception e)
-                {
-                    Logger.Warn($"add-on/{category} fetch failed: {e.Message}");
-                    return;
-                }
-
-                Dictionary<string, string> local = File.Exists(cachePath)
-                    ? LoadFromFile(cachePath) ?? new Dictionary<string, string>()
-                    : new Dictionary<string, string>();
-
-                var merged = new Dictionary<string, string>(local);
-                foreach (var kv in remote)
-                    merged[kv.Key] = kv.Value;
-
-                SaveToFile(cachePath, merged);
-                Logger.Info($"add-on/{category} synced from CDN: +{remote.Count} remote, {merged.Count} total");
-            }
-            finally
-            {
-                semaphore.Release();
-                CleanupLocksIfNeeded();
-            }
-        }
-
-        private string GetAddOnManifestHash(string category)
-        {
-            if (_manifest?.AddOn == null)
-                return null;
-            return _manifest.AddOn.TryGetValue(category, out var hash) ? hash : null;
-        }
-
-        /// <summary>
-        /// 从 CDN 同步 <c>other/{category}/</c> 机翻/校對缓存。
-        /// 远程条目覆盖本地同 key；本地独有 key 保留。
-        /// </summary>
-        public async Task SyncOtherFromCdnAsync()
-        {
-            if (string.IsNullOrWhiteSpace(_cdn))
-                return;
-
-            var categories = CollectOtherCategoryCandidates().ToList();
-            if (categories.Count == 0)
-                return;
-
-            Logger.Info($"Syncing other/ from CDN ({categories.Count} categories)...");
-            var tasks = categories.Select(SyncOtherCategoryAsync);
-            await Task.WhenAll(tasks);
-        }
-
-        private IEnumerable<string> CollectOtherCategoryCandidates()
-        {
-            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var cat in TextClassifier.AllCustomCategories)
-                set.Add(cat);
-
-            foreach (var cat in TranslationPaths.EnumerateOtherCategories(_cacheDir, _language))
-                set.Add(cat);
-
-            if (_manifest?.Other != null)
-            {
-                foreach (var cat in _manifest.Other.Keys)
-                    set.Add(cat);
-            }
-
-            return set;
-        }
-
-        private async Task SyncOtherCategoryAsync(string category)
-        {
-            string cacheKey  = $"{_language}/other/{category}";
-            string cachePath = TranslationPaths.BuildOtherCachePath(_cacheDir, category, _language);
-            string remoteUrl = TranslationPaths.BuildOtherRemoteUrl(_cdn, category, _language);
-            string expectedHash = GetOtherManifestHash(category);
-
-            var semaphore = _locks.GetOrAdd(cacheKey, _ => new SemaphoreSlim(1, 1));
-            await semaphore.WaitAsync();
-            try
-            {
-                if (expectedHash != null && File.Exists(cachePath))
-                {
-                    string localHash = HashFile(cachePath);
-                    if (localHash == expectedHash)
-                    {
-                        Logger.Info($"other/{category} cache hit");
-                        return;
-                    }
-                }
-
-                Dictionary<string, string> remote;
-                try
-                {
-                    var response = await _client.GetAsync(remoteUrl);
-                    if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                        return;
-
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        Logger.Warn($"other/{category} fetch returned {response.StatusCode}");
-                        return;
-                    }
-
-                    var json = await response.Content.ReadAsStringAsync();
-                    remote = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
-                    if (remote == null || remote.Count == 0)
-                        return;
-                }
-                catch (Exception e)
-                {
-                    Logger.Warn($"other/{category} fetch failed: {e.Message}");
-                    return;
-                }
-
-                Dictionary<string, string> local = File.Exists(cachePath)
-                    ? LoadFromFile(cachePath) ?? new Dictionary<string, string>()
-                    : new Dictionary<string, string>();
-
-                // 远程优先，保留本地尚未发布的条目
-                var merged = new Dictionary<string, string>(local);
-                foreach (var kv in remote)
-                    merged[kv.Key] = kv.Value;
-
-                SaveToFile(cachePath, merged);
-                Logger.Info($"other/{category} synced from CDN: +{remote.Count} remote, {merged.Count} total");
-            }
-            finally
-            {
-                semaphore.Release();
-                CleanupLocksIfNeeded();
-            }
-        }
-
-        private string GetOtherManifestHash(string category)
-        {
-            if (_manifest?.Other == null)
-                return null;
-            return _manifest.Other.TryGetValue(category, out var hash) ? hash : null;
-        }
-
-        /// <summary>
         /// 加载翻译数据，支持缓存感知逻辑。
         /// </summary>
         /// <param name="type">翻译类型：names、words 或 novels。</param>
@@ -505,16 +178,20 @@ namespace AbyssMod.Services
         public async Task<Dictionary<string, string>> LoadAsync(string type, string id = null)
         {
             string cacheKey = id != null ? $"{_language}/{type}/{id}" : $"{_language}/{type}";
-            string cachePath = TranslationPaths.BuildCachePath(_cacheDir, type, _language, id);
 
             // 本地自定义类别（不在 CDN 扁平字典中）直接读本地文件
             bool isLocalOnly =
                 !TranslationPaths.IsCdnFlatType(type) && type != TranslationPaths.Novels;
             if (isLocalOnly)
             {
-                if (File.Exists(cachePath))
+                string localCachePath = TranslationPaths.BuildAddOnCachePath(
+                    _cacheDir,
+                    type,
+                    _language
+                );
+                if (File.Exists(localCachePath))
                 {
-                    var local = LoadFromFile(cachePath);
+                    var local = LoadFromFile(localCachePath);
                     Logger.Info($"Local-only category '{type}' loaded: {local?.Count ?? 0} entries");
                     return local;
                 }
@@ -522,8 +199,16 @@ namespace AbyssMod.Services
                 return new System.Collections.Generic.Dictionary<string, string>();
             }
 
+            string cachePath = TranslationPaths.BuildCachePath(_cacheDir, type, _language, id);
+
             string remoteUrl    = TranslationPaths.BuildRemoteUrl(_cdn, type, _language, id);
             string expectedHash = GetManifestHash(type, id);
+
+            if (_manifest != null && expectedHash == null)
+            {
+                Logger.Info($"Manifest has no entry for {cacheKey}, skipped.");
+                return new Dictionary<string, string>();
+            }
 
             // 序列化同一资源的并发加载
             var semaphore = _locks.GetOrAdd(cacheKey, _ => new SemaphoreSlim(1, 1));
@@ -591,6 +276,47 @@ namespace AbyssMod.Services
                     }
                 }
                 return data;
+            }
+            finally
+            {
+                semaphore.Release();
+                CleanupLocksIfNeeded();
+            }
+        }
+
+        public async Task<Dictionary<string, Dictionary<string, Dictionary<string, string>>>> LoadStaticBundleAsync()
+        {
+            string cacheKey = $"{_language}/{TranslationPaths.Static}";
+            string cachePath = TranslationPaths.BuildCachePath(
+                _cacheDir,
+                TranslationPaths.Static,
+                _language
+            );
+            string expectedHash = GetManifestHash(TranslationPaths.Static, null);
+            var semaphore = _locks.GetOrAdd(cacheKey, _ => new SemaphoreSlim(1, 1));
+            await semaphore.WaitAsync();
+            try
+            {
+                if (expectedHash != null && File.Exists(cachePath))
+                {
+                    string localHash = HashBundleFile(cachePath);
+                    if (localHash == expectedHash)
+                    {
+                        Logger.Info($"Cache hit: {cacheKey}");
+                        return LoadBundleFromFile(cachePath);
+                    }
+                }
+
+                var data = await GetAsync<Dictionary<string, Dictionary<string, Dictionary<string, string>>>>(
+                    TranslationPaths.BuildRemoteUrl(_cdn, TranslationPaths.Static, _language)
+                );
+                if (data != null)
+                {
+                    SaveBundleToFile(cachePath, data);
+                    return data;
+                }
+
+                return File.Exists(cachePath) ? LoadBundleFromFile(cachePath) : null;
             }
             finally
             {
@@ -692,6 +418,23 @@ namespace AbyssMod.Services
             }
         }
 
+        private static Dictionary<string, Dictionary<string, Dictionary<string, string>>> LoadBundleFromFile(
+            string path
+        )
+        {
+            try
+            {
+                return JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, Dictionary<string, string>>>>(
+                    File.ReadAllText(path, Utf8)
+                );
+            }
+            catch (Exception e)
+            {
+                Logger.Warn($"Static bundle cache is incompatible: {e.Message}");
+                return null;
+            }
+        }
+
         /// <summary>
         /// 将翻译字典保存到本地文件。
         /// </summary>
@@ -701,6 +444,15 @@ namespace AbyssMod.Services
 
             var json = JsonSerializer.Serialize(data, JsonOptions);
             File.WriteAllText(path, json, Utf8);
+        }
+
+        private static void SaveBundleToFile(
+            string path,
+            Dictionary<string, Dictionary<string, Dictionary<string, string>>> data
+        )
+        {
+            EnsureCacheDirectory(path);
+            File.WriteAllText(path, JsonSerializer.Serialize(data, JsonOptions), Utf8);
         }
 
         private static void EnsureCacheDirectory(string path)
@@ -718,6 +470,12 @@ namespace AbyssMod.Services
             var json = File.ReadAllText(path, Utf8);
             var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
             return GetHash(dict);
+        }
+
+        private static string HashBundleFile(string path)
+        {
+            var bundle = LoadBundleFromFile(path);
+            return StaticBundleProtocol.ComputeHash(bundle);
         }
 
         /// <summary>

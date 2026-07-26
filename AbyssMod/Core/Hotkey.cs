@@ -22,7 +22,11 @@ public class Hotkey : MonoBehaviour
 
     private void Update()
     {
-        CheckToggle(KeyCode.F8, () => Config.Translation);
+        if (Input.GetKeyDown(KeyCode.F8) && CanTrigger(KeyCode.F8))
+        {
+            Config.Translation.Value = !Config.Translation.Value;
+            TranslationPatch.RefreshCurrentMessage();
+        }
         CheckToggle(KeyCode.F9, () => Config.VoiceInterruption);
 
         if (Input.GetKeyDown(KeyCode.F10) && CanTrigger(KeyCode.F10))

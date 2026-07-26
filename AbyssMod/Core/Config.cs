@@ -9,6 +9,8 @@ namespace AbyssMod
     /// </summary>
     public static class Config
     {
+        private static bool _enforcingUpstreamTranslationPolicy;
+
 #if DEBUG
         #region Debug
         public static ConfigEntry<bool> Offline;
@@ -60,7 +62,31 @@ namespace AbyssMod
         public static void Initialize()
         {
             BindAllEntries();
+            EnforceUpstreamTranslationPolicy();
             BindSettingChangedLog();
+        }
+
+        private static void EnforceUpstreamTranslationPolicy()
+        {
+            if (_enforcingUpstreamTranslationPolicy)
+                return;
+
+            var resolved = UpstreamTranslationPolicy.Resolve(
+                TranslationCDN.Value,
+                TranslationLanguage.Value
+            );
+            _enforcingUpstreamTranslationPolicy = true;
+            try
+            {
+                if (!string.Equals(TranslationCDN.Value, resolved.Cdn, System.StringComparison.Ordinal))
+                    TranslationCDN.Value = resolved.Cdn;
+                if (!string.Equals(TranslationLanguage.Value, resolved.Language, System.StringComparison.Ordinal))
+                    TranslationLanguage.Value = resolved.Language;
+            }
+            finally
+            {
+                _enforcingUpstreamTranslationPolicy = false;
+            }
         }
 
         private static void BindAllEntries()
@@ -119,14 +145,14 @@ namespace AbyssMod
             TranslationCDN = Plugin.ConfigFile.Bind(
                 "Translation",
                 "CDN",
-                "https://raw.githubusercontent.com/s88037zz/dotabyss-translation/main/translations",
-                "翻译加载的CDN"
+                UpstreamTranslationPolicy.Cdn,
+                "上游翻译仓库 CDN"
             );
             TranslationLanguage = Plugin.ConfigFile.Bind(
                 "Translation",
                 "Language",
-                "zh_Hant",
-                "翻译语言，取值范围：[zh_Hans, zh_Hant]。机翻也会依此输出简体或繁体"
+                UpstreamTranslationPolicy.Language,
+                "上游翻译语言（固定为 zh_Hans）"
             );
             TranslationCryptoTag = Plugin.ConfigFile.Bind(
                 "Translation.Crypto",
@@ -242,6 +268,9 @@ namespace AbyssMod
                     $"[{c.Definition.Section}] {c.Definition.Key} => {c.BoxedValue}"
                 );
                 Toast.Info($"[{c.Definition.Section}]", $"{c.Definition.Key} => {c.BoxedValue}");
+
+                if (c == TranslationCDN || c == TranslationLanguage)
+                    EnforceUpstreamTranslationPolicy();
             };
         }
     }

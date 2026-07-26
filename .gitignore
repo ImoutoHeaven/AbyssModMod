@@ -433,3 +433,6 @@ AbyssMod-v*.zip
 
 # Decompiled author reference (local only)
 _author_decompile/
+
+# Isolated Git worktrees
+.worktrees/

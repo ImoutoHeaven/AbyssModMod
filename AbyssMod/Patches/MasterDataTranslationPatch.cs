@@ -60,7 +60,7 @@ public static class MasterDataTranslationPatch
 
             foreach (FieldRule rule in field.Rules)
             {
-                Dictionary<string, string> dict = Plugin.Trans.GetTable(rule.Dict);
+                Dictionary<string, string> dict = Plugin.Trans.GetFieldTable(rule.Dict, field.Name);
                 if (
                     dict != null
                     && dict.TryGetValue(original, out string translated)
