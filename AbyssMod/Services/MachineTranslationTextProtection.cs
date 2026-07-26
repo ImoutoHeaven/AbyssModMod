@@ -5,8 +5,14 @@ namespace AbyssMod.Services;
 
 internal static class MachineTranslationCategoryPolicy
 {
+    public const string NovelTypewriter = "novel_message";
+
     public static bool CanTranslate(string category) =>
-        !string.Equals(category, "name", System.StringComparison.Ordinal);
+        !string.Equals(category, "name", System.StringComparison.Ordinal)
+        && !string.Equals(category, NovelTypewriter, System.StringComparison.Ordinal);
+
+    public static bool IsExcludedFromGenericProcessing(string category) =>
+        string.Equals(category, NovelTypewriter, System.StringComparison.Ordinal);
 }
 
 internal static class MachineTranslationTextProtection

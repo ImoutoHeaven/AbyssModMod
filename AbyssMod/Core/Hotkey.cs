@@ -35,6 +35,7 @@ public class Hotkey : MonoBehaviour
         {
             _lastRefreshTime = Time.unscaledTime;
             Patches.GeneralTextPatch.RefreshVisibleText();
+            Patches.TranslationPatch.RefreshCurrentMessage();
         }
     }
 

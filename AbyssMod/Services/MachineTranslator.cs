@@ -143,6 +143,24 @@ public static class MachineTranslator
         return text;
     }
 
+    /// <summary>
+    /// 查询已完成的机翻缓存，但绝不把文本加入待翻队列。
+    /// 用于在当前界面的完整原句已显示完后安全刷新显示。
+    /// </summary>
+    public static bool TryGetCachedTranslation(string text, out string translated)
+    {
+        translated = null;
+        if (!_initialized || string.IsNullOrEmpty(text))
+            return false;
+
+        var (template, numbers) = Normalize(text);
+        if (!_cache.TryGetValue(template, out var cached))
+            return false;
+
+        translated = Fill(cached, numbers);
+        return !string.IsNullOrEmpty(translated);
+    }
+
     /// <summary>立即保存缓存与待翻队列（退出时调用）。</summary>
     public static void Save()
     {

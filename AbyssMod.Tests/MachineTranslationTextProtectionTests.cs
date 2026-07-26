@@ -15,6 +15,12 @@ public class MachineTranslationTextProtectionTests
     }
 
     [Fact]
+    public void Translation_eligibility_excludes_novel_typewriter_text()
+    {
+        Assert.False(MachineTranslationCategoryPolicy.CanTranslate("novel_message"));
+    }
+
+    [Fact]
     public void Restore_accepts_all_runtime_tokens_in_original_order()
     {
         var protectedText = MachineTranslationTextProtection.Protect(

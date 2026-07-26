@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using AbyssMod.Services;
 using HarmonyLib;
 using Project;
+using Project.Novel;
 using TMPro;
 using AbyssMod;
 using UnityEngine;
@@ -17,6 +19,7 @@ namespace AbyssMod.Patches;
 [HarmonyPatch]
 public static class GeneralTextPatch
 {
+    private static readonly HashSet<int> NovelLetterTextIds = new();
     // ──────────────────────────────────────────────────
     // text = "..." 属性 setter（参数名为 value）
     // ──────────────────────────────────────────────────
@@ -147,7 +150,9 @@ public static class GeneralTextPatch
             // 角色名字段（由 GameObject 名称精确判定）强制归入 name 类别，
             // 使所有界面的新角色名统一收集到 name，便于补入 names 字典。
             string cat;
-            if (IsNameField(instance))
+            if (IsNovelLetterText(instance))
+                cat = MachineTranslationCategoryPolicy.NovelTypewriter;
+            else if (IsNameField(instance))
                 cat = TextClassifier.Name;
             else if (IsAbilityDescriptionField(instance) || TextClassifier.IsActionSkillDescription(s))
                 cat = TranslationPaths.AbilityDescriptions;
@@ -155,7 +160,9 @@ public static class GeneralTextPatch
                 cat = UiContextHelper.ResolveCategory(instance, s)
                     ?? (Config.ClassifyText.Value ? TextClassifier.Classify(s) : "ui_misc");
 
-            s = TextTranslator.Process(cat, s);
+            s = MachineTranslationCategoryPolicy.IsExcludedFromGenericProcessing(cat)
+                ? s
+                : TextTranslator.Process(cat, s);
             if (MachineTranslationCategoryPolicy.CanTranslate(cat))
                 s = MachineTranslator.Handle(cat, s);
         }
@@ -163,6 +170,31 @@ public static class GeneralTextPatch
         {
             _inTranslation = false;
         }
+    }
+
+    private static bool IsNovelLetterText(TMP_Text text)
+    {
+        if (text == null)
+            return false;
+
+        try
+        {
+            return text.GetComponentInParent<NovelLetter>() != null
+                || NovelLetterTextIds.Contains(text.GetInstanceID());
+        }
+        catch { }
+
+        return false;
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(NovelLetter), nameof(NovelLetter.Iniialize))]
+    public static void RegisterNovelLetterText(NovelLetter __instance)
+    {
+        if (__instance._mainText != null)
+            NovelLetterTextIds.Add(__instance._mainText.GetInstanceID());
+        if (__instance._rubyText != null)
+            NovelLetterTextIds.Add(__instance._rubyText.GetInstanceID());
     }
 
     /// <summary>

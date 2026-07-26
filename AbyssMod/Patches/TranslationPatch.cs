@@ -2,6 +2,7 @@ using HarmonyLib;
 using Il2CppSystem;
 using Il2CppSystem.Collections.Generic;
 using Il2CppSystem.Threading;
+using AbyssMod.Services;
 using Project.Library;
 using Project.MainStory;
 using Project.Novel;
@@ -16,6 +17,12 @@ namespace AbyssMod.Patches;
 public static class TranslationPatch
 {
     private static NovelController _novelController;
+    private static NovelViewMessageWindow _messageWindow;
+    private static NovelText _messageText;
+    private static string _machineTranslationSource;
+    private static string _lastRefreshedMachineTranslationSource;
+    private static string _lastRefreshDiagnostic;
+    private static bool _refreshingMessage;
     private static string NovelId
     {
         get => _novelController?._common?.ScriptId ?? string.Empty;
@@ -101,21 +108,112 @@ public static class TranslationPatch
 
     [HarmonyPrefix]
     [HarmonyPatch(typeof(NovelText), nameof(NovelText.Parse))]
-    public static void SetText(List<Letter> letters, ref string message)
+    public static void SetText(NovelText __instance, List<Letter> letters, ref string message)
     {
-        if (TryGetCurrentNovel(out var translation))
+        if (!NovelMessageRefreshPolicy.ShouldProcessNovelText(
+                translationEnabled: Config.Translation.Value,
+                isRefreshReplay: _refreshingMessage,
+                message: message))
+            return;
+
+        if (TryGetCurrentNovel(out var translation)
+            && translation.TryGetValue(message, out string tMessage))
         {
-            if (
-                !string.IsNullOrEmpty(message)
-                && translation.TryGetValue(message, out string tMessage)
-            )
-                message = tMessage;
+            message = tMessage;
+            return;
+        }
+
+        // Parse is the verified full-sentence boundary used by the live story view. It must
+        // resolve the MT cache before the game creates the individual letter TMP objects.
+        var parentWindow = __instance.GetComponentInParent<NovelViewMessageWindow>();
+        string source = TextTranslator.Process(TextClassifier.Dialogue, message);
+        message = MachineTranslator.Handle(TextClassifier.Dialogue, source);
+        if (NovelMessageRefreshPolicy.ShouldTrackRefreshCandidate(
+                translationEnabled: Config.Translation.Value,
+                belongsToCurrentMessage: parentWindow != null,
+                source: source,
+                displayed: message)
+            && TextTranslator.HasKana(source))
+        {
+            _messageWindow = parentWindow;
+            _messageText = __instance;
+            _machineTranslationSource = source;
+            _lastRefreshedMachineTranslationSource = null;
+            _lastRefreshDiagnostic = null;
+            Logger.Info($"Novel MT refresh candidate: '{Abbreviate(source)}'");
         }
     }
 
     [HarmonyPrefix]
+    [HarmonyPatch(typeof(NovelText), nameof(NovelText.Show))]
+    public static void ShowMachineTranslationImmediately(ref bool isImmediately)
+    {
+        if (_refreshingMessage)
+            isImmediately = true;
+    }
+
+    /// <summary>
+    /// Invoked on the Unity main thread. It replaces only the still-current, fully displayed
+    /// message after its complete-source LLM result enters the cache.
+    /// </summary>
+    public static void RefreshCurrentMessage()
+    {
+        if (!Config.Translation.Value
+            || _messageWindow == null
+            || string.IsNullOrEmpty(_machineTranslationSource))
+            return;
+
+        try
+        {
+            if (!MachineTranslator.TryGetCachedTranslation(_machineTranslationSource, out var translated))
+                return;
+
+            bool shouldRefresh = NovelMessageRefreshPolicy.ShouldRefresh(
+                translationEnabled: Config.Translation.Value,
+                typewriterFinished: !_messageWindow._isPlay,
+                source: _machineTranslationSource,
+                lastRefreshedSource: _lastRefreshedMachineTranslationSource,
+                translated: translated
+            );
+            string diagnostic = $"Novel MT refresh: typing={_messageWindow._isPlay}, "
+                + $"shouldRefresh={shouldRefresh}, source='{Abbreviate(_machineTranslationSource)}'";
+            if (!string.Equals(diagnostic, _lastRefreshDiagnostic, System.StringComparison.Ordinal))
+            {
+                _lastRefreshDiagnostic = diagnostic;
+                Logger.Info(diagnostic);
+            }
+            if (!shouldRefresh)
+                return;
+
+            _refreshingMessage = true;
+            try
+            {
+                var text = _messageText;
+                var letters = _messageWindow._letters;
+                text.ReturnLetterObj(letters);
+                letters.Clear();
+                text.Parse(letters, translated);
+                text.Show(letters, _messageWindow._LineYPosPairs, text._isAdult, isImmediately: true);
+                _lastRefreshedMachineTranslationSource = _machineTranslationSource;
+                Logger.Info($"Novel MT refreshed: '{Abbreviate(_machineTranslationSource)}'");
+            }
+            finally
+            {
+                _refreshingMessage = false;
+            }
+        }
+        catch (System.Exception e)
+        {
+            Logger.Warn($"RefreshCurrentMessage failed: {e.Message}");
+        }
+    }
+
+    private static string Abbreviate(string text) =>
+        text.Length <= 80 ? text : text.Substring(0, 80) + "...";
+
+    [HarmonyPrefix]
     [HarmonyPatch(typeof(NovelModelMessageLog), nameof(NovelModelMessageLog.Add))]
-    public static void SetLogAdd(
+    public static bool SetLogAdd(
         string scriptId,
         string assetId,
         ref string charaName,
@@ -125,8 +223,12 @@ public static class TranslationPatch
         CancellationToken ct
     )
     {
+        if (_refreshingMessage)
+            return false;
+
         charaName = charaName?.Replace("<user>", "%user%");
         message = message?.Replace("<user>", "%user%");
+        return true;
     }
 
     [HarmonyPrefix]
