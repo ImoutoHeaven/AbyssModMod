@@ -5,6 +5,15 @@ namespace AbyssMod.Tests;
 
 public class MachineTranslationTextProtectionTests
 {
+    [Theory]
+    [InlineData("ability_descriptions", true)]
+    [InlineData("ui_misc", true)]
+    [InlineData("name", false)]
+    public void Translation_eligibility_includes_ability_descriptions(string category, bool expected)
+    {
+        Assert.Equal(expected, MachineTranslationCategoryPolicy.CanTranslate(category));
+    }
+
     [Fact]
     public void Restore_accepts_all_runtime_tokens_in_original_order()
     {

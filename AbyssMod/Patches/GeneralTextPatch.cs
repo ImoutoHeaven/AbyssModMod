@@ -156,8 +156,7 @@ public static class GeneralTextPatch
                     ?? (Config.ClassifyText.Value ? TextClassifier.Classify(s) : "ui_misc");
 
             s = TextTranslator.Process(cat, s);
-            // 技能描述只查 ability_descriptions，不走 equipment_effect 机翻缓存
-            if (cat != TranslationPaths.AbilityDescriptions)
+            if (MachineTranslationCategoryPolicy.CanTranslate(cat))
                 s = MachineTranslator.Handle(cat, s);
         }
         finally

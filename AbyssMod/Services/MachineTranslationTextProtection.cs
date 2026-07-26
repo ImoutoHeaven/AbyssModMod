@@ -3,6 +3,12 @@ using System.Text.RegularExpressions;
 
 namespace AbyssMod.Services;
 
+internal static class MachineTranslationCategoryPolicy
+{
+    public static bool CanTranslate(string category) =>
+        !string.Equals(category, "name", System.StringComparison.Ordinal);
+}
+
 internal static class MachineTranslationTextProtection
 {
     private static readonly Regex ProtectedSyntax = new(
