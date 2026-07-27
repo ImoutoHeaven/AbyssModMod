@@ -11,6 +11,7 @@ namespace AbyssMod.Services;
 public static class UiTextTranslator
 {
     private static bool _loadRequested;
+    private static readonly UiTranslatedValueCache TranslatedValueCache = new();
 
     public static string Translate(TMP_Text text, string value)
     {
@@ -42,12 +43,7 @@ public static class UiTextTranslator
 
     private static bool IsAlreadyTranslated(Dictionary<string, string> table, string value)
     {
-        foreach (string translated in table.Values)
-        {
-            if (string.Equals(translated, value, StringComparison.Ordinal))
-                return true;
-        }
-        return false;
+        return TranslatedValueCache.Contains(table, value);
     }
 
     private static Dictionary<string, string> GetTable()

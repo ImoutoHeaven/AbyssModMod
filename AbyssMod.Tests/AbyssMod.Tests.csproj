@@ -20,7 +20,10 @@
     <Compile Include="..\AbyssMod\Services\MachineTranslationPrimitives.cs" Link="MachineTranslationPrimitives.cs" />
     <Compile Include="..\AbyssMod\Services\MachineTranslationTextProtection.cs" Link="MachineTranslationTextProtection.cs" />
     <Compile Include="..\AbyssMod\Patches\NovelMessageRefreshPolicy.cs" Link="NovelMessageRefreshPolicy.cs" />
+    <Compile Include="..\AbyssMod\Patches\StaticNovelMessageState.cs" Link="StaticNovelMessageState.cs" />
+    <Compile Include="..\AbyssMod\Patches\NovelTextTranslation.cs" Link="NovelTextTranslation.cs" />
     <Compile Include="..\AbyssMod\Services\TranslationPaths.cs" Link="TranslationPaths.cs" />
+    <Compile Include="..\AbyssMod\Services\UiTranslatedValueCache.cs" Link="UiTranslatedValueCache.cs" />
     <Compile Include="..\AbyssMod\Services\StaticBundleProtocol.cs" Link="StaticBundleProtocol.cs" />
     <Compile Include="..\AbyssMod\Core\UpstreamTranslationPolicy.cs" Link="UpstreamTranslationPolicy.cs" />
     <Compile Include="..\AbyssMod\Models\Manifest.cs" Link="Manifest.cs" />

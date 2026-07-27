@@ -25,6 +25,9 @@ public static class TranslationPatch
     private static NovelController _novelController;
     private static NovelViewMessageWindow _messageWindow;
     private static NovelText _messageText;
+    private static NovelViewMessageWindow _staticMessageWindow;
+    private static NovelText _staticMessageText;
+    private static StaticNovelMessageState _staticMessageState;
     private static string _machineTranslationSource;
     private static string _lastRefreshedMachineTranslationSource;
     private static string _lastRefreshDiagnostic;
@@ -39,6 +42,8 @@ public static class TranslationPatch
     public static void InitNovelController(NovelController __instance)
     {
         _novelController = __instance;
+        ClearStaticMessage();
+        ClearMachineTranslationMessage();
     }
 
     public static bool TryGetCurrentNovel(
@@ -125,24 +130,38 @@ public static class TranslationPatch
     [HarmonyPatch(typeof(NovelText), nameof(NovelText.Parse))]
     public static void SetText(NovelText __instance, List<Letter> letters, ref string message)
     {
+        if (!_refreshingMessage)
+        {
+            ClearStaticMessage();
+            ClearMachineTranslationMessage();
+        }
+
         if (!NovelMessageRefreshPolicy.ShouldProcessNovelText(
                 translationEnabled: Config.Translation.Value,
                 isRefreshReplay: _refreshingMessage,
                 message: message))
             return;
 
+        var parentWindow = __instance.GetComponentInParent<NovelViewMessageWindow>();
         if (TryGetCurrentNovel(out var translation)
-            && translation.TryGetValue(message, out string tMessage))
+            && translation.TryGetValue(message, out string staticTranslation)
+            && !string.IsNullOrEmpty(staticTranslation))
         {
-            message = tMessage;
+            CaptureStaticMessage(parentWindow, __instance, message, staticTranslation);
+            NovelTextTranslation.TryTranslate(
+                translation,
+                message,
+                GetDisplayUserName(),
+                out message
+            );
             return;
         }
 
         // Parse is the verified full-sentence boundary used by the live story view. It must
         // resolve the MT cache before the game creates the individual letter TMP objects.
-        var parentWindow = __instance.GetComponentInParent<NovelViewMessageWindow>();
         string source = TextTranslator.Process(TextClassifier.Dialogue, message);
         message = MachineTranslator.Handle(TextClassifier.Dialogue, source);
+        message = NovelTextTranslation.ExpandUserPlaceholder(message, GetDisplayUserName());
         if (NovelMessageRefreshPolicy.ShouldTrackRefreshCandidate(
                 translationEnabled: Config.Translation.Value,
                 belongsToCurrentMessage: parentWindow != null,
@@ -173,6 +192,34 @@ public static class TranslationPatch
     /// </summary>
     public static void RefreshCurrentMessage()
     {
+        RefreshStaticMessage();
+        RefreshMachineTranslationMessage();
+    }
+
+    private static void RefreshStaticMessage()
+    {
+        if (_staticMessageWindow == null || _staticMessageText == null || _staticMessageState == null)
+            return;
+
+        try
+        {
+            if (!_staticMessageState.TrySelect(Config.Translation.Value, out string message))
+                return;
+
+            if (Config.Translation.Value)
+                message = NovelTextTranslation.ExpandUserPlaceholder(message, GetDisplayUserName());
+
+            ReplayMessage(_staticMessageWindow, _staticMessageText, message);
+            Logger.Info("Current static novel message refreshed");
+        }
+        catch (System.Exception e)
+        {
+            Logger.Warn($"Current static novel message refresh failed: {e.Message}");
+        }
+    }
+
+    private static void RefreshMachineTranslationMessage()
+    {
         if (!Config.Translation.Value
             || _messageWindow == null
             || string.IsNullOrEmpty(_machineTranslationSource))
@@ -200,26 +247,67 @@ public static class TranslationPatch
             if (!shouldRefresh)
                 return;
 
-            _refreshingMessage = true;
-            try
-            {
-                var text = _messageText;
-                var letters = _messageWindow._letters;
-                text.ReturnLetterObj(letters);
-                letters.Clear();
-                text.Parse(letters, translated);
-                text.Show(letters, _messageWindow._LineYPosPairs, text._isAdult, isImmediately: true);
-                _lastRefreshedMachineTranslationSource = _machineTranslationSource;
-                Logger.Info($"Novel MT refreshed: '{Abbreviate(_machineTranslationSource)}'");
-            }
-            finally
-            {
-                _refreshingMessage = false;
-            }
+            translated = NovelTextTranslation.ExpandUserPlaceholder(translated, GetDisplayUserName());
+            ReplayMessage(_messageWindow, _messageText, translated);
+            _lastRefreshedMachineTranslationSource = _machineTranslationSource;
+            Logger.Info($"Novel MT refreshed: '{Abbreviate(_machineTranslationSource)}'");
         }
         catch (System.Exception e)
         {
             Logger.Warn($"RefreshCurrentMessage failed: {e.Message}");
+        }
+    }
+
+    private static void CaptureStaticMessage(
+        NovelViewMessageWindow messageWindow,
+        NovelText messageText,
+        string source,
+        string translated
+    )
+    {
+        if (messageWindow == null || messageText == null)
+            return;
+
+        _staticMessageWindow = messageWindow;
+        _staticMessageText = messageText;
+        _staticMessageState = new StaticNovelMessageState(source, translated);
+    }
+
+    private static void ClearStaticMessage()
+    {
+        _staticMessageWindow = null;
+        _staticMessageText = null;
+        _staticMessageState?.Clear();
+        _staticMessageState = null;
+    }
+
+    private static void ClearMachineTranslationMessage()
+    {
+        _messageWindow = null;
+        _messageText = null;
+        _machineTranslationSource = null;
+        _lastRefreshedMachineTranslationSource = null;
+        _lastRefreshDiagnostic = null;
+    }
+
+    private static void ReplayMessage(
+        NovelViewMessageWindow messageWindow,
+        NovelText messageText,
+        string message
+    )
+    {
+        _refreshingMessage = true;
+        try
+        {
+            var letters = messageWindow._letters;
+            messageText.ReturnLetterObj(letters);
+            letters.Clear();
+            messageText.Parse(letters, message);
+            messageText.Show(letters, messageWindow._LineYPosPairs, messageText._isAdult, isImmediately: true);
+        }
+        finally
+        {
+            _refreshingMessage = false;
         }
     }
 
@@ -392,9 +480,6 @@ public static class TranslationPatch
 
     private static string ExpandUserPlaceholder(string value, string displayName)
     {
-        if (string.IsNullOrEmpty(value) || string.IsNullOrEmpty(displayName))
-            return value;
-
-        return value.Replace(UserPlaceholder, displayName, System.StringComparison.Ordinal);
+        return NovelTextTranslation.ExpandUserPlaceholder(value, displayName);
     }
 }
