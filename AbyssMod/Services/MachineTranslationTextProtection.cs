@@ -7,6 +7,9 @@ internal static class MachineTranslationCategoryPolicy
 {
     public const string NovelTypewriter = "novel_message";
 
+    public static bool CanProcess(bool translationEnabled, string category) =>
+        translationEnabled && CanTranslate(category);
+
     public static bool CanTranslate(string category) =>
         !string.Equals(category, "name", System.StringComparison.Ordinal)
         && !string.Equals(category, NovelTypewriter, System.StringComparison.Ordinal);

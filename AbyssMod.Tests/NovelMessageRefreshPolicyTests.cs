@@ -107,14 +107,42 @@ public class NovelMessageRefreshPolicyTests
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, true)]
-    public void Does_not_process_disabled_or_refresh_replayed_novel_text(
+    public void Captures_disabled_novel_text_but_ignores_refresh_replays(
         bool translationEnabled,
         bool isRefreshReplay
     )
     {
-        Assert.False(NovelMessageRefreshPolicy.ShouldProcessNovelText(
+        Assert.Equal(!isRefreshReplay, NovelMessageRefreshPolicy.ShouldProcessNovelText(
             translationEnabled,
             isRefreshReplay,
             "わわわわ～～～っ！"));
+    }
+
+    [Theory]
+    [InlineData(true, false, true)]
+    [InlineData(false, false, false)]
+    [InlineData(true, true, false)]
+    public void Resets_current_state_only_for_a_new_main_window_parse(
+        bool belongsToCurrentMessage,
+        bool isRefreshReplay,
+        bool expected
+    )
+    {
+        Assert.Equal(expected, NovelMessageRefreshPolicy.ShouldResetCurrentMessage(
+            belongsToCurrentMessage,
+            isRefreshReplay
+        ));
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("静态译文", true)]
+    public void Uses_only_nonempty_static_translations_as_authoritative(
+        string? translated,
+        bool expected
+    )
+    {
+        Assert.Equal(expected, NovelMessageRefreshPolicy.HasAuthoritativeTranslation(translated));
     }
 }

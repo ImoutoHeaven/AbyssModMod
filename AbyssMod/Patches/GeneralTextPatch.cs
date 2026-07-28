@@ -160,7 +160,7 @@ public static class GeneralTextPatch
             s = MachineTranslationCategoryPolicy.IsExcludedFromGenericProcessing(cat)
                 ? s
                 : TextTranslator.Process(cat, s);
-            if (MachineTranslationCategoryPolicy.CanTranslate(cat))
+            if (MachineTranslationCategoryPolicy.CanProcess(Config.Translation.Value, cat))
                 s = MachineTranslator.Handle(cat, s);
         }
         finally

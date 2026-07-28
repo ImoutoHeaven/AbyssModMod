@@ -5,6 +5,15 @@ namespace AbyssMod.Tests;
 
 public class MachineTranslationTextProtectionTests
 {
+    [Fact]
+    public void Cached_machine_translation_is_not_applied_when_translation_is_disabled()
+    {
+        Assert.False(MachineTranslationCategoryPolicy.CanProcess(
+            translationEnabled: false,
+            category: "dialogue"
+        ));
+    }
+
     [Theory]
     [InlineData("ability_descriptions", true)]
     [InlineData("ui_misc", true)]

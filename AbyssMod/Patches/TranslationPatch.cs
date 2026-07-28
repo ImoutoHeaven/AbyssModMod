@@ -72,8 +72,7 @@ public static class TranslationPatch
             return;
 
         Plugin.Log.LogInfo($"NovelId: {novelId}");
-
-        Plugin.Trans.GetNovelTranslationAsync(novelId).Wait();
+        Plugin.Trans.EnsureNovelTranslationLoaded(novelId);
     }
 
     [HarmonyPostfix]
@@ -130,10 +129,21 @@ public static class TranslationPatch
     [HarmonyPatch(typeof(NovelText), nameof(NovelText.Parse))]
     public static void SetText(NovelText __instance, List<Letter> letters, ref string message)
     {
-        if (!_refreshingMessage)
+        var parentWindow = __instance.GetComponentInParent<NovelViewMessageWindow>();
+        if (NovelMessageRefreshPolicy.ShouldResetCurrentMessage(
+                belongsToCurrentMessage: parentWindow != null,
+                isRefreshReplay: _refreshingMessage))
         {
             ClearStaticMessage();
             ClearMachineTranslationMessage();
+            if (!string.IsNullOrEmpty(message))
+                CaptureStaticMessage(
+                    parentWindow,
+                    __instance,
+                    message,
+                    translated: null,
+                    displayedTranslated: false
+                );
         }
 
         if (!NovelMessageRefreshPolicy.ShouldProcessNovelText(
@@ -142,12 +152,20 @@ public static class TranslationPatch
                 message: message))
             return;
 
-        var parentWindow = __instance.GetComponentInParent<NovelViewMessageWindow>();
+        if (!Config.Translation.Value)
+            return;
+
         if (TryGetCurrentNovel(out var translation)
             && translation.TryGetValue(message, out string staticTranslation)
             && !string.IsNullOrEmpty(staticTranslation))
         {
-            CaptureStaticMessage(parentWindow, __instance, message, staticTranslation);
+            CaptureStaticMessage(
+                parentWindow,
+                __instance,
+                message,
+                staticTranslation,
+                displayedTranslated: true
+            );
             NovelTextTranslation.TryTranslate(
                 translation,
                 message,
@@ -159,23 +177,29 @@ public static class TranslationPatch
 
         // Parse is the verified full-sentence boundary used by the live story view. It must
         // resolve the MT cache before the game creates the individual letter TMP objects.
-        string source = TextTranslator.Process(TextClassifier.Dialogue, message);
-        message = MachineTranslator.Handle(TextClassifier.Dialogue, source);
-        message = NovelTextTranslation.ExpandUserPlaceholder(message, GetDisplayUserName());
+        string original = message;
+        string source = TextTranslator.Process(TextClassifier.Dialogue, original);
+        string resolved = MachineTranslator.Handle(TextClassifier.Dialogue, source);
+        if (parentWindow != null
+            && !string.Equals(original, resolved, System.StringComparison.Ordinal))
+        {
+            CaptureStaticMessage(
+                parentWindow,
+                __instance,
+                original,
+                resolved,
+                displayedTranslated: true
+            );
+        }
+
+        message = NovelTextTranslation.ExpandUserPlaceholder(resolved, GetDisplayUserName());
         if (NovelMessageRefreshPolicy.ShouldTrackRefreshCandidate(
                 translationEnabled: Config.Translation.Value,
                 belongsToCurrentMessage: parentWindow != null,
                 source: source,
                 displayed: message)
             && TextTranslator.HasKana(source))
-        {
-            _messageWindow = parentWindow;
-            _messageText = __instance;
-            _machineTranslationSource = source;
-            _lastRefreshedMachineTranslationSource = null;
-            _lastRefreshDiagnostic = null;
-            Logger.Info($"Novel MT refresh candidate: '{Abbreviate(source)}'");
-        }
+            TrackMachineTranslationMessage(parentWindow, __instance, source);
     }
 
     [HarmonyPrefix]
@@ -203,6 +227,21 @@ public static class TranslationPatch
 
         try
         {
+            if (Config.Translation.Value)
+            {
+                RequestCurrentNovelTranslation();
+                if (TryGetCurrentNovel(out var translation)
+                    && !string.IsNullOrEmpty(_staticMessageState.Source)
+                    && translation.TryGetValue(_staticMessageState.Source, out string translated)
+                    && NovelMessageRefreshPolicy.HasAuthoritativeTranslation(translated))
+                {
+                    _staticMessageState.SetTranslation(translated);
+                    ClearMachineTranslationMessage();
+                }
+                else
+                    ResolveCurrentMessageFallback();
+            }
+
             if (!_staticMessageState.TrySelect(Config.Translation.Value, out string message))
                 return;
 
@@ -247,6 +286,7 @@ public static class TranslationPatch
             if (!shouldRefresh)
                 return;
 
+            _staticMessageState?.SetDisplayedTranslation(translated);
             translated = NovelTextTranslation.ExpandUserPlaceholder(translated, GetDisplayUserName());
             ReplayMessage(_messageWindow, _messageText, translated);
             _lastRefreshedMachineTranslationSource = _machineTranslationSource;
@@ -262,7 +302,8 @@ public static class TranslationPatch
         NovelViewMessageWindow messageWindow,
         NovelText messageText,
         string source,
-        string translated
+        string translated,
+        bool displayedTranslated
     )
     {
         if (messageWindow == null || messageText == null)
@@ -270,7 +311,61 @@ public static class TranslationPatch
 
         _staticMessageWindow = messageWindow;
         _staticMessageText = messageText;
-        _staticMessageState = new StaticNovelMessageState(source, translated);
+        _staticMessageState = new StaticNovelMessageState(source, translated, displayedTranslated);
+    }
+
+    private static void RequestCurrentNovelTranslation()
+    {
+        if (!Config.Translation.Value
+            || string.IsNullOrEmpty(NovelId)
+            || Plugin.Trans.Novels.ContainsKey(NovelId))
+            return;
+
+        Plugin.Trans.RequestNovelTranslation(NovelId);
+    }
+
+    private static void ResolveCurrentMessageFallback()
+    {
+        string original = _staticMessageState?.Source;
+        if (string.IsNullOrEmpty(original))
+            return;
+
+        string source = TextTranslator.Process(TextClassifier.Dialogue, original);
+        if (!string.Equals(original, source, System.StringComparison.Ordinal))
+        {
+            _staticMessageState.SetTranslation(source);
+            ClearMachineTranslationMessage();
+            return;
+        }
+
+        string resolved = MachineTranslator.Handle(TextClassifier.Dialogue, source);
+        if (!string.Equals(source, resolved, System.StringComparison.Ordinal))
+        {
+            TrackMachineTranslationMessage(_staticMessageWindow, _staticMessageText, source);
+            if (_staticMessageWindow._isPlay)
+                return;
+        }
+        else if (TextTranslator.HasKana(source))
+            TrackMachineTranslationMessage(_staticMessageWindow, _staticMessageText, source);
+    }
+
+    private static void TrackMachineTranslationMessage(
+        NovelViewMessageWindow messageWindow,
+        NovelText messageText,
+        string source
+    )
+    {
+        if (ReferenceEquals(_messageWindow, messageWindow)
+            && ReferenceEquals(_messageText, messageText)
+            && string.Equals(_machineTranslationSource, source, System.StringComparison.Ordinal))
+            return;
+
+        _messageWindow = messageWindow;
+        _messageText = messageText;
+        _machineTranslationSource = source;
+        _lastRefreshedMachineTranslationSource = null;
+        _lastRefreshDiagnostic = null;
+        Logger.Info($"Novel MT refresh candidate: '{Abbreviate(source)}'");
     }
 
     private static void ClearStaticMessage()

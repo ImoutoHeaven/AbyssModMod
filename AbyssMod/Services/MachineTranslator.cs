@@ -113,7 +113,7 @@ public static class MachineTranslator
     /// </summary>
     public static string Handle(string category, string text)
     {
-        if (!_initialized || string.IsNullOrEmpty(text))
+        if (!Config.Translation.Value || !_initialized || string.IsNullOrEmpty(text))
             return text;
         // 角色名不机翻：片假名音译不可靠，仅由 TextTranslator 收集 raw 供人工翻译后补入 names。
         if (category == TextClassifier.Name)

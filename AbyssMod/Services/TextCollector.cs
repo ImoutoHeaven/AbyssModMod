@@ -1,8 +1,4 @@
-using System.Collections.Generic;
 using System.IO;
-using System.Text;
-using System.Text.Encodings.Web;
-using System.Text.Json;
 using BepInEx;
 
 namespace AbyssMod.Services;
@@ -16,14 +12,6 @@ namespace AbyssMod.Services;
 public static class TextCollector
 {
     private static readonly object Lock = new();
-    private static readonly Dictionary<string, HashSet<string>> Collected = new();
-
-    private static readonly Encoding Utf8 = new UTF8Encoding(false);
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        WriteIndented = true,
-    };
 
     private static string DumpPath(string category) =>
         Path.Combine(Paths.PluginPath, MyPluginInfo.PLUGIN_GUID, "dump", $"{category}_raw.json");
@@ -38,27 +26,10 @@ public static class TextCollector
 
         lock (Lock)
         {
-            if (!Collected.TryGetValue(category, out var set))
-            {
-                set = [];
-                Collected[category] = set;
-            }
-
-            if (!set.Add(text))
-                return;
-
             try
             {
                 var path = DumpPath(category);
-                var dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir))
-                    Directory.CreateDirectory(dir);
-
-                var dict = new Dictionary<string, string>();
-                foreach (var key in set)
-                    dict[key] = string.Empty;
-
-                File.WriteAllText(path, JsonSerializer.Serialize(dict, JsonOptions), Utf8);
+                TextCollectionStore.Add(path, text);
             }
             catch
             {

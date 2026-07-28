@@ -22,16 +22,19 @@ public static class AbilityTextMatcher
 
     public static void Rebuild(Dictionary<string, string> abilityDescriptions)
     {
-        _exact = abilityDescriptions ?? new Dictionary<string, string>();
-        _bySkeleton = new Dictionary<string, string>(StringComparer.Ordinal);
+        var exact = abilityDescriptions ?? new Dictionary<string, string>();
+        var bySkeleton = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        foreach (var kv in _exact)
+        foreach (var kv in exact)
         {
             string skeleton = ToKeySkeleton(kv.Key);
             if (string.IsNullOrEmpty(skeleton))
                 continue;
-            _bySkeleton.TryAdd(skeleton, kv.Value);
+            bySkeleton.TryAdd(skeleton, kv.Value);
         }
+
+        _exact = exact;
+        _bySkeleton = bySkeleton;
     }
 
     public static bool LooksLikeAbility(string text)

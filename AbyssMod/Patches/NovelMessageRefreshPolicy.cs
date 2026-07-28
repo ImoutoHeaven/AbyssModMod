@@ -4,6 +4,14 @@ namespace AbyssMod.Patches;
 
 internal static class NovelMessageRefreshPolicy
 {
+    public static bool ShouldResetCurrentMessage(
+        bool belongsToCurrentMessage,
+        bool isRefreshReplay
+    ) => belongsToCurrentMessage && !isRefreshReplay;
+
+    public static bool HasAuthoritativeTranslation(string? translated) =>
+        !string.IsNullOrEmpty(translated);
+
     public static bool ShouldProcessMessageWindow(
         bool translationEnabled,
         bool isRefreshReplay,
@@ -14,7 +22,7 @@ internal static class NovelMessageRefreshPolicy
         bool translationEnabled,
         bool isRefreshReplay,
         string message
-    ) => translationEnabled && !isRefreshReplay && !string.IsNullOrEmpty(message);
+    ) => !isRefreshReplay && !string.IsNullOrEmpty(message);
 
     public static bool ShouldTrackRefreshCandidate(
         bool translationEnabled,
