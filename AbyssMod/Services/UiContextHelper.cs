@@ -1,4 +1,6 @@
 using System;
+using Project.ItemList.Top;
+using Project.Outgame.UI.Popup;
 using TMPro;
 
 namespace AbyssMod.Services;
@@ -12,6 +14,28 @@ public static class UiContextHelper
     {
         if (tmp == null)
             return null;
+
+        try
+        {
+            var itemList = tmp.GetComponentInParent<LeftView>();
+            if (
+                itemList?._nameText != null
+                && itemList._nameText.GetInstanceID() == tmp.GetInstanceID()
+            )
+                return TranslationPaths.Items;
+        }
+        catch { }
+
+        try
+        {
+            var itemPopup = tmp.GetComponentInParent<ItemDetailPopup>();
+            if (
+                itemPopup?._nameText != null
+                && itemPopup._nameText.GetInstanceID() == tmp.GetInstanceID()
+            )
+                return TranslationPaths.Items;
+        }
+        catch { }
 
         try
         {

@@ -6,13 +6,26 @@ namespace AbyssMod.Services;
 internal static class MachineTranslationCategoryPolicy
 {
     public const string NovelTypewriter = "novel_message";
+    private const string Name = "name";
 
     public static bool CanProcess(bool translationEnabled, string category) =>
         translationEnabled && CanTranslate(category);
 
     public static bool CanTranslate(string category) =>
-        !string.Equals(category, "name", System.StringComparison.Ordinal)
+        !string.Equals(category, Name, System.StringComparison.Ordinal)
         && !string.Equals(category, NovelTypewriter, System.StringComparison.Ordinal);
+
+    public static string ResolveNameFieldCategory(string contextualCategory, bool isNameField)
+    {
+        if (string.Equals(
+                contextualCategory,
+                TranslationPaths.Items,
+                System.StringComparison.Ordinal
+            ))
+            return TranslationPaths.Items;
+
+        return isNameField ? Name : string.Empty;
+    }
 
     public static bool IsExcludedFromGenericProcessing(string category) =>
         string.Equals(category, NovelTypewriter, System.StringComparison.Ordinal);

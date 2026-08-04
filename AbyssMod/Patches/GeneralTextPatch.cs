@@ -146,15 +146,20 @@ public static class GeneralTextPatch
 
             // 角色名字段（由 GameObject 名称精确判定）强制归入 name 类别，
             // 使所有界面的新角色名统一收集到 name，便于补入 names 字典。
+            string contextualCategory = UiContextHelper.ResolveCategory(instance, s);
+            string nameFieldCategory = MachineTranslationCategoryPolicy.ResolveNameFieldCategory(
+                contextualCategory,
+                IsNameField(instance)
+            );
             string cat;
             if (IsNovelLetterText(instance))
                 cat = MachineTranslationCategoryPolicy.NovelTypewriter;
-            else if (IsNameField(instance))
-                cat = TextClassifier.Name;
+            else if (!string.IsNullOrEmpty(nameFieldCategory))
+                cat = nameFieldCategory;
             else if (IsAbilityDescriptionField(instance) || TextClassifier.IsActionSkillDescription(s))
                 cat = TranslationPaths.AbilityDescriptions;
             else
-                cat = UiContextHelper.ResolveCategory(instance, s)
+                cat = contextualCategory
                     ?? (Config.ClassifyText.Value ? TextClassifier.Classify(s) : "ui_misc");
 
             s = MachineTranslationCategoryPolicy.IsExcludedFromGenericProcessing(cat)

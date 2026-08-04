@@ -30,6 +30,30 @@ public class MachineTranslationTextProtectionTests
     }
 
     [Fact]
+    public void Item_context_takes_precedence_over_character_name_field()
+    {
+        Assert.Equal(
+            TranslationPaths.Items,
+            MachineTranslationCategoryPolicy.ResolveNameFieldCategory(
+                TranslationPaths.Items,
+                isNameField: true
+            )
+        );
+    }
+
+    [Fact]
+    public void Non_item_name_field_remains_excluded_from_machine_translation()
+    {
+        var category = MachineTranslationCategoryPolicy.ResolveNameFieldCategory(
+            "system",
+            isNameField: true
+        );
+
+        Assert.Equal("name", category);
+        Assert.False(MachineTranslationCategoryPolicy.CanTranslate(category));
+    }
+
+    [Fact]
     public void Restore_accepts_all_runtime_tokens_in_original_order()
     {
         var protectedText = MachineTranslationTextProtection.Protect(
