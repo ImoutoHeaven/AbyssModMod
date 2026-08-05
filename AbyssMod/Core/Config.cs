@@ -24,6 +24,9 @@ namespace AbyssMod
         public static ConfigEntry<bool> SoundCaution;
         public static ConfigEntry<bool> VoiceInterruption;
         public static ConfigEntry<bool> TitleMovie;
+        public static ConfigEntry<bool> BattleSessionProbe;
+        public static ConfigEntry<bool> BattleSessionAutoSL;
+        public static ConfigEntry<float> BattleSessionAutoSLCooldown;
         #endregion
 
         #region Translation
@@ -132,6 +135,24 @@ namespace AbyssMod
                 "TitleMovie",
                 true,
                 "是否开启进入游戏时的标题动画"
+            );
+            BattleSessionProbe = Plugin.ConfigFile.Bind(
+                "General",
+                "BattleSessionProbe",
+                false,
+                "F11 战斗 session 探针：记录开始、挂起和多次恢复响应"
+            );
+            BattleSessionAutoSL = Plugin.ConfigFile.Bind(
+                "General",
+                "BattleSessionAutoSL",
+                false,
+                "F11 自动 Resume 刷 rare drop：只在中断战斗恢复时启用"
+            );
+            BattleSessionAutoSLCooldown = Plugin.ConfigFile.Bind(
+                "General",
+                "BattleSessionAutoSLCooldown",
+                4.0f,
+                "自动 Resume 重试间隔（秒），必须大于或等于 0"
             );
             #endregion
 

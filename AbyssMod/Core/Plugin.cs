@@ -47,6 +47,10 @@ public class Plugin : BasePlugin
 
         AddComponent<ToastUI>();
         AbyssMod.Config.Initialize();
+            Logger.Info(
+                $"[F11] Battle session auto-SL initial state: "
+                + $"{(AbyssMod.Config.BattleSessionAutoSL.Value ? "ON" : "OFF")}"
+            );
         Instance = AddComponent<Hotkey>();
 
         MasterMapping.Load();

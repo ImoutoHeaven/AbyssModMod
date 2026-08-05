@@ -18,6 +18,7 @@ public static class PatchManager
         Harmony.CreateAndPatchAll(typeof(EnhancePatch));
         Harmony.CreateAndPatchAll(typeof(TranslationPatch));
         Harmony.CreateAndPatchAll(typeof(ItemPatch));
+        Harmony.CreateAndPatchAll(typeof(BattleSessionAutoSLPatch));
         Harmony.CreateAndPatchAll(typeof(GeneralTextPatch));
         Harmony.CreateAndPatchAll(typeof(MasterDataTranslationPatch));
 #if DEBUG

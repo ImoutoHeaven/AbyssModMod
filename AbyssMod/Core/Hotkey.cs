@@ -22,6 +22,8 @@ public class Hotkey : MonoBehaviour
 
     private void Update()
     {
+        BattleSessionAutoSL.Update();
+
         if (Input.GetKeyDown(KeyCode.F8) && CanTrigger(KeyCode.F8))
         {
             Config.Translation.Value = !Config.Translation.Value;
@@ -33,6 +35,14 @@ public class Hotkey : MonoBehaviour
         {
             Plugin.ConfigFile.Reload();
             Logger.Info("Config reloaded");
+        }
+
+        if (Input.GetKeyDown(KeyCode.F11) && CanTrigger(KeyCode.F11))
+        {
+            Config.BattleSessionAutoSL.Value = !Config.BattleSessionAutoSL.Value;
+            Logger.Info(
+                $"[F11] Battle session auto-SL {(Config.BattleSessionAutoSL.Value ? "ON" : "OFF")}"
+            );
         }
 
         if (Config.Translation.Value && Time.unscaledTime - _lastRefreshTime >= RefreshInterval)
