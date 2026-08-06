@@ -15,13 +15,15 @@ public static class BattleSessionAutoSL
     private static readonly List<Operation> Operations = new();
 
     public static UniTask<BattleSessionStatusResponseEntity> RunExploration(
-        ResumedQuestAPIService resumed,
+        IExplorationQuestAPIService apiService,
         UniTask<BattleSessionStatusResponseEntity> initial,
-        CancellationToken ct
+        CancellationToken ct,
+        string source
     )
     {
         var operation = new ExplorationOperation(
-            resumed,
+            apiService,
+            source,
             ct,
             Engine.RebootCancellationToken,
             initial
@@ -31,13 +33,15 @@ public static class BattleSessionAutoSL
     }
 
     public static UniTask<BattleSessionStatusResponseEntity> RunDisaster(
-        ResumedDisasterQuestAPIService resumed,
+        IDisasterQuestAPIService apiService,
         UniTask<BattleSessionStatusResponseEntity> initial,
-        CancellationToken ct
+        CancellationToken ct,
+        string source
     )
     {
         var operation = new DisasterOperation(
-            resumed,
+            apiService,
+            source,
             ct,
             Engine.RebootCancellationToken,
             initial
@@ -47,15 +51,17 @@ public static class BattleSessionAutoSL
     }
 
     public static UniTask<BattleSessionStatusResponseEntity> RunNether(
-        ExplorationQuestPreserveAPIService preserved,
+        IExplorationQuestAPIService apiService,
         NetherAPIService netherApiService,
         UniTask<BattleSessionStatusResponseEntity> initial,
-        CancellationToken ct
+        CancellationToken ct,
+        string source
     )
     {
         var operation = new NetherOperation(
-            preserved,
+            apiService,
             netherApiService,
+            source,
             ct,
             Engine.RebootCancellationToken,
             initial
@@ -81,6 +87,7 @@ public static class BattleSessionAutoSL
         protected readonly CancellationToken RequestCancellationToken;
         protected readonly CancellationToken RetryCancellationToken;
         protected UniTask<BattleSessionStatusResponseEntity> Current;
+        private BattleSessionStatusResponseEntity _lastResponse;
         private long _retryDueTimestamp;
 
         protected virtual string LogPrefix => "[F11][BattleAutoSL]";
@@ -105,6 +112,17 @@ public static class BattleSessionAutoSL
             {
                 if (_retryDueTimestamp != 0)
                 {
+                    if (!Config.BattleSessionAutoSL.Value)
+                    {
+                        _retryDueTimestamp = 0;
+                        State.ObserveDecision(false);
+                        Completion.TrySetResult(_lastResponse);
+                        Logger.Info(
+                            $"{LogPrefix} disabled during cooldown; accepting previous response"
+                        );
+                        return true;
+                    }
+
                     if (Stopwatch.GetTimestamp() < _retryDueTimestamp)
                         return false;
 
@@ -135,7 +153,8 @@ public static class BattleSessionAutoSL
                         }
                         return true;
                     case UniTaskStatus.Succeeded:
-                        return HandleResponse(Current.GetAwaiter().GetResult());
+                        _lastResponse = Current.GetAwaiter().GetResult();
+                        return HandleResponse(_lastResponse);
                     default:
                         State.ObserveFaulted();
                         Completion.TrySetException(
@@ -175,36 +194,64 @@ public static class BattleSessionAutoSL
 
     private sealed class ExplorationOperation : Operation
     {
-        private readonly ResumedQuestAPIService _resumed;
+        private readonly IExplorationQuestAPIService _apiService;
+        private readonly string _source;
 
         public ExplorationOperation(
-            ResumedQuestAPIService resumed,
+            IExplorationQuestAPIService apiService,
+            string source,
             CancellationToken ct,
             CancellationToken retryCancellationToken,
             UniTask<BattleSessionStatusResponseEntity> initial
         )
             : base(initial, ct, retryCancellationToken)
         {
-            _resumed = resumed;
+            _apiService = apiService;
+            _source = source;
         }
 
         protected override void StartRetry()
         {
-            Current = _resumed._apiService.StartQuestAsync(RetryCancellationToken);
-            Logger.Info($"[F11][BattleAutoSL] exploration retry task status={Current.Status}");
+            Current = _apiService.StartQuestAsync(RetryCancellationToken);
+            Logger.Info(
+                $"[F11][BattleAutoSL] exploration retry task status={Current.Status}, "
+                    + $"source={_source}"
+            );
         }
 
         protected override bool HandleResponse(BattleSessionStatusResponseEntity response)
         {
             if (!Config.BattleSessionAutoSL.Value)
             {
+                Logger.Info(
+                    $"[F11][BattleAutoSL] disabled; accepting current exploration response, "
+                        + $"source={_source}"
+                );
                 Completion.TrySetResult(response);
                 return true;
             }
 
             BattleDropProbeReport report = BattleSessionDropProbe.Parse(response?.stage_detail);
-            LogAttempt("exploration", State.RetryCount, response, report);
-            if (State.ObserveResponse(report) == BattleSessionAutoSLTransition.Retry)
+            BattleSessionAutoSLStopMode stopMode =
+                Config.BattleSessionAutoSLNormalStopMode.Value;
+            BattleSessionDropRarity minimumRarity =
+                Config.BattleSessionAutoSLNormalMinimumRarity.Value;
+            BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.Evaluate(
+                report,
+                stopMode,
+                minimumRarity
+            );
+            LogAttempt(
+                "exploration",
+                _source,
+                State.RetryCount,
+                response,
+                report,
+                evaluation,
+                stopMode,
+                minimumRarity
+            );
+            if (State.ObserveDecision(evaluation.ShouldRetry) == BattleSessionAutoSLTransition.Retry)
             {
                 ScheduleRetry("exploration");
                 return false;
@@ -217,36 +264,64 @@ public static class BattleSessionAutoSL
 
     private sealed class DisasterOperation : Operation
     {
-        private readonly ResumedDisasterQuestAPIService _resumed;
+        private readonly IDisasterQuestAPIService _apiService;
+        private readonly string _source;
 
         public DisasterOperation(
-            ResumedDisasterQuestAPIService resumed,
+            IDisasterQuestAPIService apiService,
+            string source,
             CancellationToken ct,
             CancellationToken retryCancellationToken,
             UniTask<BattleSessionStatusResponseEntity> initial
         )
             : base(initial, ct, retryCancellationToken)
         {
-            _resumed = resumed;
+            _apiService = apiService;
+            _source = source;
         }
 
         protected override void StartRetry()
         {
-            Current = _resumed._apiService.StartQuestAsync(RetryCancellationToken);
-            Logger.Info($"[F11][BattleAutoSL] disaster retry task status={Current.Status}");
+            Current = _apiService.StartQuestAsync(RetryCancellationToken);
+            Logger.Info(
+                $"[F11][BattleAutoSL] disaster retry task status={Current.Status}, "
+                    + $"source={_source}"
+            );
         }
 
         protected override bool HandleResponse(BattleSessionStatusResponseEntity response)
         {
             if (!Config.BattleSessionAutoSL.Value)
             {
+                Logger.Info(
+                    $"[F11][BattleAutoSL] disabled; accepting current disaster response, "
+                        + $"source={_source}"
+                );
                 Completion.TrySetResult(response);
                 return true;
             }
 
             BattleDropProbeReport report = BattleSessionDropProbe.Parse(response?.stage_detail);
-            LogAttempt("disaster", State.RetryCount, response, report);
-            if (State.ObserveResponse(report) == BattleSessionAutoSLTransition.Retry)
+            BattleSessionAutoSLStopMode stopMode =
+                Config.BattleSessionAutoSLNormalStopMode.Value;
+            BattleSessionDropRarity minimumRarity =
+                Config.BattleSessionAutoSLNormalMinimumRarity.Value;
+            BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.Evaluate(
+                report,
+                stopMode,
+                minimumRarity
+            );
+            LogAttempt(
+                "disaster",
+                _source,
+                State.RetryCount,
+                response,
+                report,
+                evaluation,
+                stopMode,
+                minimumRarity
+            );
+            if (State.ObserveDecision(evaluation.ShouldRetry) == BattleSessionAutoSLTransition.Retry)
             {
                 ScheduleRetry("disaster");
                 return false;
@@ -259,28 +334,34 @@ public static class BattleSessionAutoSL
 
     private sealed class NetherOperation : Operation
     {
-        private readonly ExplorationQuestPreserveAPIService _preserved;
+        private readonly IExplorationQuestAPIService _apiService;
         private readonly NetherAPIService _netherApiService;
+        private readonly string _source;
 
         protected override string LogPrefix => "[F11][NetherAutoSL]";
 
         public NetherOperation(
-            ExplorationQuestPreserveAPIService preserved,
+            IExplorationQuestAPIService apiService,
             NetherAPIService netherApiService,
+            string source,
             CancellationToken ct,
             CancellationToken retryCancellationToken,
             UniTask<BattleSessionStatusResponseEntity> initial
         )
             : base(initial, ct, retryCancellationToken)
         {
-            _preserved = preserved;
+            _apiService = apiService;
             _netherApiService = netherApiService;
+            _source = source;
         }
 
         protected override void StartRetry()
         {
-            Current = _preserved._apiService.StartQuestAsync(RetryCancellationToken);
-            Logger.Info($"{LogPrefix} retry task status={Current.Status}, {FormatLocation()}");
+            Current = _apiService.StartQuestAsync(RetryCancellationToken);
+            Logger.Info(
+                $"{LogPrefix} retry task status={Current.Status}, source={_source}, "
+                    + FormatLocation()
+            );
         }
 
         protected override bool HandleResponse(BattleSessionStatusResponseEntity response)
@@ -295,22 +376,54 @@ public static class BattleSessionAutoSL
             NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(
                 response?.stage_detail
             );
+            BattleSessionAutoSLStopMode stopMode = Config.BattleSessionAutoSLNetherStopMode.Value;
+            BattleSessionDropRarity minimumRarity =
+                Config.BattleSessionAutoSLNetherMinimumRarity.Value;
+            bool equipmentOnly = Config.BattleSessionAutoSLNetherEquipmentOnly.Value;
+            NetherPreserveMode preserveMode = Config.BattleSessionAutoSLNetherPreserveMode.Value;
+            bool preserveConfigValid = NetherPreserveItemIdParser.TryParse(
+                Config.BattleSessionAutoSLNetherPreserveItemIds.Value,
+                out HashSet<long> preservedItemIds,
+                out string preserveConfigError
+            );
+
+            IReadOnlyDictionary<long, NetherItemMasterInfo> masterItems = null;
+            string masterError = string.Empty;
+            bool requiresMasterItems = equipmentOnly || preservedItemIds.Count > 0;
+            bool hasMasterItems = !requiresMasterItems
+                || NetherItemMasterCatalog.TryGet(out masterItems, out masterError);
             NetherBattleDropEvaluation evaluation;
-            if (
-                !NetherItemMasterCatalog.TryGet(
-                    out IReadOnlyDictionary<long, NetherItemMasterInfo> masterItems,
-                    out string masterError
-                )
-            )
+            if (!preserveConfigValid)
+            {
+                evaluation = NetherBattleAutoSLPolicy.Error(preserveConfigError);
+            }
+            else if (!hasMasterItems)
             {
                 evaluation = NetherBattleAutoSLPolicy.Error(masterError);
             }
             else
             {
-                evaluation = NetherBattleAutoSLPolicy.Evaluate(report, masterItems);
+                evaluation = NetherBattleAutoSLPolicy.Evaluate(
+                    report,
+                    masterItems,
+                    stopMode,
+                    minimumRarity,
+                    equipmentOnly,
+                    preserveMode,
+                    preservedItemIds
+                );
             }
 
-            LogNetherAttempt(response, report, evaluation);
+            LogNetherAttempt(
+                response,
+                report,
+                evaluation,
+                stopMode,
+                minimumRarity,
+                equipmentOnly,
+                preserveMode,
+                preservedItemIds
+            );
             if (State.ObserveDecision(evaluation.ShouldRetry) == BattleSessionAutoSLTransition.Retry)
             {
                 ScheduleRetry("nether");
@@ -324,7 +437,12 @@ public static class BattleSessionAutoSL
         private void LogNetherAttempt(
             BattleSessionStatusResponseEntity response,
             NetherBattleDropProbeReport report,
-            NetherBattleDropEvaluation evaluation
+            NetherBattleDropEvaluation evaluation,
+            BattleSessionAutoSLStopMode stopMode,
+            BattleSessionDropRarity minimumRarity,
+            bool equipmentOnly,
+            NetherPreserveMode preserveMode,
+            HashSet<long> preservedItemIds
         )
         {
             string decision = evaluation.ShouldRetry
@@ -332,13 +450,25 @@ public static class BattleSessionAutoSL
                 : evaluation.Targets.Count > 0
                     ? "accept-target"
                     : "accept-error";
+            string condition = BattleSessionAutoSLPolicy.DescribeStopCondition(
+                stopMode,
+                minimumRarity
+            );
 
             Logger.Info(
                 $"{LogPrefix} attempt={State.RetryCount + 1}, retry={State.RetryCount}, "
-                    + $"questId={response?.quest_id ?? 0}, stageType={response?.stage_type ?? 0}, "
-                    + $"drops={report.DropCount}, enemyDrops={report.EnemyDropCount}, "
-                    + $"targets={evaluation.Targets.Count}, decision={decision}, "
-                    + $"probeError={report.Error}, policyError={evaluation.Error}, {FormatLocation()}"
+                    + $"source={_source}, questId={response?.quest_id ?? 0}, "
+                    + $"stageType={response?.stage_type ?? 0}, drops={report.DropCount}, "
+                    + $"enemyDrops={report.EnemyDropCount}, targets={evaluation.Targets.Count}, "
+                    + $"equipmentTargets={evaluation.EquipmentTargetCount}, "
+                    + $"preserveTargets={evaluation.PreservedItemTargetCount}, "
+                    + $"combinedMatched={evaluation.StopConditionMatched}, "
+                    + $"decision={decision}, condition={condition}, "
+                    + $"equipmentOnly={equipmentOnly}, "
+                    + $"preserveMode={(preservedItemIds.Count == 0 ? "disabled" : preserveMode.ToString())}, "
+                    + $"preserveItemIds={NetherPreserveItemIdParser.Format(preservedItemIds)}, "
+                    + $"probeError={report.Error}, "
+                    + $"policyError={evaluation.Error}, {FormatLocation()}"
             );
             Logger.Info($"{LogPrefix} allItems={report.FormatAllItems()}");
             Logger.Info($"{LogPrefix} enemyItems={report.FormatEnemyItems()}");
@@ -358,15 +488,31 @@ public static class BattleSessionAutoSL
 
     private static void LogAttempt(
         string mode,
+        string source,
         int retryCount,
         BattleSessionStatusResponseEntity response,
-        BattleDropProbeReport report
+        BattleDropProbeReport report,
+        BattleSessionDropEvaluation evaluation,
+        BattleSessionAutoSLStopMode stopMode,
+        BattleSessionDropRarity minimumRarity
     )
     {
+        string decision = evaluation.ShouldRetry
+            ? "retry"
+            : evaluation.Targets.Count > 0
+                ? "accept-target"
+                : "accept-error";
+        string condition = BattleSessionAutoSLPolicy.DescribeStopCondition(
+            stopMode,
+            minimumRarity
+        );
+
         Logger.Info(
-            $"[F11][BattleAutoSL] mode={mode}, attempt={retryCount + 1}, "
+            $"[F11][BattleAutoSL] mode={mode}, source={source}, attempt={retryCount + 1}, "
                 + $"retry={retryCount}, questId={response?.quest_id ?? 0}, "
-                + $"drops={report.DropCount}, rare={report.RareDropCount}, error={report.Error}"
+                + $"drops={report.DropCount}, rare={report.RareDropCount}, "
+                + $"targets={evaluation.Targets.Count}, decision={decision}, "
+                + $"condition={condition}, error={evaluation.Error}"
         );
         Logger.Info($"[F11][BattleAutoSL] items={report.FormatItemList()}");
     }

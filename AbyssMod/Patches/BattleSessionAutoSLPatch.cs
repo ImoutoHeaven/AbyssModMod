@@ -1,66 +1,58 @@
+using AbyssMod.Services;
 using Cysharp.Threading.Tasks;
 using HarmonyLib;
 using Il2CppInterop.Runtime.InteropTypes;
 using Il2CppSystem.Threading;
 using Project.Api;
 using Project.Ingame.Disaster;
-using Project.Ingame.BattleSceneTransitionStrategy;
 using Project.Ingame.Exploration;
-using AbyssMod.Services;
 
 namespace AbyssMod.Patches;
 
 [HarmonyPatch]
 public static class BattleSessionAutoSLPatch
 {
-    [HarmonyPrefix]
-    [HarmonyPatch(typeof(NetherBattleSceneTransitionStrategy), "TransitionTask")]
-    private static void NetherResumeTransitionPrefix()
-    {
-        if (!Config.BattleSessionAutoSL.Value)
-        {
-            NetherResumeAutoSLGate.Disarm();
-            return;
-        }
-
-        NetherResumeAutoSLGate.Arm();
-        Logger.Info("[F11][NetherAutoSL] interruption resume armed");
-    }
-
     [HarmonyPostfix]
     [HarmonyPatch(
         typeof(ExplorationQuestPreserveAPIService),
         "Project_Ingame_Exploration_IExplorationQuestAPIService_StartQuestAsync"
     )]
-    private static void NetherPostfix(
+    private static void ExplorationPreservePostfix(
         ExplorationQuestPreserveAPIService __instance,
         CancellationToken ct,
         ref UniTask<BattleSessionStatusResponseEntity> __result
     )
     {
-        if (__instance?._apiService == null)
+        if (!Config.BattleSessionAutoSL.Value || __instance?._apiService == null)
             return;
 
+        // StartDungeon awaits this wrapper immediately before InitModelsForDungeon.
+        // Retries use the underlying service so they do not recursively re-enter this patch.
         NetherAPIService netherApiService = __instance._apiService.TryCast<NetherAPIService>();
-        if (netherApiService == null)
-            return;
-
-        if (!NetherResumeAutoSLGate.TryConsume())
-            return;
-
-        if (!Config.BattleSessionAutoSL.Value)
+        if (netherApiService != null)
         {
-            Logger.Info("[F11][NetherAutoSL] resume gate consumed while disabled");
+            Logger.Info(
+                "[F11][NetherAutoSL] pre-model response intercepted; source=preserved"
+            );
+            __result = BattleSessionAutoSL.RunNether(
+                __instance._apiService,
+                netherApiService,
+                __result,
+                ct,
+                "preserved"
+            );
             return;
         }
 
-        Logger.Info("[F11][NetherAutoSL] preserve response intercepted; auto-SL started");
-
-        __result = BattleSessionAutoSL.RunNether(
-            __instance,
-            netherApiService,
+        Logger.Info(
+            "[F11][BattleAutoSL] pre-model response intercepted; "
+                + "mode=exploration, source=preserved"
+        );
+        __result = BattleSessionAutoSL.RunExploration(
+            __instance._apiService,
             __result,
-            ct
+            ct,
+            "preserved"
         );
     }
 
@@ -69,7 +61,7 @@ public static class BattleSessionAutoSLPatch
         typeof(ResumedQuestAPIService),
         "Project_Ingame_Exploration_IExplorationQuestAPIService_StartQuestAsync"
     )]
-    private static void ExplorationPostfix(
+    private static void ExplorationResumePostfix(
         ResumedQuestAPIService __instance,
         CancellationToken ct,
         ref UniTask<BattleSessionStatusResponseEntity> __result
@@ -78,10 +70,41 @@ public static class BattleSessionAutoSLPatch
         if (!Config.BattleSessionAutoSL.Value || __instance?._apiService == null)
             return;
 
+        Logger.Info(
+            "[F11][BattleAutoSL] pre-model response intercepted; "
+                + "mode=exploration, source=resumed"
+        );
         __result = BattleSessionAutoSL.RunExploration(
-            __instance,
+            __instance._apiService,
             __result,
-            ct
+            ct,
+            "resumed"
+        );
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(
+        typeof(DisasterQuestPreserveAPIService),
+        "Project_Ingame_Disaster_IDisasterQuestAPIService_StartQuestAsync"
+    )]
+    private static void DisasterPreservePostfix(
+        DisasterQuestPreserveAPIService __instance,
+        CancellationToken ct,
+        ref UniTask<BattleSessionStatusResponseEntity> __result
+    )
+    {
+        if (!Config.BattleSessionAutoSL.Value || __instance?._apiService == null)
+            return;
+
+        Logger.Info(
+            "[F11][BattleAutoSL] pre-model response intercepted; "
+                + "mode=disaster, source=preserved"
+        );
+        __result = BattleSessionAutoSL.RunDisaster(
+            __instance._apiService,
+            __result,
+            ct,
+            "preserved"
         );
     }
 
@@ -90,7 +113,7 @@ public static class BattleSessionAutoSLPatch
         typeof(ResumedDisasterQuestAPIService),
         "Project_Ingame_Disaster_IDisasterQuestAPIService_StartQuestAsync"
     )]
-    private static void DisasterPostfix(
+    private static void DisasterResumePostfix(
         ResumedDisasterQuestAPIService __instance,
         CancellationToken ct,
         ref UniTask<BattleSessionStatusResponseEntity> __result
@@ -99,10 +122,15 @@ public static class BattleSessionAutoSLPatch
         if (!Config.BattleSessionAutoSL.Value || __instance?._apiService == null)
             return;
 
+        Logger.Info(
+            "[F11][BattleAutoSL] pre-model response intercepted; "
+                + "mode=disaster, source=resumed"
+        );
         __result = BattleSessionAutoSL.RunDisaster(
-            __instance,
+            __instance._apiService,
             __result,
-            ct
+            ct,
+            "resumed"
         );
     }
 }

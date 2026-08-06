@@ -1,5 +1,8 @@
+#nullable enable
+
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -7,10 +10,72 @@ namespace AbyssMod.Services;
 
 public readonly record struct NetherItemMasterInfo(long ItemType, int ContentRarity);
 
+public enum NetherTargetReason
+{
+    EquipmentStopCondition = 0,
+    PreservedNetherItemId = 1,
+}
+
+public enum NetherPreserveMode
+{
+    AND = 0,
+    OR = 1,
+}
+
 public readonly record struct NetherTargetDrop(
     BattleDropItem Drop,
-    NetherItemMasterInfo Master
+    NetherItemMasterInfo Master,
+    NetherTargetReason Reason = NetherTargetReason.EquipmentStopCondition,
+    bool HasMaster = true
 );
+
+public static class NetherPreserveItemIdParser
+{
+    private static readonly char[] Separators = { ',', ';', ' ', '\t', '\r', '\n' };
+
+    public static bool TryParse(
+        string value,
+        out HashSet<long> itemIds,
+        out string error
+    )
+    {
+        itemIds = new HashSet<long>();
+        error = string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+
+        string[] tokens = value.Split(Separators, StringSplitOptions.RemoveEmptyEntries);
+        foreach (string token in tokens)
+        {
+            if (!long.TryParse(
+                    token,
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out long itemId
+                )
+                || itemId <= 0)
+            {
+                itemIds.Clear();
+                error = $"invalid-preserve-item-id:{token}";
+                return false;
+            }
+
+            itemIds.Add(itemId);
+        }
+
+        return true;
+    }
+
+    public static string Format(HashSet<long>? itemIds)
+    {
+        if (itemIds == null || itemIds.Count == 0)
+            return "none";
+
+        var sorted = new List<long>(itemIds);
+        sorted.Sort();
+        return string.Join(",", sorted);
+    }
+}
 
 public sealed class NetherBattleDropProbeReport
 {
@@ -130,15 +195,33 @@ public sealed class NetherBattleDropEvaluation
 {
     public IReadOnlyList<NetherTargetDrop> Targets { get; }
     public string Error { get; }
-    public bool ShouldRetry => Error.Length == 0 && Targets.Count == 0;
+    public bool StopConditionMatched { get; }
+    public int EquipmentTargetCount { get; }
+    public int PreservedItemTargetCount { get; }
+    public bool ShouldRetry => Error.Length == 0 && !StopConditionMatched;
 
     public NetherBattleDropEvaluation(
         IReadOnlyList<NetherTargetDrop> targets,
+        bool stopConditionMatched,
         string error = ""
     )
     {
         Targets = targets;
+        StopConditionMatched = stopConditionMatched;
         Error = error;
+
+        int equipmentTargetCount = 0;
+        int preservedItemTargetCount = 0;
+        foreach (NetherTargetDrop target in targets)
+        {
+            if (target.Reason == NetherTargetReason.PreservedNetherItemId)
+                preservedItemTargetCount++;
+            else if (target.Reason == NetherTargetReason.EquipmentStopCondition)
+                equipmentTargetCount++;
+        }
+
+        EquipmentTargetCount = equipmentTargetCount;
+        PreservedItemTargetCount = preservedItemTargetCount;
     }
 
     public string FormatTargets()
@@ -152,58 +235,167 @@ public sealed class NetherBattleDropEvaluation
             NetherTargetDrop target = Targets[i];
             builder.Append("sid=").Append(target.Drop.Sid)
                 .Append(" contentId=").Append(target.Drop.ContentId)
+                .Append(" reason=").Append(FormatReason(target.Reason))
                 .Append(" dropRarity=").Append(target.Drop.RarityLevel)
-                .Append(" masterType=").Append(target.Master.ItemType)
-                .Append(" masterRarity=").Append(target.Master.ContentRarity)
+                .Append(" masterType=").Append(target.HasMaster ? target.Master.ItemType.ToString() : "n/a")
+                .Append(" masterRarity=").Append(target.HasMaster ? target.Master.ContentRarity.ToString() : "n/a")
                 .Append(" isRare=").Append(target.Drop.IsRare ? 1 : 0);
         }
         return builder.ToString();
     }
+
+    private static string FormatReason(NetherTargetReason reason) => reason switch
+    {
+        NetherTargetReason.EquipmentStopCondition => "equipment-stop",
+        NetherTargetReason.PreservedNetherItemId => "preserve-item-id",
+        _ => $"unknown({(int)reason})",
+    };
 }
 
 public static class NetherBattleAutoSLPolicy
 {
     public const int NetherItemContentType = 31;
+    public const int NetherInventoryItemType = 90;
     public const int NetherEquipmentItemType = 91;
     public const int GoldRarityLevel = 3;
+    public const int RedRarityLevel = 4;
 
     public static NetherBattleDropEvaluation Evaluate(
         NetherBattleDropProbeReport report,
-        IReadOnlyDictionary<long, NetherItemMasterInfo> masterItems
+        IReadOnlyDictionary<long, NetherItemMasterInfo>? masterItems
+    ) => Evaluate(
+        report,
+        masterItems,
+        BattleSessionAutoSLStopMode.Rarity,
+        BattleSessionDropRarity.Gold,
+        true,
+        NetherPreserveMode.AND,
+        null
+    );
+
+    public static NetherBattleDropEvaluation Evaluate(
+        NetherBattleDropProbeReport report,
+        IReadOnlyDictionary<long, NetherItemMasterInfo>? masterItems,
+        BattleSessionAutoSLStopMode stopMode,
+        BattleSessionDropRarity minimumRarity,
+        bool equipmentOnly,
+        NetherPreserveMode preserveMode = NetherPreserveMode.AND,
+        HashSet<long>? preservedItemIds = null
     )
     {
         if (report.Error.Length != 0)
             return Error(report.Error);
-        if (masterItems == null || masterItems.Count == 0)
+        string validationError = BattleSessionAutoSLPolicy.GetStopConditionError(
+            stopMode,
+            minimumRarity
+        );
+        if (validationError.Length != 0)
+            return Error(validationError);
+        bool hasPreserveRules = preservedItemIds != null && preservedItemIds.Count > 0;
+        if (hasPreserveRules && !Enum.IsDefined(typeof(NetherPreserveMode), preserveMode))
+            return Error($"unsupported-preserve-mode:{(int)preserveMode}");
+        if ((equipmentOnly || hasPreserveRules)
+            && (masterItems == null || masterItems.Count == 0))
             return Error("missing-item-master");
 
+        if (hasPreserveRules)
+        {
+            foreach (long itemId in preservedItemIds!)
+            {
+                if (!masterItems!.TryGetValue(itemId, out NetherItemMasterInfo preserveMaster))
+                    return Error($"unknown-preserve-item-id:{itemId}");
+                if (preserveMaster.ItemType != NetherInventoryItemType)
+                    return Error(
+                        $"preserve-item-type-mismatch:{itemId}:{preserveMaster.ItemType}"
+                    );
+            }
+        }
+
         var targets = new List<NetherTargetDrop>();
+        bool equipmentStopMatched = false;
+        bool preservedItemMatched = false;
         foreach (BattleDropItem item in report.EnemyItems)
         {
-            if (!masterItems.TryGetValue(item.ContentId, out NetherItemMasterInfo master))
+            NetherItemMasterInfo master = default;
+            bool hasMaster = masterItems != null
+                && masterItems.TryGetValue(item.ContentId, out master);
+
+            if (hasPreserveRules && preservedItemIds!.Contains(item.ContentId))
+            {
+                if (!hasMaster)
+                    return Error($"unresolved-preserve-item-master:{item.ContentId}");
+                if (item.ContentType != NetherItemContentType)
+                    return Error(
+                        $"preserve-content-type-mismatch:{item.ContentId}:{item.ContentType}"
+                    );
+
+                targets.Add(
+                    new NetherTargetDrop(
+                        item,
+                        master,
+                        NetherTargetReason.PreservedNetherItemId
+                    )
+                );
+                preservedItemMatched = true;
+                continue;
+            }
+
+            if (equipmentOnly && !hasMaster)
             {
                 if (item.ContentType == NetherItemContentType)
                     return Error($"unresolved-nether-item-master:{item.ContentId}");
                 continue;
             }
 
-            if (master.ItemType != NetherEquipmentItemType
-                || item.RarityLevel < GoldRarityLevel)
+            if (equipmentOnly)
+            {
+                if (master.ItemType != NetherEquipmentItemType)
+                    continue;
+
+                if (item.ContentType != NetherItemContentType)
+                    return Error($"content-type-mismatch:{item.ContentId}:{item.ContentType}");
+            }
+
+            if (!BattleSessionAutoSLPolicy.Matches(item, stopMode, minimumRarity))
                 continue;
 
-            if (item.ContentType != NetherItemContentType)
-                return Error($"content-type-mismatch:{item.ContentId}:{item.ContentType}");
-            if (master.ContentRarity != item.RarityLevel)
+            // Live responses collapse ordinary Silver/Purple bags to rarity_level=0 even
+            // though MItems.rarity is 1/2. Exact cross-checking is therefore reliable only
+            // for visible Gold/Red candidates. UniqueWeapon(5) currently has no type=91
+            // master row and remains protected by the type=91 check above.
+            if (equipmentOnly
+                && item.RarityLevel >= GoldRarityLevel
+                && item.RarityLevel <= RedRarityLevel
+                && master.ContentRarity != item.RarityLevel)
+            {
                 return Error(
                     $"rarity-mismatch:{item.ContentId}:{item.RarityLevel}:{master.ContentRarity}"
                 );
+            }
 
-            targets.Add(new NetherTargetDrop(item, master));
+            targets.Add(
+                new NetherTargetDrop(
+                    item,
+                    master,
+                    NetherTargetReason.EquipmentStopCondition,
+                    hasMaster
+                )
+            );
+            equipmentStopMatched = true;
         }
 
-        return new NetherBattleDropEvaluation(targets);
+        bool stopConditionMatched = !hasPreserveRules
+            ? equipmentStopMatched
+            : preserveMode switch
+            {
+                NetherPreserveMode.AND => equipmentStopMatched && preservedItemMatched,
+                NetherPreserveMode.OR => equipmentStopMatched || preservedItemMatched,
+                _ => false,
+            };
+
+        return new NetherBattleDropEvaluation(targets, stopConditionMatched);
     }
 
     public static NetherBattleDropEvaluation Error(string error) =>
-        new(Array.Empty<NetherTargetDrop>(), error);
+        new(Array.Empty<NetherTargetDrop>(), false, error);
 }

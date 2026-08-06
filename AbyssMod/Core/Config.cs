@@ -1,3 +1,4 @@
+using AbyssMod.Services;
 using BepInEx.Configuration;
 using Utility.Toast;
 
@@ -9,6 +10,22 @@ namespace AbyssMod
     /// </summary>
     public static class Config
     {
+        private const string AutoSLStopModeHelp =
+            "StopMode 可选值（判定开战响应 stage_detail.drops）：\n"
+            + "- IsRare：仅接受 is_rare_drop=true；不检查 rarity_level。\n"
+            + "- Rarity：接受 rarity_level >= 对应 MinimumRarity；不要求 is_rare_drop。\n"
+            + "- IsRareOrRarity：上述任一条件成立即停止。\n"
+            + "- IsRareAndRarity：上述两个条件同时成立才停止。";
+
+        private const string AutoSLRarityHelp =
+            "Rarity/MinimumRarity 等级：\n"
+            + "- NoEffect=0\n"
+            + "- Silver=1\n"
+            + "- Purple=2\n"
+            + "- Gold=3\n"
+            + "- Red=4\n"
+            + "- UniqueWeapon=5";
+
         private static bool _enforcingUpstreamTranslationPolicy;
 
 #if DEBUG
@@ -27,6 +44,13 @@ namespace AbyssMod
         public static ConfigEntry<bool> BattleSessionProbe;
         public static ConfigEntry<bool> BattleSessionAutoSL;
         public static ConfigEntry<float> BattleSessionAutoSLCooldown;
+        public static ConfigEntry<BattleSessionAutoSLStopMode> BattleSessionAutoSLNormalStopMode;
+        public static ConfigEntry<BattleSessionDropRarity> BattleSessionAutoSLNormalMinimumRarity;
+        public static ConfigEntry<BattleSessionAutoSLStopMode> BattleSessionAutoSLNetherStopMode;
+        public static ConfigEntry<BattleSessionDropRarity> BattleSessionAutoSLNetherMinimumRarity;
+        public static ConfigEntry<bool> BattleSessionAutoSLNetherEquipmentOnly;
+        public static ConfigEntry<NetherPreserveMode> BattleSessionAutoSLNetherPreserveMode;
+        public static ConfigEntry<string> BattleSessionAutoSLNetherPreserveItemIds;
         #endregion
 
         #region Translation
@@ -146,13 +170,87 @@ namespace AbyssMod
                 "General",
                 "BattleSessionAutoSL",
                 false,
-                "F11 自动 Resume 刷 rare drop：只在中断战斗恢复时启用"
+                "F11 自动刷目标掉落：在 normal/Nether 战斗模型初始化前持续重投"
             );
             BattleSessionAutoSLCooldown = Plugin.ConfigFile.Bind(
                 "General",
                 "BattleSessionAutoSLCooldown",
                 4.0f,
-                "自动 Resume 重试间隔（秒），必须大于或等于 0"
+                "自动重投间隔（秒），必须大于或等于 0"
+            );
+            BattleSessionAutoSLNormalStopMode = Plugin.ConfigFile.Bind(
+                "BattleSessionAutoSL.Targets",
+                "NormalStopMode",
+                BattleSessionAutoSLStopMode.IsRare,
+                "Normal/Disaster 截止条件。默认 IsRare，保持旧版行为。\n"
+                    + AutoSLStopModeHelp
+            );
+            BattleSessionAutoSLNormalMinimumRarity = Plugin.ConfigFile.Bind(
+                "BattleSessionAutoSL.Targets",
+                "NormalMinimumRarity",
+                BattleSessionDropRarity.Gold,
+                "NormalStopMode 包含 Rarity 时使用的最低 rarity_level；IsRare 模式会忽略本项。\n"
+                    + AutoSLRarityHelp
+            );
+            BattleSessionAutoSLNetherStopMode = Plugin.ConfigFile.Bind(
+                "BattleSessionAutoSL.Targets",
+                "NetherStopMode",
+                BattleSessionAutoSLStopMode.Rarity,
+                "Nether 每层只判定 enemies[*].drops 引用的敌人掉落。\n"
+                    + AutoSLStopModeHelp
+                    + "\nNether 金袋通常是 rarity_level=Gold(3) 且 is_rare_drop=false，"
+                    + "所以默认使用 Rarity。"
+            );
+            BattleSessionAutoSLNetherMinimumRarity = Plugin.ConfigFile.Bind(
+                "BattleSessionAutoSL.Targets",
+                "NetherMinimumRarity",
+                BattleSessionDropRarity.Gold,
+                "NetherStopMode 包含 Rarity 时使用的最低袋子 rarity_level；"
+                    + "Gold 表示金袋或更好。\n"
+                    + AutoSLRarityHelp
+            );
+            BattleSessionAutoSLNetherEquipmentOnly = Plugin.ConfigFile.Bind(
+                "BattleSessionAutoSL.Targets",
+                "NetherEquipmentOnly",
+                true,
+                "Nether 主数据交叉验证：\n"
+                    + "- true（默认）：只接受 MItems.type=91 的 NetherEquipment 装备袋，"
+                    + "Gold/Red 候选还要求 MItems.rarity == 掉落 rarity_level。\n"
+                    + "- false：跳过装备袋分类，任意敌人掉落均可按 StopMode 命中。\n"
+                    + "普通袋实测可能是掉落 rarity_level=0、MItems.rarity=1/2，"
+                    + "所以未命中 StopMode 前不会因二者不同而报错。\n"
+                    + "NetherPreserveItemIds 是独立的 type=90 白名单分支，"
+                    + "由 NetherPreserveMode 决定如何与装备目标组合。"
+            );
+            BattleSessionAutoSLNetherPreserveMode = Plugin.ConfigFile.Bind(
+                "BattleSessionAutoSL.Targets",
+                "NetherPreserveMode",
+                NetherPreserveMode.AND,
+                "NetherPreserveItemIds 与装备 StopMode 的组合方式：\n"
+                    + "- AND（默认）：同一次开战响应必须同时包含装备目标和至少一个白名单物品。\n"
+                    + "- OR：出现装备目标或至少一个白名单物品，任一成立即停止重投。\n"
+                    + "当 NetherPreserveItemIds 留空时，保留分支禁用，本项不生效，"
+                    + "仍只按装备 StopMode 判断。"
+            );
+            BattleSessionAutoSLNetherPreserveItemIds = Plugin.ConfigFile.Bind(
+                "BattleSessionAutoSL.Targets",
+                "NetherPreserveItemIds",
+                string.Empty,
+                "Nether MItems.type=90 物品保留白名单；填写十进制 item ID，"
+                    + "多个 ID 用逗号、分号或空白分隔。默认留空表示禁用。\n"
+                    + "只检查 enemies[*].drops；与装备袋 StopMode 的 AND/OR 组合"
+                    + "由 NetherPreserveMode 控制。\n"
+                    + "白名单分支只认 content_type=31 且 MItems.type=90，"
+                    + "不检查 is_rare_drop、rarity_level，也不要求 MItems.rarity 与掉落 rarity 一致。\n"
+                    + "当前可配置 ID：\n"
+                    + "- 200001 = Lost Signal「深渊」：战败时也可带回已获得物品\n"
+                    + "- 200002 = Gate Key「深渊」：深渊入场道具\n"
+                    + "- 200003 = 被侵蚀的齿轮：深部调查素材\n"
+                    + "- 200004 = 侵蚀方块：深部调查素材\n"
+                    + "- 200005 = 被侵蚀的宝石：深部调查素材\n"
+                    + "- 200006 = 被侵蚀的结晶：深部调查素材\n"
+                    + "示例（保留全部深部调查素材）：200003,200004,200005,200006\n"
+                    + "无效 ID、非 type=90 ID 或主数据缺失会 accept-error 并放行，避免卡死。"
             );
             #endregion
 

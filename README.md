@@ -106,6 +106,8 @@ Language = zh_Hans
 
 設定檔位於 `BepInEx\config\AbyssMod.cfg`，首次啟動自動生成。
 
+插件會在 Unity 主執行緒每 `0.25` 秒檢查設定檔；變更連續兩次保持穩定後自動呼叫 BepInEx `Reload()`，通常約 `0.25–0.5` 秒生效。這可避免編輯器尚未完成寫入時讀取半份 cfg。F10 仍可手動立即重載作為備援。Auto-SL 的開關、cooldown、StopMode、rarity、AND/OR 模式和物品白名單會從下一次響應判定開始使用新值。
+
 ### `[General]`
 
 | 配置項              | 預設值  | 說明                   |
@@ -114,6 +116,37 @@ Language = zh_Hans
 | `SoundCaution`      | `false` | 是否彈出音量提醒       |
 | `VoiceInterruption` | `false` | 是否啟用語音中斷       |
 | `TitleMovie`        | `true`  | 是否播放標題動畫       |
+| `BattleSessionAutoSL` | `false` | F11 自動重投 normal/Nether 開戰響應，命中目標後才初始化戰鬥模型 |
+| `BattleSessionAutoSLCooldown` | `4.0` | 兩次重投請求之間的冷卻秒數 |
+
+### `[BattleSessionAutoSL.Targets]`
+
+`is_rare_drop` 與 `rarity_level` 是兩個不同訊號。Nether 金袋為 `rarity_level=Gold(3)`，其 `is_rare_drop` 通常仍是 `false`。
+
+| 配置項 | 預設值 | 說明 |
+| ------ | ------ | ---- |
+| `NormalStopMode` | `IsRare` | Normal/Disaster 截止模式：`IsRare`、`Rarity`、`IsRareOrRarity`、`IsRareAndRarity` |
+| `NormalMinimumRarity` | `Gold` | Normal 模式包含 `Rarity` 時的最低掉落等級 |
+| `NetherStopMode` | `Rarity` | Nether 每層敵人掉落的截止模式 |
+| `NetherMinimumRarity` | `Gold` | `Gold` 表示金袋或更好；也可設為 `Red` 或 `UniqueWeapon` |
+| `NetherEquipmentOnly` | `true` | 只接受經 `MItems` 驗證為 Nether 裝備袋（type 91）的目標 |
+| `NetherPreserveMode` | `AND` | 白名單與裝備 StopMode 的組合方式：`AND` 或 `OR` |
+| `NetherPreserveItemIds` | 空 | type 90 物品 ID 白名單；空值表示停用保留分支 |
+
+rarity 可選值依序為：`NoEffect`、`Silver`、`Purple`、`Gold`、`Red`、`UniqueWeapon`。
+`NetherPreserveItemIds` 接受逗號、分號或空白分隔的十進制 ID，且不使用掉落的 `is_rare_drop` / `rarity_level`：
+
+- `200001`：Lost Signal「深淵」（戰敗時也可帶回已獲得物品）
+- `200002`：Gate Key「深淵」（深淵入場道具）
+- `200003`：被侵蝕的齒輪（深部調查素材）
+- `200004`：侵蝕方塊（深部調查素材）
+- `200005`：被侵蝕的寶石（深部調查素材）
+- `200006`：被侵蝕的結晶（深部調查素材）
+
+`NetherPreserveMode = AND` 要求同一次響應同時包含裝備目標和白名單物品；`OR` 接受任一類。白名單留空時組合模式不生效，仍只按裝備 StopMode 判斷。
+
+例如保留全部深部調查素材：`NetherPreserveItemIds = 200003,200004,200005,200006`。普通 Silver/Purple 袋的開戰響應可能把 `rarity_level` 折疊為 `0`，因此 `MItems.rarity` 精確一致性只檢查 Gold/Red 裝備候選。
+若開戰響應無法解析、cfg 枚舉無效或 Nether 主資料交叉驗證失敗，Auto-SL 會記錄 `accept-error` 並放行當前響應，避免永久卡住。
 
 ### `[Translation]`
 
@@ -246,6 +279,7 @@ Language = zh_Hans
 | `F8`   | 開啟 / 關閉劇情翻譯 |
 | `F9`   | 開啟 / 關閉語音中斷 |
 | `F10`  | 熱重載配置檔案    |
+| `F11`  | 開啟 / 關閉進戰前 Auto-SL；關閉時放行目前已取得的響應 |
 
 ---
 

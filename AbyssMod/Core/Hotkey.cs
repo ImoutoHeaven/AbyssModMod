@@ -22,11 +22,13 @@ public class Hotkey : MonoBehaviour
 
     private void Update()
     {
+        ConfigAutoReload.Update(Time.unscaledTime);
         BattleSessionAutoSL.Update();
 
         if (Input.GetKeyDown(KeyCode.F8) && CanTrigger(KeyCode.F8))
         {
             Config.Translation.Value = !Config.Translation.Value;
+            ConfigAutoReload.AcknowledgeCurrent();
             TranslationPatch.RefreshCurrentMessage();
         }
         CheckToggle(KeyCode.F9, () => Config.VoiceInterruption);
@@ -34,15 +36,40 @@ public class Hotkey : MonoBehaviour
         if (Input.GetKeyDown(KeyCode.F10) && CanTrigger(KeyCode.F10))
         {
             Plugin.ConfigFile.Reload();
+            ConfigAutoReload.AcknowledgeCurrent();
             Logger.Info("Config reloaded");
         }
 
         if (Input.GetKeyDown(KeyCode.F11) && CanTrigger(KeyCode.F11))
         {
             Config.BattleSessionAutoSL.Value = !Config.BattleSessionAutoSL.Value;
+            ConfigAutoReload.AcknowledgeCurrent();
             Logger.Info(
                 $"[F11] Battle session auto-SL {(Config.BattleSessionAutoSL.Value ? "ON" : "OFF")}"
             );
+            if (Config.BattleSessionAutoSL.Value)
+            {
+                Logger.Info(
+                    "[F11] targets: normal="
+                        + BattleSessionAutoSLPolicy.DescribeStopCondition(
+                            Config.BattleSessionAutoSLNormalStopMode.Value,
+                            Config.BattleSessionAutoSLNormalMinimumRarity.Value
+                        )
+                        + ", nether="
+                        + BattleSessionAutoSLPolicy.DescribeStopCondition(
+                            Config.BattleSessionAutoSLNetherStopMode.Value,
+                            Config.BattleSessionAutoSLNetherMinimumRarity.Value
+                        )
+                        + $", netherEquipmentOnly={Config.BattleSessionAutoSLNetherEquipmentOnly.Value}"
+                        + $", netherPreserveMode={Config.BattleSessionAutoSLNetherPreserveMode.Value}"
+                        + ", netherPreserveItemIds="
+                        + (string.IsNullOrWhiteSpace(
+                            Config.BattleSessionAutoSLNetherPreserveItemIds.Value
+                        )
+                            ? "none"
+                            : Config.BattleSessionAutoSLNetherPreserveItemIds.Value)
+                );
+            }
         }
 
         if (Config.Translation.Value && Time.unscaledTime - _lastRefreshTime >= RefreshInterval)
@@ -59,6 +86,7 @@ public class Hotkey : MonoBehaviour
         {
             var entry = getter();
             entry.Value = !entry.Value;
+            ConfigAutoReload.AcknowledgeCurrent();
         }
     }
 
