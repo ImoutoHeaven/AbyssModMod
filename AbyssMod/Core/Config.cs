@@ -46,6 +46,7 @@ namespace AbyssMod
         public static ConfigEntry<float> BattleSessionAutoSLCooldown;
         public static ConfigEntry<BattleSessionAutoSLStopMode> BattleSessionAutoSLNormalStopMode;
         public static ConfigEntry<BattleSessionDropRarity> BattleSessionAutoSLNormalMinimumRarity;
+        public static ConfigEntry<BattleSessionNormalContentTypeFilter> BattleSessionAutoSLNormalContentTypes;
         public static ConfigEntry<BattleSessionAutoSLStopMode> BattleSessionAutoSLNetherStopMode;
         public static ConfigEntry<BattleSessionDropRarity> BattleSessionAutoSLNetherMinimumRarity;
         public static ConfigEntry<bool> BattleSessionAutoSLNetherEquipmentOnly;
@@ -191,6 +192,19 @@ namespace AbyssMod
                 BattleSessionDropRarity.Gold,
                 "NormalStopMode 包含 Rarity 时使用的最低 rarity_level；IsRare 模式会忽略本项。\n"
                     + AutoSLRarityHelp
+            );
+            BattleSessionAutoSLNormalContentTypes = Plugin.ConfigFile.Bind(
+                "BattleSessionAutoSL.Targets",
+                "NormalContentTypes",
+                BattleSessionNormalContentTypeFilter.Any,
+                "Normal/Disaster 截止目标的 content_type 过滤器；在 StopMode 命中后再应用。\n"
+                    + "- Any（默认）：不指定类型，保持旧行为；材料、武器、护甲等均可命中。\n"
+                    + "- Weapon：只接受武器，游戏 content_type=70。\n"
+                    + "- Armor：只接受护甲，游戏 content_type=80。\n"
+                    + "- Accessory：只接受护符/饰品，游戏 content_type=90。\n"
+                    + "可用英文逗号组合任意类型，例如 Weapon, Armor 或 Weapon, Accessory。\n"
+                    + "注意：枚举内部的 1/2/4 是组合掩码，不是游戏 content_type；建议在 cfg 中填写名称。\n"
+                    + "非法值会 accept-error 并放行当前响应，避免无限重投。"
             );
             BattleSessionAutoSLNetherStopMode = Plugin.ConfigFile.Bind(
                 "BattleSessionAutoSL.Targets",

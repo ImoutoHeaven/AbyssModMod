@@ -69,6 +69,114 @@ public class BattleSessionAutoSLPolicyTests
         Assert.Empty(evaluation.Targets);
     }
 
+    [Fact]
+    public void Any_content_type_preserves_legacy_unfiltered_behavior()
+    {
+        var report = new BattleDropProbeReport(
+            [new BattleDropItem(1, 30, 50001, 1, 4, true)],
+            1
+        );
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.Evaluate(
+            report,
+            BattleSessionAutoSLStopMode.Rarity,
+            BattleSessionDropRarity.Red,
+            BattleSessionNormalContentTypeFilter.Any
+        );
+
+        Assert.False(evaluation.ShouldRetry);
+        Assert.Equal(1, Assert.Single(evaluation.Targets).Sid);
+    }
+
+    [Fact]
+    public void Content_type_filter_accepts_any_selected_equipment_combination()
+    {
+        var report = new BattleDropProbeReport(
+            [
+                new BattleDropItem(1, 70, 1001, 1, 4, true),
+                new BattleDropItem(2, 80, 1002, 1, 4, true),
+                new BattleDropItem(3, 90, 1003, 1, 4, true),
+                new BattleDropItem(4, 30, 1004, 1, 4, true),
+            ],
+            4
+        );
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.Evaluate(
+            report,
+            BattleSessionAutoSLStopMode.Rarity,
+            BattleSessionDropRarity.Red,
+            BattleSessionNormalContentTypeFilter.Weapon
+                | BattleSessionNormalContentTypeFilter.Accessory
+        );
+
+        Assert.False(evaluation.ShouldRetry);
+        Assert.Equal([1L, 3L], evaluation.Targets.Select(item => item.Sid));
+    }
+
+    [Fact]
+    public void Selecting_all_equipment_types_still_excludes_non_equipment_content()
+    {
+        var report = new BattleDropProbeReport(
+            [new BattleDropItem(1, 30, 50001, 1, 4, true)],
+            1
+        );
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.Evaluate(
+            report,
+            BattleSessionAutoSLStopMode.Rarity,
+            BattleSessionDropRarity.Red,
+            BattleSessionNormalContentTypeFilter.Weapon
+                | BattleSessionNormalContentTypeFilter.Armor
+                | BattleSessionNormalContentTypeFilter.Accessory
+        );
+
+        Assert.True(evaluation.ShouldRetry);
+        Assert.Empty(evaluation.Targets);
+    }
+
+    [Fact]
+    public void Invalid_content_type_filter_fails_open_instead_of_retrying_forever()
+    {
+        var report = new BattleDropProbeReport([], 0);
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.Evaluate(
+            report,
+            BattleSessionAutoSLStopMode.Rarity,
+            BattleSessionDropRarity.Red,
+            (BattleSessionNormalContentTypeFilter)8
+        );
+
+        Assert.False(evaluation.ShouldRetry);
+        Assert.Equal("unsupported-normal-content-types:8", evaluation.Error);
+    }
+
+    [Fact]
+    public void Content_type_filter_description_exposes_game_content_type_values()
+    {
+        Assert.Equal(
+            "rarity>=Red(4), contentTypes=Weapon(70)|Accessory(90)",
+            BattleSessionAutoSLPolicy.DescribeNormalStopCondition(
+                BattleSessionAutoSLStopMode.Rarity,
+                BattleSessionDropRarity.Red,
+                BattleSessionNormalContentTypeFilter.Weapon
+                    | BattleSessionNormalContentTypeFilter.Accessory
+            )
+        );
+    }
+
+    [Fact]
+    public void Flags_value_parses_from_the_cfg_comma_syntax()
+    {
+        BattleSessionNormalContentTypeFilter parsed =
+            Enum.Parse<BattleSessionNormalContentTypeFilter>("Weapon, Accessory");
+
+        Assert.Equal(
+            BattleSessionNormalContentTypeFilter.Weapon
+                | BattleSessionNormalContentTypeFilter.Accessory,
+            parsed
+        );
+    }
+
     [Theory]
     [InlineData(BattleSessionAutoSLStopMode.IsRareOrRarity, true)]
     [InlineData(BattleSessionAutoSLStopMode.IsRareAndRarity, false)]

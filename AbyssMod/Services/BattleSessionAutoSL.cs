@@ -236,10 +236,13 @@ public static class BattleSessionAutoSL
                 Config.BattleSessionAutoSLNormalStopMode.Value;
             BattleSessionDropRarity minimumRarity =
                 Config.BattleSessionAutoSLNormalMinimumRarity.Value;
+            BattleSessionNormalContentTypeFilter contentTypes =
+                Config.BattleSessionAutoSLNormalContentTypes.Value;
             BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.Evaluate(
                 report,
                 stopMode,
-                minimumRarity
+                minimumRarity,
+                contentTypes
             );
             LogAttempt(
                 "exploration",
@@ -249,7 +252,8 @@ public static class BattleSessionAutoSL
                 report,
                 evaluation,
                 stopMode,
-                minimumRarity
+                minimumRarity,
+                contentTypes
             );
             if (State.ObserveDecision(evaluation.ShouldRetry) == BattleSessionAutoSLTransition.Retry)
             {
@@ -257,6 +261,14 @@ public static class BattleSessionAutoSL
                 return false;
             }
 
+            BattleSettlementPayloadTrace.CaptureAccepted(
+                "exploration",
+                _source,
+                State.RetryCount + 1,
+                response,
+                report.Items,
+                evaluation.Targets
+            );
             Completion.TrySetResult(response);
             return true;
         }
@@ -306,10 +318,13 @@ public static class BattleSessionAutoSL
                 Config.BattleSessionAutoSLNormalStopMode.Value;
             BattleSessionDropRarity minimumRarity =
                 Config.BattleSessionAutoSLNormalMinimumRarity.Value;
+            BattleSessionNormalContentTypeFilter contentTypes =
+                Config.BattleSessionAutoSLNormalContentTypes.Value;
             BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.Evaluate(
                 report,
                 stopMode,
-                minimumRarity
+                minimumRarity,
+                contentTypes
             );
             LogAttempt(
                 "disaster",
@@ -319,7 +334,8 @@ public static class BattleSessionAutoSL
                 report,
                 evaluation,
                 stopMode,
-                minimumRarity
+                minimumRarity,
+                contentTypes
             );
             if (State.ObserveDecision(evaluation.ShouldRetry) == BattleSessionAutoSLTransition.Retry)
             {
@@ -327,6 +343,14 @@ public static class BattleSessionAutoSL
                 return false;
             }
 
+            BattleSettlementPayloadTrace.CaptureAccepted(
+                "disaster",
+                _source,
+                State.RetryCount + 1,
+                response,
+                report.Items,
+                evaluation.Targets
+            );
             Completion.TrySetResult(response);
             return true;
         }
@@ -430,6 +454,13 @@ public static class BattleSessionAutoSL
                 return false;
             }
 
+            BattleSettlementPayloadTrace.CaptureAcceptedNether(
+                _source,
+                State.RetryCount + 1,
+                response,
+                report.AllItems,
+                evaluation.Targets
+            );
             Completion.TrySetResult(response);
             return true;
         }
@@ -494,7 +525,8 @@ public static class BattleSessionAutoSL
         BattleDropProbeReport report,
         BattleSessionDropEvaluation evaluation,
         BattleSessionAutoSLStopMode stopMode,
-        BattleSessionDropRarity minimumRarity
+        BattleSessionDropRarity minimumRarity,
+        BattleSessionNormalContentTypeFilter contentTypes
     )
     {
         string decision = evaluation.ShouldRetry
@@ -502,9 +534,10 @@ public static class BattleSessionAutoSL
             : evaluation.Targets.Count > 0
                 ? "accept-target"
                 : "accept-error";
-        string condition = BattleSessionAutoSLPolicy.DescribeStopCondition(
+        string condition = BattleSessionAutoSLPolicy.DescribeNormalStopCondition(
             stopMode,
-            minimumRarity
+            minimumRarity,
+            contentTypes
         );
 
         Logger.Info(

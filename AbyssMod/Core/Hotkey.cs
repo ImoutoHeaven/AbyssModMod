@@ -51,9 +51,10 @@ public class Hotkey : MonoBehaviour
             {
                 Logger.Info(
                     "[F11] targets: normal="
-                        + BattleSessionAutoSLPolicy.DescribeStopCondition(
+                        + BattleSessionAutoSLPolicy.DescribeNormalStopCondition(
                             Config.BattleSessionAutoSLNormalStopMode.Value,
-                            Config.BattleSessionAutoSLNormalMinimumRarity.Value
+                            Config.BattleSessionAutoSLNormalMinimumRarity.Value,
+                            Config.BattleSessionAutoSLNormalContentTypes.Value
                         )
                         + ", nether="
                         + BattleSessionAutoSLPolicy.DescribeStopCondition(
