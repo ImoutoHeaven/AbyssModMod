@@ -28,11 +28,14 @@ public sealed class BattleSessionAutoSLStateMachine
         IsTerminal ? BattleSessionAutoSLTransition.Complete : BattleSessionAutoSLTransition.Pending;
 
     public BattleSessionAutoSLTransition ObserveResponse(BattleDropProbeReport report)
+        => ObserveDecision(BattleSessionAutoSLPolicy.ShouldRetry(report));
+
+    public BattleSessionAutoSLTransition ObserveDecision(bool shouldRetry)
     {
         if (IsTerminal)
             return BattleSessionAutoSLTransition.Complete;
 
-        if (!BattleSessionAutoSLPolicy.ShouldRetry(report))
+        if (!shouldRetry)
         {
             State = BattleSessionAutoSLState.Completed;
             return BattleSessionAutoSLTransition.Complete;

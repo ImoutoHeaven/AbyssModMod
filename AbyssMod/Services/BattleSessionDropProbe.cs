@@ -74,7 +74,7 @@ public static class BattleSessionDropProbe
             foreach (JsonElement drop in drops.EnumerateArray())
             {
                 if (drop.ValueKind != JsonValueKind.Object
-                    || !TryReadInt(drop, "sid", out int sid)
+                    || !TryReadLong(drop, "sid", out long sid)
                     || !TryReadInt(drop, "content_type", out int contentType)
                     || !TryReadLong(drop, "content_id", out long contentId)
                     || !TryReadInt(drop, "amount", out int amount)

@@ -85,4 +85,15 @@ public class BattleSessionDropProbeTests
 
         Assert.Equal("parse-error", report.Error);
     }
+
+    [Fact]
+    public void Parse_reads_drop_sid_as_int64()
+    {
+        BattleDropProbeReport report = BattleSessionDropProbe.Parse(
+            "{\"drops\":[{\"sid\":3000000001,\"content_type\":31,\"content_id\":210021,\"amount\":1,\"rarity_level\":3,\"is_rare_drop\":0}]}"
+        );
+
+        Assert.Equal("", report.Error);
+        Assert.Equal(3000000001, Assert.Single(report.Items).Sid);
+    }
 }

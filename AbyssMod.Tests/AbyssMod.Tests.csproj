@@ -28,6 +28,7 @@
     <Compile Include="..\AbyssMod\Services\NovelTranslationLoadPolicy.cs" Link="NovelTranslationLoadPolicy.cs" />
     <Compile Include="..\AbyssMod\Services\StaticBundleProtocol.cs" Link="StaticBundleProtocol.cs" />
     <Compile Include="..\AbyssMod\Services\BattleSessionDropProbe.cs" Link="BattleSessionDropProbe.cs" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleDropProbe.cs" Link="NetherBattleDropProbe.cs" />
     <Compile Include="..\AbyssMod\Services\BattleSessionAutoSLPolicy.cs" Link="BattleSessionAutoSLPolicy.cs" />
     <Compile Include="..\AbyssMod\Services\BattleSessionAutoSLStateMachine.cs" Link="BattleSessionAutoSLStateMachine.cs" />
     <Compile Include="..\AbyssMod\Core\UpstreamTranslationPolicy.cs" Link="UpstreamTranslationPolicy.cs" />

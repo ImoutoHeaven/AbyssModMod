@@ -46,6 +46,24 @@ public static class BattleSessionAutoSL
         return operation.Task;
     }
 
+    public static UniTask<BattleSessionStatusResponseEntity> RunNether(
+        ExplorationQuestPreserveAPIService preserved,
+        NetherAPIService netherApiService,
+        UniTask<BattleSessionStatusResponseEntity> initial,
+        CancellationToken ct
+    )
+    {
+        var operation = new NetherOperation(
+            preserved,
+            netherApiService,
+            ct,
+            Engine.RebootCancellationToken,
+            initial
+        );
+        Operations.Add(operation);
+        return operation.Task;
+    }
+
     public static void Update()
     {
         for (int i = Operations.Count - 1; i >= 0; i--)
@@ -64,6 +82,8 @@ public static class BattleSessionAutoSL
         protected readonly CancellationToken RetryCancellationToken;
         protected UniTask<BattleSessionStatusResponseEntity> Current;
         private long _retryDueTimestamp;
+
+        protected virtual string LogPrefix => "[F11][BattleAutoSL]";
 
         protected Operation(
             UniTask<BattleSessionStatusResponseEntity> initial,
@@ -110,7 +130,7 @@ public static class BattleSessionAutoSL
                         }
                         catch (Exception ex)
                         {
-                            Logger.Error($"[F11][BattleAutoSL] source fault: {ex}");
+                            Logger.Error($"{LogPrefix} source fault: {ex}");
                             Completion.TrySetException(new Il2CppSystem.Exception(ex.Message));
                         }
                         return true;
@@ -126,7 +146,7 @@ public static class BattleSessionAutoSL
             }
             catch (Exception ex)
             {
-                Logger.Error($"[F11][BattleAutoSL] update fault: {ex}");
+                Logger.Error($"{LogPrefix} update fault: {ex}");
                 State.ObserveFaulted();
                 Completion.TrySetException(new Il2CppSystem.Exception(ex.Message));
                 return true;
@@ -145,7 +165,7 @@ public static class BattleSessionAutoSL
             _retryDueTimestamp = Stopwatch.GetTimestamp()
                 + (long)(cooldownSeconds * Stopwatch.Frequency);
             Logger.Info(
-                $"[F11][BattleAutoSL] {mode} retry scheduled, "
+                $"{LogPrefix} {mode} retry scheduled, "
                     + $"requestCanceled={RequestCancellationToken.IsCancellationRequested}, "
                     + $"retryCanceled={RetryCancellationToken.IsCancellationRequested}, "
                     + $"cooldown={cooldownSeconds:0.0}s"
@@ -234,6 +254,105 @@ public static class BattleSessionAutoSL
 
             Completion.TrySetResult(response);
             return true;
+        }
+    }
+
+    private sealed class NetherOperation : Operation
+    {
+        private readonly ExplorationQuestPreserveAPIService _preserved;
+        private readonly NetherAPIService _netherApiService;
+
+        protected override string LogPrefix => "[F11][NetherAutoSL]";
+
+        public NetherOperation(
+            ExplorationQuestPreserveAPIService preserved,
+            NetherAPIService netherApiService,
+            CancellationToken ct,
+            CancellationToken retryCancellationToken,
+            UniTask<BattleSessionStatusResponseEntity> initial
+        )
+            : base(initial, ct, retryCancellationToken)
+        {
+            _preserved = preserved;
+            _netherApiService = netherApiService;
+        }
+
+        protected override void StartRetry()
+        {
+            Current = _preserved._apiService.StartQuestAsync(RetryCancellationToken);
+            Logger.Info($"{LogPrefix} retry task status={Current.Status}, {FormatLocation()}");
+        }
+
+        protected override bool HandleResponse(BattleSessionStatusResponseEntity response)
+        {
+            if (!Config.BattleSessionAutoSL.Value)
+            {
+                Logger.Info($"{LogPrefix} disabled; accepting current response");
+                Completion.TrySetResult(response);
+                return true;
+            }
+
+            NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(
+                response?.stage_detail
+            );
+            NetherBattleDropEvaluation evaluation;
+            if (
+                !NetherItemMasterCatalog.TryGet(
+                    out IReadOnlyDictionary<long, NetherItemMasterInfo> masterItems,
+                    out string masterError
+                )
+            )
+            {
+                evaluation = NetherBattleAutoSLPolicy.Error(masterError);
+            }
+            else
+            {
+                evaluation = NetherBattleAutoSLPolicy.Evaluate(report, masterItems);
+            }
+
+            LogNetherAttempt(response, report, evaluation);
+            if (State.ObserveDecision(evaluation.ShouldRetry) == BattleSessionAutoSLTransition.Retry)
+            {
+                ScheduleRetry("nether");
+                return false;
+            }
+
+            Completion.TrySetResult(response);
+            return true;
+        }
+
+        private void LogNetherAttempt(
+            BattleSessionStatusResponseEntity response,
+            NetherBattleDropProbeReport report,
+            NetherBattleDropEvaluation evaluation
+        )
+        {
+            string decision = evaluation.ShouldRetry
+                ? "retry"
+                : evaluation.Targets.Count > 0
+                    ? "accept-target"
+                    : "accept-error";
+
+            Logger.Info(
+                $"{LogPrefix} attempt={State.RetryCount + 1}, retry={State.RetryCount}, "
+                    + $"questId={response?.quest_id ?? 0}, stageType={response?.stage_type ?? 0}, "
+                    + $"drops={report.DropCount}, enemyDrops={report.EnemyDropCount}, "
+                    + $"targets={evaluation.Targets.Count}, decision={decision}, "
+                    + $"probeError={report.Error}, policyError={evaluation.Error}, {FormatLocation()}"
+            );
+            Logger.Info($"{LogPrefix} allItems={report.FormatAllItems()}");
+            Logger.Info($"{LogPrefix} enemyItems={report.FormatEnemyItems()}");
+            Logger.Info($"{LogPrefix} targets={evaluation.FormatTargets()}");
+        }
+
+        private string FormatLocation()
+        {
+            var param = _netherApiService?._param;
+            if (param == null)
+                return "netherLocation=missing";
+
+            return $"netherId={param.MNetherId}, mapId={param.MNetherMapId}, "
+                + $"floor={param.FloorLevel}:{param.FloorIndex}";
         }
     }
 
