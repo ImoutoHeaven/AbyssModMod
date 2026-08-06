@@ -68,7 +68,8 @@ public class NetherBattleDropProbeTests
 
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
-            masterItems
+            masterItems,
+            NetherSlTarget.Gold
         );
 
         Assert.False(evaluation.ShouldRetry);
@@ -100,7 +101,8 @@ public class NetherBattleDropProbeTests
 
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
-            masterItems
+            masterItems,
+            NetherSlTarget.Gold
         );
 
         Assert.True(evaluation.ShouldRetry);
@@ -126,7 +128,8 @@ public class NetherBattleDropProbeTests
 
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
-            masterItems
+            masterItems,
+            NetherSlTarget.Gold
         );
 
         Assert.True(evaluation.ShouldRetry);
@@ -185,8 +188,7 @@ public class NetherBattleDropProbeTests
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
             masterItems,
-            BattleSessionAutoSLStopMode.Rarity,
-            BattleSessionDropRarity.Gold,
+            NetherSlTarget.Gold,
             equipmentOnly: true,
             preserveMode: NetherPreserveMode.OR,
             preservedItemIds: new HashSet<long> { 200003 }
@@ -222,8 +224,7 @@ public class NetherBattleDropProbeTests
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
             masterItems,
-            BattleSessionAutoSLStopMode.Rarity,
-            BattleSessionDropRarity.Gold,
+            NetherSlTarget.Gold,
             equipmentOnly: true,
             preserveMode: NetherPreserveMode.AND,
             preservedItemIds: new HashSet<long> { 200003 }
@@ -250,8 +251,7 @@ public class NetherBattleDropProbeTests
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
             masterItems,
-            BattleSessionAutoSLStopMode.Rarity,
-            BattleSessionDropRarity.Gold,
+            NetherSlTarget.Gold,
             equipmentOnly: true,
             preserveMode: NetherPreserveMode.AND,
             preservedItemIds: new HashSet<long> { 200003 }
@@ -288,8 +288,7 @@ public class NetherBattleDropProbeTests
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
             masterItems,
-            BattleSessionAutoSLStopMode.Rarity,
-            BattleSessionDropRarity.Gold,
+            NetherSlTarget.Gold,
             equipmentOnly: true,
             preserveMode: NetherPreserveMode.AND,
             preservedItemIds: new HashSet<long> { 200003 }
@@ -315,8 +314,7 @@ public class NetherBattleDropProbeTests
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
             masterItems,
-            BattleSessionAutoSLStopMode.Rarity,
-            BattleSessionDropRarity.Gold,
+            NetherSlTarget.Gold,
             equipmentOnly: true,
             preserveMode: NetherPreserveMode.AND,
             preservedItemIds: new HashSet<long>()
@@ -351,8 +349,7 @@ public class NetherBattleDropProbeTests
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
             masterItems,
-            BattleSessionAutoSLStopMode.Rarity,
-            BattleSessionDropRarity.Gold,
+            NetherSlTarget.Gold,
             equipmentOnly: true,
             preservedItemIds: new HashSet<long> { 200003 }
         );
@@ -374,8 +371,7 @@ public class NetherBattleDropProbeTests
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
             masterItems,
-            BattleSessionAutoSLStopMode.Rarity,
-            BattleSessionDropRarity.Gold,
+            NetherSlTarget.Gold,
             equipmentOnly: true,
             preservedItemIds: new HashSet<long> { 210021 }
         );
@@ -396,7 +392,8 @@ public class NetherBattleDropProbeTests
 
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
-            masterItems
+            masterItems,
+            NetherSlTarget.Gold
         );
 
         Assert.False(evaluation.ShouldRetry);
@@ -424,8 +421,7 @@ public class NetherBattleDropProbeTests
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
             masterItems,
-            BattleSessionAutoSLStopMode.Rarity,
-            BattleSessionDropRarity.UniqueWeapon,
+            NetherSlTarget.UniqueWeapon,
             equipmentOnly: true
         );
 
@@ -453,34 +449,146 @@ public class NetherBattleDropProbeTests
 
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
-            masterItems
+            masterItems,
+            NetherSlTarget.Gold
         );
 
         Assert.False(evaluation.ShouldRetry);
         Assert.Single(evaluation.Targets);
     }
 
-    [Fact]
-    public void Policy_can_require_is_rare_instead_of_gold_rarity()
+    [Theory]
+    [InlineData(NetherSlTarget.Gold, 3, 3, true)]
+    [InlineData(NetherSlTarget.Gold, 4, 4, true)]
+    [InlineData(NetherSlTarget.Gold, 5, 4, true)]
+    [InlineData(NetherSlTarget.Gold, 2, 2, false)]
+    [InlineData(NetherSlTarget.Red, 4, 4, true)]
+    [InlineData(NetherSlTarget.Red, 5, 4, true)]
+    [InlineData(NetherSlTarget.Red, 3, 3, false)]
+    [InlineData(NetherSlTarget.UniqueWeapon, 5, 4, true)]
+    [InlineData(NetherSlTarget.UniqueWeapon, 4, 4, false)]
+    [InlineData(NetherSlTarget.Silver, 0, 1, true)]
+    [InlineData(NetherSlTarget.Purple, 0, 2, true)]
+    [InlineData(NetherSlTarget.Gold, 0, 2, false)]
+    public void Policy_applies_minimum_targets_and_effective_master_rarity(
+        NetherSlTarget target,
+        int rawRarity,
+        int masterRarity,
+        bool expectedMatch
+    )
     {
-        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(StageDetail);
-        var masterItems = new Dictionary<long, NetherItemMasterInfo>
-        {
-            [210021] = new(91, 3),
-            [210011] = new(91, 2),
-            [210031] = new(91, 4),
-        };
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(OneEnemyDrop(rawRarity));
+        var masterItems = new Dictionary<long, NetherItemMasterInfo> { [210021] = new(91, masterRarity) };
 
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
-            report,
-            masterItems,
-            BattleSessionAutoSLStopMode.IsRare,
-            BattleSessionDropRarity.Gold,
-            equipmentOnly: true
+            report, masterItems, target, equipmentOnly: true
+        );
+
+        Assert.Equal(expectedMatch, evaluation.StopConditionMatched);
+        Assert.Equal(string.Empty, evaluation.Error);
+        if (expectedMatch)
+            Assert.Equal(rawRarity == 0 ? masterRarity : rawRarity, Assert.Single(evaluation.Targets).EffectiveRarity);
+    }
+
+    [Fact]
+    public void Policy_does_not_promote_raw_zero_from_master_when_equipment_only_is_false()
+    {
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(OneEnemyDrop(0));
+        var masterItems = new Dictionary<long, NetherItemMasterInfo> { [210021] = new(91, 2) };
+
+        NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
+            report, masterItems, NetherSlTarget.Purple, equipmentOnly: false
         );
 
         Assert.True(evaluation.ShouldRetry);
         Assert.Empty(evaluation.Targets);
+    }
+
+    [Theory]
+    [InlineData(3, 4)]
+    [InlineData(4, 3)]
+    public void Policy_fails_open_for_gold_or_red_master_rarity_mismatch(int rawRarity, int masterRarity)
+    {
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(OneEnemyDrop(rawRarity));
+        var masterItems = new Dictionary<long, NetherItemMasterInfo> { [210021] = new(91, masterRarity) };
+
+        NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
+            report, masterItems, NetherSlTarget.Gold, equipmentOnly: true
+        );
+
+        Assert.False(evaluation.ShouldRetry);
+        Assert.StartsWith("rarity-mismatch:", evaluation.Error);
+    }
+
+    [Fact]
+    public void Policy_rejects_off_target_as_a_runtime_bypass_error()
+    {
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(OneEnemyDrop(5));
+
+        NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
+            report, new Dictionary<long, NetherItemMasterInfo> { [210021] = new(91, 4) }, NetherSlTarget.Off
+        );
+
+        Assert.Equal("invalid-nether-sl-target:-1", evaluation.Error);
+    }
+
+    [Theory]
+    [InlineData(-1, true)]
+    [InlineData(6, true)]
+    [InlineData(-1, false)]
+    [InlineData(6, false)]
+    public void Policy_fails_open_for_out_of_domain_equipment_rarity(int rawRarity, bool equipmentOnly)
+    {
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(OneEnemyDrop(rawRarity));
+        IReadOnlyDictionary<long, NetherItemMasterInfo> masterItems = equipmentOnly
+            ? new Dictionary<long, NetherItemMasterInfo> { [210021] = new(91, 4) }
+            : new Dictionary<long, NetherItemMasterInfo>();
+
+        NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
+            report, masterItems, NetherSlTarget.UniqueWeapon, equipmentOnly
+        );
+
+        Assert.False(evaluation.ShouldRetry);
+        Assert.Equal($"invalid-nether-rarity:210021:{rawRarity}", evaluation.Error);
+    }
+
+    [Fact]
+    public void Policy_preserve_branch_remains_rarity_agnostic_for_out_of_domain_raw_value()
+    {
+        const string preserveDrop = """
+            { "enemies": [{ "sid": 1, "drops": [11] }], "drops": [
+              { "sid": 11, "content_type": 31, "content_id": 200003, "amount": 1, "rarity_level": 6, "is_rare_drop": 0 }
+            ] }
+            """;
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(preserveDrop);
+        var masterItems = new Dictionary<long, NetherItemMasterInfo> { [200003] = new(90, 0) };
+
+        NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
+            report, masterItems, NetherSlTarget.Gold, equipmentOnly: false,
+            preserveMode: NetherPreserveMode.OR, preservedItemIds: new HashSet<long> { 200003 }
+        );
+
+        Assert.True(evaluation.StopConditionMatched);
+        Assert.Equal(string.Empty, evaluation.Error);
+    }
+
+    [Fact]
+    public void Policy_fails_open_for_invalid_preserve_mode_when_rules_are_configured()
+    {
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(OneEnemyDrop(3));
+        var masterItems = new Dictionary<long, NetherItemMasterInfo>
+        {
+            [210021] = new(91, 3),
+            [200003] = new(90, 0),
+        };
+
+        NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
+            report, masterItems, NetherSlTarget.Gold, preserveMode: (NetherPreserveMode)99,
+            preservedItemIds: new HashSet<long> { 200003 }
+        );
+
+        Assert.Equal("unsupported-preserve-mode:99", evaluation.Error);
+        Assert.False(evaluation.ShouldRetry);
     }
 
     [Fact]
@@ -499,8 +607,7 @@ public class NetherBattleDropProbeTests
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
             new Dictionary<long, NetherItemMasterInfo>(),
-            BattleSessionAutoSLStopMode.Rarity,
-            BattleSessionDropRarity.Gold,
+            NetherSlTarget.Gold,
             equipmentOnly: false
         );
 
@@ -516,7 +623,8 @@ public class NetherBattleDropProbeTests
 
         NetherBattleDropEvaluation missingMaster = NetherBattleAutoSLPolicy.Evaluate(
             report,
-            new Dictionary<long, NetherItemMasterInfo>()
+            new Dictionary<long, NetherItemMasterInfo>(),
+            NetherSlTarget.Gold
         );
         Assert.False(missingMaster.ShouldRetry);
         Assert.Equal("missing-item-master", missingMaster.Error);
@@ -528,7 +636,8 @@ public class NetherBattleDropProbeTests
         };
         NetherBattleDropEvaluation mismatchedRarity = NetherBattleAutoSLPolicy.Evaluate(
             report,
-            mismatch
+            mismatch,
+            NetherSlTarget.Gold
         );
         Assert.False(mismatchedRarity.ShouldRetry);
         Assert.StartsWith("rarity-mismatch:", mismatchedRarity.Error);
@@ -546,7 +655,8 @@ public class NetherBattleDropProbeTests
 
         NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
             report,
-            masterItems
+            masterItems,
+            NetherSlTarget.Gold
         );
 
         Assert.False(evaluation.ShouldRetry);
@@ -567,4 +677,32 @@ public class NetherBattleDropProbeTests
 
         Assert.Equal("unresolved-enemy-drop-sid:99", report.Error);
     }
+
+    [Fact]
+    public void Bypass_trace_input_preserves_root_drops_without_policy_evaluation()
+    {
+        NetherBypassTraceInput trace = NetherBypassTraceInput.FromStageDetail(StageDetail);
+
+        Assert.Equal(string.Empty, trace.Error);
+        Assert.Equal(3, trace.RootDrops.Count);
+        Assert.Contains(trace.RootDrops, drop => drop.Sid == 3000000001);
+    }
+
+    [Fact]
+    public void Bypass_trace_input_tolerates_malformed_stage_detail_without_creating_a_retry_gate()
+    {
+        NetherBypassTraceInput trace = NetherBypassTraceInput.FromStageDetail("{ invalid");
+
+        Assert.NotEmpty(trace.Error);
+        Assert.Empty(trace.RootDrops);
+    }
+
+    private static string OneEnemyDrop(int rarity) => $$"""
+        {
+          "enemies": [{ "sid": 1, "drops": [11] }],
+          "drops": [
+            { "sid": 11, "content_type": 31, "content_id": 210021, "amount": 1, "rarity_level": {{rarity}}, "is_rare_drop": 0 }
+          ]
+        }
+        """;
 }

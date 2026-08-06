@@ -56,11 +56,9 @@ public class Hotkey : MonoBehaviour
                             Config.BattleSessionAutoSLNormalMinimumRarity.Value,
                             Config.BattleSessionAutoSLNormalContentTypes.Value
                         )
-                        + ", nether="
-                        + BattleSessionAutoSLPolicy.DescribeStopCondition(
-                            Config.BattleSessionAutoSLNetherStopMode.Value,
-                            Config.BattleSessionAutoSLNetherMinimumRarity.Value
-                        )
+                        + ", netherBattle=" + Config.BattleSessionAutoSLNetherBattleStrategy.Value
+                        + ", netherMiniBoss=" + Config.BattleSessionAutoSLNetherMiniBossStrategy.Value
+                        + ", netherBoss=" + Config.BattleSessionAutoSLNetherBossStrategy.Value
                         + $", netherEquipmentOnly={Config.BattleSessionAutoSLNetherEquipmentOnly.Value}"
                         + $", netherPreserveMode={Config.BattleSessionAutoSLNetherPreserveMode.Value}"
                         + ", netherPreserveItemIds="

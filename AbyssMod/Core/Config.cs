@@ -47,8 +47,9 @@ namespace AbyssMod
         public static ConfigEntry<BattleSessionAutoSLStopMode> BattleSessionAutoSLNormalStopMode;
         public static ConfigEntry<BattleSessionDropRarity> BattleSessionAutoSLNormalMinimumRarity;
         public static ConfigEntry<BattleSessionNormalContentTypeFilter> BattleSessionAutoSLNormalContentTypes;
-        public static ConfigEntry<BattleSessionAutoSLStopMode> BattleSessionAutoSLNetherStopMode;
-        public static ConfigEntry<BattleSessionDropRarity> BattleSessionAutoSLNetherMinimumRarity;
+        public static ConfigEntry<string> BattleSessionAutoSLNetherBattleStrategy;
+        public static ConfigEntry<string> BattleSessionAutoSLNetherMiniBossStrategy;
+        public static ConfigEntry<string> BattleSessionAutoSLNetherBossStrategy;
         public static ConfigEntry<bool> BattleSessionAutoSLNetherEquipmentOnly;
         public static ConfigEntry<NetherPreserveMode> BattleSessionAutoSLNetherPreserveMode;
         public static ConfigEntry<string> BattleSessionAutoSLNetherPreserveItemIds;
@@ -206,22 +207,28 @@ namespace AbyssMod
                     + "注意：枚举内部的 1/2/4 是组合掩码，不是游戏 content_type；建议在 cfg 中填写名称。\n"
                     + "非法值会 accept-error 并放行当前响应，避免无限重投。"
             );
-            BattleSessionAutoSLNetherStopMode = Plugin.ConfigFile.Bind(
+            BattleSessionAutoSLNetherBattleStrategy = Plugin.ConfigFile.Bind(
                 "BattleSessionAutoSL.Targets",
-                "NetherStopMode",
-                BattleSessionAutoSLStopMode.Rarity,
-                "Nether 每层只判定 enemies[*].drops 引用的敌人掉落。\n"
-                    + AutoSLStopModeHelp
-                    + "\nNether 金袋通常是 rarity_level=Gold(3) 且 is_rare_drop=false，"
-                    + "所以默认使用 Rarity。"
+                "NetherBattleStrategy",
+                NetherStrategyDefaults.Battle,
+                "Floor-aware strategy grammar: selector=target; selectors support N, N-M, N-*, *, and comma lists. "
+                    + "Targets: Off, NoEffect, Silver, Purple, Gold, Red, UniqueWeapon. Ranges are inclusive and the last matching clause wins. "
+                    + "Off bypasses drops/equipment/preserve; invalid or unmatched values fail open."
             );
-            BattleSessionAutoSLNetherMinimumRarity = Plugin.ConfigFile.Bind(
+            BattleSessionAutoSLNetherMiniBossStrategy = Plugin.ConfigFile.Bind(
                 "BattleSessionAutoSL.Targets",
-                "NetherMinimumRarity",
-                BattleSessionDropRarity.Gold,
-                "NetherStopMode 包含 Rarity 时使用的最低袋子 rarity_level；"
-                    + "Gold 表示金袋或更好。\n"
-                    + AutoSLRarityHelp
+                "NetherMiniBossStrategy",
+                NetherStrategyDefaults.MiniBoss,
+                "Same floor-aware grammar as NetherBattleStrategy. The current ConfigEntry.Value is read for every response, so cfg reload applies next response. "
+                    + "EquipmentOnly and Preserve AND/OR are global filters used only for non-Off targets."
+            );
+            BattleSessionAutoSLNetherBossStrategy = Plugin.ConfigFile.Bind(
+                "BattleSessionAutoSL.Targets",
+                "NetherBossStrategy",
+                NetherStrategyDefaults.Boss,
+                "Floor-aware strategy grammar: selector=target; selector supports N, N-M, N-*, *, and comma lists. "
+                    + "Targets are Off, NoEffect, Silver, Purple, Gold, Red, UniqueWeapon. Ranges are inclusive; the last matching clause wins. "
+                    + "Off bypasses drop, equipment, and preserve evaluation. Invalid or unmatched strategies fail open; e.g. *=Gold;100,110=Red."
             );
             BattleSessionAutoSLNetherEquipmentOnly = Plugin.ConfigFile.Bind(
                 "BattleSessionAutoSL.Targets",
@@ -230,9 +237,9 @@ namespace AbyssMod
                 "Nether 主数据交叉验证：\n"
                     + "- true（默认）：只接受 MItems.type=91 的 NetherEquipment 装备袋，"
                     + "Gold/Red 候选还要求 MItems.rarity == 掉落 rarity_level。\n"
-                    + "- false：跳过装备袋分类，任意敌人掉落均可按 StopMode 命中。\n"
+                    + "- false：跳过装备袋分类，任意敌人掉落均可按所选策略目标命中。\n"
                     + "普通袋实测可能是掉落 rarity_level=0、MItems.rarity=1/2，"
-                    + "所以未命中 StopMode 前不会因二者不同而报错。\n"
+                    + "所以未命中所选策略目标前不会因二者不同而报错。\n"
                     + "NetherPreserveItemIds 是独立的 type=90 白名单分支，"
                     + "由 NetherPreserveMode 决定如何与装备目标组合。"
             );
@@ -240,11 +247,11 @@ namespace AbyssMod
                 "BattleSessionAutoSL.Targets",
                 "NetherPreserveMode",
                 NetherPreserveMode.AND,
-                "NetherPreserveItemIds 与装备 StopMode 的组合方式：\n"
+                "NetherPreserveItemIds 与装备匹配分支的组合方式：\n"
                     + "- AND（默认）：同一次开战响应必须同时包含装备目标和至少一个白名单物品。\n"
                     + "- OR：出现装备目标或至少一个白名单物品，任一成立即停止重投。\n"
                     + "当 NetherPreserveItemIds 留空时，保留分支禁用，本项不生效，"
-                    + "仍只按装备 StopMode 判断。"
+                    + "仍只按装备匹配分支判断。"
             );
             BattleSessionAutoSLNetherPreserveItemIds = Plugin.ConfigFile.Bind(
                 "BattleSessionAutoSL.Targets",
@@ -252,7 +259,7 @@ namespace AbyssMod
                 string.Empty,
                 "Nether MItems.type=90 物品保留白名单；填写十进制 item ID，"
                     + "多个 ID 用逗号、分号或空白分隔。默认留空表示禁用。\n"
-                    + "只检查 enemies[*].drops；与装备袋 StopMode 的 AND/OR 组合"
+                    + "只检查 enemies[*].drops；与装备匹配分支的 AND/OR 组合"
                     + "由 NetherPreserveMode 控制。\n"
                     + "白名单分支只认 content_type=31 且 MItems.type=90，"
                     + "不检查 is_rare_drop、rarity_level，也不要求 MItems.rarity 与掉落 rarity 一致。\n"

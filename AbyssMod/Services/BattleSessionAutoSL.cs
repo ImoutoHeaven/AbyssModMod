@@ -397,12 +397,40 @@ public static class BattleSessionAutoSL
                 return true;
             }
 
-            NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(
-                response?.stage_detail
+            var param = _netherApiService?._param;
+            if (param == null)
+            {
+                return AcceptWithoutNetherPolicy(response, CreateLocationBypass("missing-nether-param"));
+            }
+            if (param.FloorLevel < 1)
+            {
+                return AcceptWithoutNetherPolicy(response, CreateLocationBypass($"invalid-floor-level:{param.FloorLevel}"));
+            }
+            if (param.MNetherMapFloorId <= 0)
+            {
+                return AcceptWithoutNetherPolicy(response, CreateLocationBypass($"invalid-nether-map-floor-id:{param.MNetherMapFloorId}"));
+            }
+
+            if (!NetherFloorEncounterCatalog.TryGetRawFloorType(
+                param.MNetherMapFloorId, out int rawFloorType, out string classificationError
+            ))
+            {
+                return AcceptWithoutNetherPolicy(response, CreateLocationBypass(classificationError));
+            }
+
+            NetherRuntimeDecision runtimeDecision = NetherRuntimeDecisionEngine.Resolve(
+                rawFloorType,
+                param.FloorLevel,
+                new NetherStrategySettings(
+                    Config.BattleSessionAutoSLNetherBattleStrategy.Value,
+                    Config.BattleSessionAutoSLNetherMiniBossStrategy.Value,
+                    Config.BattleSessionAutoSLNetherBossStrategy.Value
+                )
             );
-            BattleSessionAutoSLStopMode stopMode = Config.BattleSessionAutoSLNetherStopMode.Value;
-            BattleSessionDropRarity minimumRarity =
-                Config.BattleSessionAutoSLNetherMinimumRarity.Value;
+            if (!runtimeDecision.RequiresDropEvaluation)
+                return AcceptWithoutNetherPolicy(response, runtimeDecision);
+
+            NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(response?.stage_detail);
             bool equipmentOnly = Config.BattleSessionAutoSLNetherEquipmentOnly.Value;
             NetherPreserveMode preserveMode = Config.BattleSessionAutoSLNetherPreserveMode.Value;
             bool preserveConfigValid = NetherPreserveItemIdParser.TryParse(
@@ -430,8 +458,7 @@ public static class BattleSessionAutoSL
                 evaluation = NetherBattleAutoSLPolicy.Evaluate(
                     report,
                     masterItems,
-                    stopMode,
-                    minimumRarity,
+                    runtimeDecision.Target,
                     equipmentOnly,
                     preserveMode,
                     preservedItemIds
@@ -442,11 +469,18 @@ public static class BattleSessionAutoSL
                 response,
                 report,
                 evaluation,
-                stopMode,
-                minimumRarity,
+                evaluation.ShouldRetry ? "retry" : evaluation.Targets.Count > 0 ? "accept-target" : "accept-error",
+                runtimeDecision.Reason,
+                runtimeDecision.EncounterKind,
+                runtimeDecision.RawFloorType,
+                runtimeDecision.ConfigKey,
+                runtimeDecision.StrategyText,
+                runtimeDecision.StrategyDecision,
                 equipmentOnly,
                 preserveMode,
-                preservedItemIds
+                preservedItemIds,
+                Config.BattleSessionAutoSLNetherPreserveItemIds.Value,
+                false
             );
             if (State.ObserveDecision(evaluation.ShouldRetry) == BattleSessionAutoSLTransition.Retry)
             {
@@ -469,42 +503,75 @@ public static class BattleSessionAutoSL
             BattleSessionStatusResponseEntity response,
             NetherBattleDropProbeReport report,
             NetherBattleDropEvaluation evaluation,
-            BattleSessionAutoSLStopMode stopMode,
-            BattleSessionDropRarity minimumRarity,
+            string decision,
+            string strategyError,
+            NetherEncounterKind encounterKind,
+            int rawFloorType,
+            string configKey,
+            string strategyText,
+            NetherFloorStrategyDecision strategyDecision,
             bool equipmentOnly,
             NetherPreserveMode preserveMode,
-            HashSet<long> preservedItemIds
+            HashSet<long> preservedItemIds,
+            string rawPreserveItemIds,
+            bool warning
         )
         {
-            string decision = evaluation.ShouldRetry
-                ? "retry"
-                : evaluation.Targets.Count > 0
-                    ? "accept-target"
-                    : "accept-error";
-            string condition = BattleSessionAutoSLPolicy.DescribeStopCondition(
-                stopMode,
-                minimumRarity
-            );
-
-            Logger.Info(
+            string message =
                 $"{LogPrefix} attempt={State.RetryCount + 1}, retry={State.RetryCount}, "
                     + $"source={_source}, questId={response?.quest_id ?? 0}, "
                     + $"stageType={response?.stage_type ?? 0}, drops={report.DropCount}, "
                     + $"enemyDrops={report.EnemyDropCount}, targets={evaluation.Targets.Count}, "
                     + $"equipmentTargets={evaluation.EquipmentTargetCount}, "
                     + $"preserveTargets={evaluation.PreservedItemTargetCount}, "
-                    + $"combinedMatched={evaluation.StopConditionMatched}, "
-                    + $"decision={decision}, condition={condition}, "
+                    + $"combinedMatched={evaluation.StopConditionMatched}, decision={decision}, "
+                    + $"floorType={rawFloorType}, encounter={encounterKind}, configKey={configKey}, "
+                    + $"strategy={strategyText}, selector={strategyDecision.Selector}, clause={strategyDecision.ClauseIndex}, "
+                    + $"target={strategyDecision.Target}, strategyMatched={strategyDecision.Matched}, strategyError={strategyError}, "
                     + $"equipmentOnly={equipmentOnly}, "
-                    + $"preserveMode={(preservedItemIds.Count == 0 ? "disabled" : preserveMode.ToString())}, "
-                    + $"preserveItemIds={NetherPreserveItemIdParser.Format(preservedItemIds)}, "
+                    + $"preserveMode={preserveMode}, rawPreserveItemIds={rawPreserveItemIds}, "
+                    + $"parsedPreserveItemIds={NetherPreserveItemIdParser.Format(preservedItemIds)}, "
                     + $"probeError={report.Error}, "
-                    + $"policyError={evaluation.Error}, {FormatLocation()}"
-            );
+                    + $"policyError={evaluation.Error}, {FormatLocation()}";
+            if (warning)
+                Logger.Warn(message);
+            else
+                Logger.Info(message);
             Logger.Info($"{LogPrefix} allItems={report.FormatAllItems()}");
             Logger.Info($"{LogPrefix} enemyItems={report.FormatEnemyItems()}");
             Logger.Info($"{LogPrefix} targets={evaluation.FormatTargets()}");
         }
+
+        private bool AcceptWithoutNetherPolicy(BattleSessionStatusResponseEntity response, NetherRuntimeDecision runtimeDecision)
+        {
+            NetherBypassTraceInput trace = NetherBypassTraceInput.FromStageDetail(response?.stage_detail);
+            var report = new NetherBattleDropProbeReport(
+                trace.RootDrops, Array.Empty<BattleDropItem>(), trace.Error
+            );
+            var evaluation = new NetherBattleDropEvaluation(Array.Empty<NetherTargetDrop>(), false);
+            string rawPreserveItemIds = Config.BattleSessionAutoSLNetherPreserveItemIds.Value;
+            NetherPreserveMode preserveMode = Config.BattleSessionAutoSLNetherPreserveMode.Value;
+            NetherAttemptLogContext logContext = new(rawPreserveItemIds, preserveMode, runtimeDecision);
+            LogNetherAttempt(
+                response, report, evaluation,
+                runtimeDecision.Kind == NetherRuntimeDecisionKind.AcceptError ? "accept-error" : "accept-off",
+                runtimeDecision.Reason, runtimeDecision.EncounterKind, runtimeDecision.RawFloorType,
+                runtimeDecision.ConfigKey, runtimeDecision.StrategyText, runtimeDecision.StrategyDecision,
+                Config.BattleSessionAutoSLNetherEquipmentOnly.Value,
+                preserveMode,
+                new HashSet<long>(),
+                logContext.RawPreserveItemIds,
+                logContext.Level == NetherAttemptLogLevel.Warning
+            );
+            BattleSettlementPayloadTrace.CaptureAcceptedNether(
+                _source, State.RetryCount + 1, response, report.AllItems, evaluation.Targets
+            );
+            Completion.TrySetResult(response);
+            return true;
+        }
+
+        private static NetherRuntimeDecision CreateLocationBypass(string reason) =>
+            NetherRuntimeDecisionEngine.CreateBypass(reason);
 
         private string FormatLocation()
         {
@@ -513,7 +580,7 @@ public static class BattleSessionAutoSL
                 return "netherLocation=missing";
 
             return $"netherId={param.MNetherId}, mapId={param.MNetherMapId}, "
-                + $"floor={param.FloorLevel}:{param.FloorIndex}";
+                + $"mNetherMapFloorId={param.MNetherMapFloorId}, floorLevel={param.FloorLevel}, floorIndex={param.FloorIndex}";
         }
     }
 
