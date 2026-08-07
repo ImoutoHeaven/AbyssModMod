@@ -53,7 +53,7 @@ internal readonly record struct NetherRuntimeCodeCandidatesResult(
 /// directly.  Mutating operations invoke an already registered game controller callback,
 /// and report an exact binding failure when that callback is not available.
 /// </summary>
-internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherReadOnlyReconcileDriver, INetherBattleSettlementDriver
+internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherReadOnlyReconcileDriver, INetherBattleSettlementDriver, INetherContinueSceneDriver
 {
     bool HasRegisteredFloorSelection { get; }
 
@@ -85,6 +85,19 @@ internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherRea
 
     NetherNativeActionResult PollNativeFlow();
 
+    /// <summary>
+    /// Starts local observation of a Continue scene handoff before invoking the native parent.
+    /// This carries no server request and fails when there is no exact current FloorSelection
+    /// owner/generation to bind.
+    /// </summary>
+    bool TryBeginContinueSceneHandoff(out long ownerGeneration);
+
+    /// <summary>
+    /// Reads only the current live NetherDataStore/master cache and never invokes a native
+    /// Continue callback.  A pause result must prevent the parent from being started.
+    /// </summary>
+    NetherCheckpointReturnPreflightDecision PreflightContinueReturn(NetherPlannedAction action);
+
     NetherNativeActionResult SelectReturnItems(IReadOnlyList<NetherRewardItem> items);
 
     bool TryConsumeResultSuccess();
@@ -100,7 +113,7 @@ internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherRea
 /// selected before an action is invoked.  This keeps a patched client from turning an
 /// unknown build into a raw-request automation client.
 /// </summary>
-internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
+internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpointPopupWaitDriver
 {
     private const string UniTaskTypeName = "Cysharp.Threading.Tasks.UniTask";
     private const string UnitTypeName = "UniRx.Unit";
@@ -119,7 +132,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     private const string ContinuePopupControllerTypeName = "Project.Nether.NetherContinueConfirmPopup.NetherContinueConfirmPopupController";
     private const string BoostPopupControllerTypeName = "Project.Nether.NetherBoostConfirmPopup.NetherBoostConfirmPopupController";
     private static readonly NetherReturnItemPolicy ReturnItemPolicy = new();
-    private readonly NetherNativeWaitGate _resultTaskWait = new(maximumMissingPolls: 600);
+    private static readonly NetherCheckpointReturnPreflight CheckpointReturnPreflight = new();
+    private readonly NetherResultSceneCoordinator _resultScene = new();
     private readonly NetherNativeWaitGate _codeSelectionTaskWait = new(maximumMissingPolls: 600);
     private readonly NetherNativeWaitGate _codeReplacementPopupWait = new(maximumMissingPolls: 600);
     private const string NetherApiServiceTypeName = "Project.Ingame.Exploration.NetherAPIService";
@@ -132,6 +146,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     private readonly NetherPopupOwnershipRegistry _popupOwnership = new();
     private readonly NetherNativeWaitGate _floorParentTaskWait = new(maximumMissingPolls: 600);
     private object? _floorSelectionController;
+    private long _runtimeGeneration;
+    private bool _continueFloorOwnerTerminated;
     private NetherPlannedAction? _floorParentAction;
     private long _floorParentGeneration;
     private object? _floorParentTask;
@@ -144,22 +160,25 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     private PopupRegistration? _returnPopup;
     private PopupRegistration? _continuePopup;
     private PopupRegistration? _boostPopup;
-    private object? _returnScrollController;
+    private CheckpointControllerRegistration? _returnScrollController;
     private object? _nativeActionTask;
     private object? _codeSelectionTask;
     private bool _battleActive;
     private bool _battleClearObserved;
     private bool _battleCloseObserved;
-    private bool _awaitingBoostConfirmation;
-    private bool _resultObserved;
-    private object? _resultTask;
     private object? _battleStartTask;
     private object? _battleClearTask;
     private object? _battleCloseTask;
     private NetherPlannedAction? _pendingCheckpointAction;
-    private bool _checkpointCallbackSubmitted;
-    private bool _checkpointReturnSubmitted;
     private readonly NetherCheckpointNativeFlow _checkpointFlow = new();
+    private readonly NetherNativeWaitGate _checkpointParentTaskWait = new(maximumMissingPolls: 600);
+    private readonly NetherNativeWaitGate _checkpointTerminalTaskWait = new(maximumMissingPolls: 600);
+    private readonly NetherCheckpointPopupWaitCoordinator _checkpointPopupWait;
+    private object? _checkpointParentTask;
+    private object? _checkpointChildTask;
+    private long _checkpointGenerationCounter;
+    private long _checkpointOwnerGeneration;
+    private long _checkpointMinimumSequence;
     private readonly NetherCodeSelectionNativeFlow _codeSelectionFlow = new();
     private long _popupSequence;
 
@@ -171,6 +190,40 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         {
             lock (_gate)
                 return _floorSelectionController != null;
+        }
+    }
+
+    public bool FloorOwnerTerminated
+    {
+        get
+        {
+            lock (_gate)
+                return _continueFloorOwnerTerminated;
+        }
+    }
+
+    public long CurrentRuntimeGeneration
+    {
+        get
+        {
+            lock (_gate)
+                return _runtimeGeneration;
+        }
+    }
+
+    public bool IsExpectedNetherTopScene
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _floorSelectionController != null
+                    && string.Equals(
+                        _floorSelectionController.GetType().FullName,
+                        FloorSelectionTypeName,
+                        StringComparison.Ordinal
+                    );
+            }
         }
     }
 
@@ -190,11 +243,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         get
         {
             lock (_gate)
-                return _resultObserved;
+                return _resultScene.IsResultObserved;
         }
     }
 
-    private NetherRuntimeBridge() { }
+    private NetherRuntimeBridge()
+    {
+        _checkpointPopupWait = new NetherCheckpointPopupWaitCoordinator(this);
+    }
 
     // Static registration entry points are deliberately small; Harmony only reports native
     // lifecycle boundaries and never makes an automation decision from a postfix.
@@ -379,9 +435,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             if (!TryMapAcquiredItems(dataStore, rows!, out IReadOnlyList<NetherRewardItem>? acquiredItems, out string itemError))
                 return NetherRuntimeSnapshotResult.Failure(itemError);
 
+            NetherSessionStatus status = ToSessionStatus(statusValue);
+            NetherContinuationTarget? continuationTarget = status == NetherSessionStatus.Sleep
+                ? TryMapContinuationTarget(masterDataStore, data, currentFloorId)
+                : null;
+
             NetherSnapshot snapshot = new()
             {
-                Status = ToSessionStatus(statusValue),
+                Status = status,
                 NetherId = netherId,
                 MapId = mapId,
                 CurrentFloorId = currentFloorId,
@@ -398,6 +459,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 CodeReloadCount = data.CodeReload,
                 CodeCapacity = pointData.MaxNetherCode,
                 LockReward = pointData.LockReward,
+                ContinuationTarget = continuationTarget,
                 Characters = characters!,
                 Codes = codes!,
                 Floors = floors!,
@@ -412,6 +474,77 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         {
             return NetherRuntimeSnapshotResult.Failure(
                 "snapshot-map-exception:" + ex.GetType().Name + ":" + ex.Message
+            );
+        }
+    }
+
+    /// <summary>
+    /// Captures the carry-out contract from the same live store that native
+    /// HandleGameClearedIfNeededAsync reads before it opens a return popup.  This method is
+    /// deliberately data-only: it does not call HandleStartEventByStatusAsync, a popup
+    /// callback, or NetherApiDataStore.
+    /// </summary>
+    public NetherCheckpointReturnPreflightDecision PreflightContinueReturn(NetherPlannedAction action)
+    {
+        if (action.Kind != NetherActionKind.Continue)
+            return ReturnPreflightPause("non-continue-preflight-action:" + action.Kind);
+        if (action.TicketCount != 1 || action.TicketCost != 1)
+        {
+            return new NetherCheckpointReturnPreflightDecision
+            {
+                Kind = NetherCheckpointReturnPreflightKind.Pause,
+                PauseReason = NetherPauseReason.InvalidConfiguration,
+                Detail = "continue-preflight-requires-exact-one-ticket",
+            };
+        }
+
+        try
+        {
+            UserData? userData = Engine.Get<UserData>();
+            NetherDataStore? dataStore = userData?.NetherDataStore;
+            NetherPointData? pointData = dataStore?.NetherPointData;
+            if (dataStore == null || pointData == null)
+                return ReturnPreflightPause("missing-live-nether-store-or-point-data");
+
+            var preserveIds = new HashSet<long>(action.ReturnPreserveItemIds ?? Array.Empty<long>());
+            int lockReward = pointData.LockReward;
+            if (lockReward == 0)
+            {
+                // The native <= 0 LockReward branch calls its normal one-ticket Continue path
+                // without creating the return popup.  Do not require irrelevant item masters.
+                return CheckpointReturnPreflight.Evaluate(
+                    0,
+                    Array.Empty<NetherCheckpointReturnPreflightItem>(),
+                    preserveIds
+                );
+            }
+            if (lockReward < 0)
+            {
+                return new NetherCheckpointReturnPreflightDecision
+                {
+                    Kind = NetherCheckpointReturnPreflightKind.Pause,
+                    PauseReason = NetherPauseReason.InvalidConfiguration,
+                    Detail = "negative-live-lock-reward:" + lockReward,
+                };
+            }
+
+            MasterDataStore? masterDataStore = Engine.Get<MasterDataStore>();
+            if (!TryMapAuthoritativeReturnPreflightItems(
+                    dataStore,
+                    masterDataStore,
+                    out IReadOnlyList<NetherCheckpointReturnPreflightItem>? items,
+                    out string mappingError
+                ))
+            {
+                return ReturnPreflightPause(mappingError);
+            }
+
+            return CheckpointReturnPreflight.Evaluate(lockReward, items!, preserveIds);
+        }
+        catch (Exception ex)
+        {
+            return ReturnPreflightPause(
+                "continue-return-preflight-exception:" + ex.GetType().Name + ":" + ex.Message
             );
         }
     }
@@ -708,6 +841,36 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         _ => NetherNativeActionResult.Rejected("unsupported-native-action:" + action.Kind),
     };
 
+    public bool TryBeginContinueSceneHandoff(out long ownerGeneration)
+    {
+        lock (_gate)
+        {
+            ownerGeneration = 0;
+            if (_floorSelectionController == null || _runtimeGeneration < 1)
+                return false;
+
+            // This is a per-action latch.  It is reset before the native callback so the
+            // following exact ISubService.Terminate belongs to this continuation, and stays
+            // latched through the later new-controller registration for the coordinator.
+            _continueFloorOwnerTerminated = false;
+            ownerGeneration = _runtimeGeneration;
+            return true;
+        }
+    }
+
+    public NetherNativeActionResult PollContinueParent()
+    {
+        lock (_gate)
+        {
+            if (_pendingCheckpointAction?.Kind != NetherActionKind.Continue)
+                return NetherNativeActionResult.BindingUnavailable("missing-continue-native-parent");
+
+            // PollCheckpointFlow drives only the already-started exact controller sequence
+            // (Continue/Boost/Return and its parent UniTask); it never starts a second action.
+            return PollCheckpointFlow();
+        }
+    }
+
     public NetherNativeActionResult PollNativeFlow()
     {
         lock (_gate)
@@ -715,30 +878,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             if (_floorParentAction != null)
                 return PollFloorParentNativeFlow();
 
-            // A one-ticket continue can open a boost confirmation before it creates the return
-            // popup.  Confirm its native UI first; selecting a stale/early return list would
-            // otherwise race the server continuation response.
-            if (_awaitingBoostConfirmation)
-            {
-                if (_boostPopup == null)
-                    return NetherNativeActionResult.Started("awaiting-native-boost-popup");
-
-                NetherNativeActionResult boost = ConfirmBoostOneTicket(_boostPopup.Value);
-                if (boost.Kind == NetherNativeActionResultKind.Started)
-                {
-                    if (!_checkpointFlow.SubmitBoostConfirmation())
-                        return NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-boost-sequence");
-                    _awaitingBoostConfirmation = false;
-                }
-                return boost;
-            }
-
             if (_pendingCheckpointAction != null)
-            {
-                NetherNativeActionResult checkpoint = PollCheckpointFlow();
-                if (checkpoint.Kind != NetherNativeActionResultKind.Completed || _pendingCheckpointAction == null)
-                    return checkpoint;
-            }
+                return PollCheckpointFlow();
 
             if (_codeSelectionFlow.Stage is not (NetherCodeSelectionNativeStage.Idle or NetherCodeSelectionNativeStage.Completed)
                 || _codeSelectionTask != null)
@@ -746,8 +887,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 return PollCodeSelectionFlow();
             }
 
-            if (_resultTask != null)
-                return PollResultTask(_resultTask);
+            if (_resultScene.HasResultEvidence)
+                return ToNativeResult(_resultScene.Pump(PollResultTask));
 
             if (_nativeActionTask != null)
             {
@@ -803,17 +944,24 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     }
 
     public NetherNativeActionResult SelectReturnItems(IReadOnlyList<NetherRewardItem> items)
+        => SelectReturnItemsCore(items, registerCheckpointChildTask: false);
+
+    private NetherNativeActionResult SelectReturnItemsCore(
+        IReadOnlyList<NetherRewardItem> items,
+        bool registerCheckpointChildTask
+    )
     {
         if (items == null)
             throw new ArgumentNullException(nameof(items));
 
         PopupRegistration? registration;
-        object? scroll;
+        CheckpointControllerRegistration? scrollRegistration;
         lock (_gate)
         {
             registration = _returnPopup;
-            scroll = _returnScrollController;
+            scrollRegistration = _returnScrollController;
         }
+        object? scroll = scrollRegistration?.Controller;
         if (registration == null || scroll == null)
             return NetherNativeActionResult.BindingUnavailable("missing-return-item-popup-or-scroll");
 
@@ -840,7 +988,10 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             foreach (int index in indexes!)
                 select!.Invoke(scroll, new object[] { index });
             object? result = confirm!.Invoke(registration.Value.Controller, new[] { registration.Value.Popup });
-            RegisterNativeActionTask(result);
+            if (registerCheckpointChildTask)
+                RegisterCheckpointChildTask(result);
+            else
+                RegisterNativeActionTask(result);
             return NetherNativeActionResult.Started("native-return-item-confirm");
         }
         catch (TargetInvocationException ex)
@@ -858,14 +1009,72 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         if (action.ReturnLockReward <= 0)
             return NetherNativeActionResult.Completed("no-return-items-requested");
 
-        object? scroll;
+        PopupRegistration? returnRegistration;
+        CheckpointControllerRegistration? scrollRegistration;
         lock (_gate)
-            scroll = _returnScrollController;
-        if (scroll == null)
+        {
+            returnRegistration = _returnPopup;
+            scrollRegistration = _returnScrollController;
+        }
+        object? scroll = scrollRegistration?.Controller;
+        if (returnRegistration is not PopupRegistration returnPopup
+            || !IsCurrentCheckpointPopup(returnPopup, NetherCheckpointPopupKind.Return)
+            || scrollRegistration == null || scroll == null
+            || !IsCurrentCheckpointRegistration(scrollRegistration.Value, NetherCheckpointPopupKind.ReturnScroll))
             return NetherNativeActionResult.BindingUnavailable("missing-return-scroll-for-pristine-map");
 
         if (!TryMapPristineReturnItems(scroll, out IReadOnlyList<NetherRewardItem>? items, out string mappingError))
             return NetherNativeActionResult.BindingUnavailable(mappingError);
+
+        // These are the exact private fields populated by the native return controller and
+        // scroll view from NetherPointData.LockReward.  Compare both before OnConfirmAsync,
+        // because that native method is the branch that calls RequestNetherContinueAsync.
+        if (!TryReadInt32(returnPopup.Controller, "_maxSelectedCount", out int popupSelectionLimit)
+            || !TryReadInt32(scroll, "_maxSelectedCount", out int scrollSelectionLimit))
+        {
+            return NetherNativeActionResult.BindingUnavailable("missing-return-popup-or-scroll-selection-limit");
+        }
+        if (popupSelectionLimit != scrollSelectionLimit)
+        {
+            return NetherNativeActionResult.BindingUnavailable(
+                "return-popup-scroll-selection-limit-mismatch:" + popupSelectionLimit + ":" + scrollSelectionLimit
+            );
+        }
+        if (action.ReturnPreflightSelectionLimit <= 0
+            || action.ReturnPreflightSelectionLimit != action.ReturnLockReward
+            || string.IsNullOrEmpty(action.ReturnExpectedPristineHash)
+            || action.ReturnPreflightWholeEntrySelection.Count != action.ReturnPreflightSelectionLimit)
+        {
+            return NetherNativeActionResult.BindingUnavailable("missing-or-invalid-return-preflight-contract");
+        }
+        if (!TryMapFreshReturnPreflightItems(
+                items!,
+                out IReadOnlyList<NetherCheckpointReturnPreflightItem>? freshPreflightItems,
+                out string preflightMappingError
+            ))
+        {
+            return NetherNativeActionResult.BindingUnavailable(preflightMappingError);
+        }
+
+        var planned = new NetherCheckpointReturnPreflightDecision
+        {
+            Kind = NetherCheckpointReturnPreflightKind.Ready,
+            SelectionLimit = action.ReturnPreflightSelectionLimit,
+            ExpectedPristineHash = action.ReturnExpectedPristineHash,
+            WholeEntrySelection = action.ReturnPreflightWholeEntrySelection,
+        };
+        NetherCheckpointReturnPreflightDecision verified = CheckpointReturnPreflight.VerifyFreshPopup(
+            planned,
+            popupSelectionLimit,
+            freshPreflightItems!,
+            new HashSet<long>(action.ReturnPreserveItemIds)
+        );
+        if (!CheckpointReturnPreflight.CanConfirmReturnPopup(verified))
+        {
+            return NetherNativeActionResult.BindingUnavailable(
+                "return-popup-preflight-mismatch:" + verified.PauseReason + ":" + verified.Detail
+            );
+        }
 
         var preserveIds = new HashSet<long>(action.ReturnPreserveItemIds);
         NetherReturnItemSelection selection = ReturnItemPolicy.Select(items!, action.ReturnLockReward, preserveIds);
@@ -876,7 +1085,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             );
         }
 
-        return SelectReturnItems(selection.Items);
+        return SelectReturnItemsCore(selection.Items, registerCheckpointChildTask: true);
     }
 
     public bool TryConsumeBattleClear()
@@ -903,21 +1112,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     {
         lock (_gate)
         {
-            if (_resultTask == null)
+            NetherResultSceneStep result = _resultScene.Pump(PollResultTask);
+            if (result.Kind != NetherResultSceneStepKind.Succeeded)
                 return false;
-            NetherNativeActionResult result = PollResultTask(_resultTask);
-            if (result.Kind != NetherNativeActionResultKind.Completed)
-                return false;
-            _resultTask = null;
-            _resultTaskWait.Clear();
             _battleStartTask = null;
             _battleClearTask = null;
             _battleCloseTask = null;
             _pendingCheckpointAction = null;
-            _checkpointCallbackSubmitted = false;
-            _checkpointReturnSubmitted = false;
-            _checkpointFlow.Clear();
-            _resultObserved = true;
+            ClearCheckpointNativeFlow();
             return true;
         }
     }
@@ -925,18 +1127,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     public NetherNativeActionResult PollResultFlow()
     {
         lock (_gate)
-        {
-            if (_resultTask == null)
-                return _resultTaskWait.AwaitRegistration("result");
-            NetherNativeActionResult result = PollResultTask(_resultTask);
-            if (result.Kind == NetherNativeActionResultKind.Completed)
-            {
-                _resultTask = null;
-                _resultObserved = true;
-                _resultTaskWait.Clear();
-            }
-            return result;
-        }
+            return ToNativeResult(_resultScene.Pump(PollResultTask));
     }
 
     public void ClearRegistrations()
@@ -944,6 +1135,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         lock (_gate)
         {
             _floorSelectionController = null;
+            _runtimeGeneration = 0;
+            _continueFloorOwnerTerminated = false;
             _floorParentAction = null;
             _floorParentGeneration = 0;
             _floorParentTask = null;
@@ -961,20 +1154,15 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             _returnScrollController = null;
             _nativeActionTask = null;
             ClearCodeSelectionFlow();
-            _awaitingBoostConfirmation = false;
-            _resultTask = null;
-            _resultObserved = false;
-            _resultTaskWait.Clear();
+            _resultScene.Reset();
             _battleActive = false;
             _battleClearObserved = false;
             _battleCloseObserved = false;
             _battleStartTask = null;
             _battleClearTask = null;
             _battleCloseTask = null;
-            _pendingCheckpointAction = null;
-            _checkpointCallbackSubmitted = false;
-            _checkpointReturnSubmitted = false;
-            _checkpointFlow.Clear();
+            ClearCheckpointNativeFlow();
+            _checkpointGenerationCounter = 0;
             _popupSequence = 0;
         }
     }
@@ -984,7 +1172,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         if (controller == null)
             return;
         lock (_gate)
+        {
+            // HandleStartEventByStatusAsync can be observed repeatedly on the same live
+            // controller.  Only an actual controller replacement advances the handoff
+            // generation; a stale re-observation cannot satisfy a Continue rebind.
+            if (!ReferenceEquals(_floorSelectionController, controller))
+                _runtimeGeneration = checked(_runtimeGeneration + 1);
             _floorSelectionController = controller;
+        }
     }
 
     private void UnregisterFloorSelectionCore(object controller)
@@ -995,10 +1190,36 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         {
             if (ReferenceEquals(_floorSelectionController, controller))
             {
-                // All popup/controller registrations belong to this FloorSelection scene.  Do
-                // not retain a callback across scene teardown: its target may have been
-                // destroyed while a UI result is still visually pending.
-                ClearRegistrations();
+                // FloorSelection is not the Result owner.  Normal Finish tears this scene
+                // down before Result's CreateNetherResultModelAsync task is registered; clear
+                // only floor-owned callbacks/tasks and retain Result evidence for the global
+                // scene coordinator to poll.
+                _floorSelectionController = null;
+                if (_pendingCheckpointAction?.Kind == NetherActionKind.Continue)
+                {
+                    // Continue owns a parent task which is expected to survive this old scene
+                    // teardown.  Record the exact owner terminal boundary but do not clear its
+                    // checkpoint parent/task/popup evidence here.
+                    _continueFloorOwnerTerminated = true;
+                }
+                ClearFloorParentCore();
+                _popupOwnership.Clear();
+                _eventPopup = null;
+                _recoverPopup = null;
+                _treasurePopup = null;
+                _shopPopup = null;
+                _codeSelectPopup = null;
+                _codeListPopup = null;
+                ClearCodeSelectionFlow();
+                if (_pendingCheckpointAction == null)
+                {
+                    _returnPopup = null;
+                    _continuePopup = null;
+                    _boostPopup = null;
+                    _returnScrollController = null;
+                    _nativeActionTask = null;
+                }
+                _resultScene.ObserveFloorSelectionTerminated();
             }
         }
     }
@@ -1027,6 +1248,13 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                     ownerGeneration = ownership.Generation;
                     sequence = ownership.Sequence;
                 }
+            }
+            else if (_pendingCheckpointAction is NetherPlannedAction checkpointAction
+                && _checkpointOwnerGeneration > 0
+                && typeName is ContinuePopupControllerTypeName or BoostPopupControllerTypeName or ReturnPopupControllerTypeName)
+            {
+                ownerAction = checkpointAction.Kind;
+                ownerGeneration = _checkpointOwnerGeneration;
             }
             PopupRegistration registration = new(controller, popup, close, sequence, ownerAction, ownerGeneration, IsLive: true);
             switch (typeName)
@@ -1077,6 +1305,11 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             InvalidatePopup(ref _returnPopup, popup);
             InvalidatePopup(ref _continuePopup, popup);
             InvalidatePopup(ref _boostPopup, popup);
+            if (_returnScrollController is CheckpointControllerRegistration scroll
+                && ReferenceEquals(scroll.Controller, popup))
+            {
+                _returnScrollController = null;
+            }
         }
     }
 
@@ -1125,6 +1358,15 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             && candidate.OwnerGeneration == _floorParentGeneration;
     }
 
+    private bool IsCurrentCheckpointRegistration(
+        CheckpointControllerRegistration registration,
+        NetherCheckpointPopupKind kind
+    ) => registration.IsLive
+        && registration.OwnerAction == _pendingCheckpointAction?.Kind
+        && registration.OwnerGeneration == _checkpointOwnerGeneration
+        && registration.Sequence > _checkpointMinimumSequence
+        && kind == NetherCheckpointPopupKind.ReturnScroll;
+
     private void ClearFloorParentCore()
     {
         long generation = _floorParentGeneration;
@@ -1156,7 +1398,23 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         if (controller == null)
             return;
         lock (_gate)
-            _returnScrollController = controller;
+        {
+            long sequence = checked(++_popupSequence);
+            NetherActionKind ownerAction = NetherActionKind.None;
+            long ownerGeneration = 0;
+            if (_pendingCheckpointAction is NetherPlannedAction action && _checkpointOwnerGeneration > 0)
+            {
+                ownerAction = action.Kind;
+                ownerGeneration = _checkpointOwnerGeneration;
+            }
+            _returnScrollController = new CheckpointControllerRegistration(
+                controller,
+                sequence,
+                ownerAction,
+                ownerGeneration,
+                IsLive: true
+            );
+        }
     }
 
     private void ObserveBattleStartCore()
@@ -1209,14 +1467,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     private void ObserveResultCore(object? resultTask)
     {
         lock (_gate)
-        {
-            _resultObserved = true;
-            if (resultTask != null)
-            {
-                _resultTask = resultTask;
-                _resultTaskWait.ObserveRegistration();
-            }
-        }
+            _resultScene.ObserveResultTask(resultTask);
     }
 
     private void ObserveCodeSelectionTaskCore(object resultTask)
@@ -1583,21 +1834,32 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 return NetherNativeActionResult.Rejected("checkpoint-native-flow-already-pending");
             if (!_checkpointFlow.Begin(action))
                 return NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-start-sequence");
+
+            long ownerGeneration = checked(_checkpointGenerationCounter + 1);
+            if (!_checkpointPopupWait.Begin(action.Kind, ownerGeneration, _popupSequence))
+            {
+                _checkpointFlow.Clear();
+                return NetherNativeActionResult.BindingUnavailable("invalid-checkpoint-popup-wait-owner");
+            }
+
+            _checkpointGenerationCounter = ownerGeneration;
+            _checkpointOwnerGeneration = ownerGeneration;
+            _checkpointMinimumSequence = _popupSequence;
             floorController = _floorSelectionController;
             _continuePopup = null;
+            _boostPopup = null;
             _returnPopup = null;
             _returnScrollController = null;
-            _checkpointCallbackSubmitted = false;
-            _checkpointReturnSubmitted = false;
+            _checkpointParentTask = null;
+            _checkpointChildTask = null;
+            _checkpointParentTaskWait.Clear();
+            _checkpointTerminalTaskWait.Clear();
             _pendingCheckpointAction = action;
         }
         if (floorController == null)
         {
             lock (_gate)
-            {
-                _pendingCheckpointAction = null;
-                _checkpointFlow.Clear();
-            }
+                ClearCheckpointNativeFlow();
             return NetherNativeActionResult.BindingUnavailable("missing-floor-selection-controller-for-checkpoint");
         }
 
@@ -1609,15 +1871,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 UniTaskTypeName
             ),
             new object[] { false },
-            "checkpoint-native-flow"
+            "checkpoint-native-flow",
+            registerNativeActionTask: false,
+            observeTask: RegisterCheckpointParentTask
         );
         if (start.Kind is not (NetherNativeActionResultKind.Started or NetherNativeActionResultKind.Completed))
         {
             lock (_gate)
-            {
-                _pendingCheckpointAction = null;
-                _checkpointFlow.Clear();
-            }
+                ClearCheckpointNativeFlow();
         }
         return start;
     }
@@ -1628,79 +1889,279 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             return NetherNativeActionResult.Completed("no-pending-checkpoint-flow");
         NetherPlannedAction action = _pendingCheckpointAction.Value;
 
-        PopupRegistration? registration;
-        registration = _continuePopup;
-        if (!_checkpointCallbackSubmitted)
+        return _checkpointFlow.Stage switch
         {
-            if (registration == null)
-                return NetherNativeActionResult.Started("awaiting-native-continue-popup");
+            NetherCheckpointNativeStage.AwaitingContinuePopup => PollCheckpointContinuePopup(action),
+            NetherCheckpointNativeStage.AwaitingBoostConfirmation => PollCheckpointBoostPopup(),
+            NetherCheckpointNativeStage.AwaitingPristineReturnPopup => PollCheckpointReturnPopup(action),
+            NetherCheckpointNativeStage.AwaitingTerminalTask => PollCheckpointTerminalTask(),
+            _ => TerminalCheckpointFailure(
+                NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-poll-stage:" + _checkpointFlow.Stage)
+            ),
+        };
+    }
 
-            NetherNativeActionResult callback;
-            if (action.Kind == NetherActionKind.Continue)
+    private NetherNativeActionResult PollCheckpointContinuePopup(NetherPlannedAction action)
+    {
+        NetherCheckpointPopupWaitResult wait = WaitForCheckpointPopup(
+            NetherCheckpointPopupKind.Continue,
+            _continuePopup
+        );
+        if (wait.Kind != NetherCheckpointPopupWaitResultKind.Ready)
+            return ToCheckpointWaitResult(wait);
+
+        if (_continuePopup is not PopupRegistration registration
+            || !IsCurrentCheckpointPopup(registration, NetherCheckpointPopupKind.Continue))
+        {
+            return TerminalCheckpointFailure(
+                NetherNativeActionResult.BindingUnavailable("stale-native-checkpoint-continue-popup")
+            );
+        }
+
+        NetherNativeActionResult callback;
+        if (action.Kind == NetherActionKind.Continue)
+        {
+            if (!TryReadBoolean(registration.Controller, "_canBoost", out bool canBoost))
             {
-                bool canBoost;
-                if (!TryReadBoolean(registration.Value.Controller, "_canBoost", out canBoost))
-                    return NetherNativeActionResult.BindingUnavailable("missing-continue-can-boost-field");
-                callback = TryInvokeGeneratedCallback(
-                    registration.Value.Controller,
-                    "<SetupPopupEvent>b__8_2",
-                    new[] { UnitTypeName, ContinuePopupControllerTypeName },
-                    new object?[] { null, registration.Value.Controller },
-                    "continue-one-ticket"
+                return TerminalCheckpointFailure(
+                    NetherNativeActionResult.BindingUnavailable("missing-continue-can-boost-field")
                 );
-                if (callback.Kind == NetherNativeActionResultKind.Started)
-                {
-                    if (!_checkpointFlow.SubmitContinue(canBoost))
-                        return NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-continue-sequence");
-                    _awaitingBoostConfirmation = canBoost;
-                }
             }
-            else
+            if (canBoost)
             {
-                callback = TryInvokeGeneratedCallback(
-                    registration.Value.Controller,
-                    "<SetupPopupEvent>b__8_1",
-                    new[] { UnitTypeName, ContinuePopupControllerTypeName },
-                    new object?[] { null, registration.Value.Controller },
-                    "finish-at-checkpoint"
+                // RO ISIL proves b__8_2 enters OpenNetherBoostConfirmPopupAsync whenever
+                // _canBoost is true.  b__8_1 is the cancel/result-finish callback, not a
+                // non-boost Continue action.  Do not invent a callback or alter a preflight
+                // by selecting a multiplier; at this point no RequestNetherContinueAsync has
+                // been issued, so safe failure preserves user control.
+                return TerminalCheckpointFailure(
+                    NetherNativeActionResult.BindingUnavailable("native-nonboost-continue-callback-unavailable")
                 );
-                if (callback.Kind == NetherNativeActionResultKind.Started && !_checkpointFlow.SubmitFinish())
-                    return NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-finish-sequence");
             }
-            if (callback.Kind != NetherNativeActionResultKind.Started)
-                return callback;
-            _checkpointCallbackSubmitted = true;
-            return NetherNativeActionResult.Started("native-checkpoint-callback-submitted");
+            callback = TryInvokeGeneratedCallback(
+                registration.Controller,
+                "<SetupPopupEvent>b__8_2",
+                new[] { UnitTypeName, ContinuePopupControllerTypeName },
+                new object?[] { null, registration.Controller },
+                "continue-one-ticket"
+            );
+            if (callback.Kind == NetherNativeActionResultKind.Started
+                && !_checkpointFlow.SubmitContinue(canBoost: false))
+            {
+                return TerminalCheckpointFailure(
+                    NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-continue-sequence")
+                );
+            }
+        }
+        else
+        {
+            callback = TryInvokeGeneratedCallback(
+                registration.Controller,
+                "<SetupPopupEvent>b__8_1",
+                new[] { UnitTypeName, ContinuePopupControllerTypeName },
+                new object?[] { null, registration.Controller },
+                "finish-at-checkpoint"
+            );
+            if (callback.Kind == NetherNativeActionResultKind.Started && !_checkpointFlow.SubmitFinish())
+            {
+                return TerminalCheckpointFailure(
+                    NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-finish-sequence")
+                );
+            }
+        }
+        if (callback.Kind != NetherNativeActionResultKind.Started)
+            return TerminalCheckpointFailure(callback);
+
+        return NetherNativeActionResult.Started("native-checkpoint-callback-submitted");
+    }
+
+    private NetherNativeActionResult PollCheckpointBoostPopup()
+    {
+        NetherCheckpointPopupWaitResult wait = WaitForCheckpointPopup(
+            NetherCheckpointPopupKind.Boost,
+            _boostPopup
+        );
+        if (wait.Kind != NetherCheckpointPopupWaitResultKind.Ready)
+            return ToCheckpointWaitResult(wait);
+
+        if (_boostPopup is not PopupRegistration registration
+            || !IsCurrentCheckpointPopup(registration, NetherCheckpointPopupKind.Boost))
+        {
+            return TerminalCheckpointFailure(
+                NetherNativeActionResult.BindingUnavailable("stale-native-checkpoint-boost-popup")
+            );
         }
 
-        if (action.Kind == NetherActionKind.Continue && _checkpointFlow.CanSubmitReturnSelection && !_checkpointReturnSubmitted)
+        NetherNativeActionResult boost = ConfirmBoostOneTicket(registration);
+        if (boost.Kind != NetherNativeActionResultKind.Started)
+            return TerminalCheckpointFailure(boost);
+        if (!_checkpointFlow.SubmitBoostConfirmation())
         {
-            if (_returnPopup == null || _returnScrollController == null)
-                return NetherNativeActionResult.Started("awaiting-native-return-popup-pristine-list");
-            NetherNativeActionResult select = SelectCheckpointReturnItems(action);
-            if (select.Kind == NetherNativeActionResultKind.Started)
-            {
-                if (!_checkpointFlow.SubmitReturnSelection())
-                    return NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-return-sequence");
-                _checkpointReturnSubmitted = true;
-            }
-            return select;
+            return TerminalCheckpointFailure(
+                NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-boost-sequence")
+            );
+        }
+        return NetherNativeActionResult.Started("native-checkpoint-boost-submitted");
+    }
+
+    private NetherNativeActionResult PollCheckpointReturnPopup(NetherPlannedAction action)
+    {
+        NetherCheckpointPopupWaitResult popup = WaitForCheckpointPopup(
+            NetherCheckpointPopupKind.Return,
+            _returnPopup
+        );
+        if (popup.Kind != NetherCheckpointPopupWaitResultKind.Ready)
+            return ToCheckpointWaitResult(popup);
+
+        NetherCheckpointPopupWaitResult scroll = WaitForCheckpointScroll();
+        if (scroll.Kind != NetherCheckpointPopupWaitResultKind.Ready)
+            return ToCheckpointWaitResult(scroll);
+
+        NetherNativeActionResult select = SelectCheckpointReturnItems(action);
+        if (select.Kind != NetherNativeActionResultKind.Started)
+            return TerminalCheckpointFailure(select);
+        if (!_checkpointFlow.SubmitReturnSelection())
+        {
+            return TerminalCheckpointFailure(
+                NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-return-sequence")
+            );
+        }
+        return NetherNativeActionResult.Started("native-checkpoint-return-submitted");
+    }
+
+    private NetherNativeActionResult PollCheckpointTerminalTask()
+    {
+        if (_checkpointChildTask != null)
+        {
+            NetherNativeActionResult child = PollResultTask(_checkpointChildTask);
+            if (child.Kind == NetherNativeActionResultKind.Started)
+                return child;
+            _checkpointChildTask = null;
+            if (child.Kind != NetherNativeActionResultKind.Completed)
+                return TerminalCheckpointFailure(child);
         }
 
-        if (_nativeActionTask != null)
+        NetherNativeActionResult parent = PollCheckpointParent();
+        if (parent.Kind == NetherNativeActionResultKind.Started)
         {
-            NetherNativeActionResult task = PollResultTask(_nativeActionTask);
-            if (task.Kind != NetherNativeActionResultKind.Started)
-            {
-                _nativeActionTask = null;
-                _pendingCheckpointAction = null;
-                _checkpointFlow.Complete();
-            }
-            return task;
+            NetherNativeActionResult wait = _checkpointTerminalTaskWait.AwaitRegistration("checkpoint-parent-terminal");
+            return wait.Kind == NetherNativeActionResultKind.Started
+                ? wait
+                : TerminalCheckpointFailure(wait);
         }
+        _checkpointTerminalTaskWait.Clear();
+        if (parent.Kind != NetherNativeActionResultKind.Completed)
+            return TerminalCheckpointFailure(parent);
+
+        CompleteCheckpointNativeFlow();
+        return NetherNativeActionResult.Completed("checkpoint-native-flow-completed");
+    }
+
+    /// <summary>
+    /// The popup wait coordinator's only parent capability.  This reads the exact task captured
+    /// from HandleStartEventByStatusAsync; it cannot invoke a checkpoint callback or endpoint.
+    /// </summary>
+    public NetherNativeActionResult PollCheckpointParent()
+    {
+        lock (_gate)
+            return PollCheckpointParentTask();
+    }
+
+    private NetherNativeActionResult PollCheckpointParentTask()
+    {
+        if (_checkpointParentTask == null)
+            return _checkpointParentTaskWait.AwaitRegistration("checkpoint-parent");
+        return PollResultTask(_checkpointParentTask);
+    }
+
+    private NetherCheckpointPopupWaitResult WaitForCheckpointPopup(
+        NetherCheckpointPopupKind kind,
+        PopupRegistration? registration
+    )
+    {
+        NetherCheckpointPopupObservation? observation = registration is PopupRegistration current
+            ? new NetherCheckpointPopupObservation(
+                kind,
+                current.OwnerAction,
+                current.OwnerGeneration,
+                current.Sequence,
+                current.IsLive
+            )
+            : null;
+        return _checkpointPopupWait.WaitFor(kind, observation);
+    }
+
+    private NetherCheckpointPopupWaitResult WaitForCheckpointScroll()
+    {
+        NetherCheckpointPopupObservation? observation = _returnScrollController is CheckpointControllerRegistration current
+            ? new NetherCheckpointPopupObservation(
+                NetherCheckpointPopupKind.ReturnScroll,
+                current.OwnerAction,
+                current.OwnerGeneration,
+                current.Sequence,
+                current.IsLive
+            )
+            : null;
+        return _checkpointPopupWait.WaitFor(NetherCheckpointPopupKind.ReturnScroll, observation);
+    }
+
+    private NetherNativeActionResult ToCheckpointWaitResult(NetherCheckpointPopupWaitResult wait)
+    {
+        NetherNativeActionResult native = wait.Kind switch
+        {
+            NetherCheckpointPopupWaitResultKind.Waiting => NetherNativeActionResult.Started(wait.Detail),
+            NetherCheckpointPopupWaitResultKind.ParentCanceled => NetherNativeActionResult.UnknownOutcome(wait.Detail),
+            NetherCheckpointPopupWaitResultKind.ParentFaulted => NetherNativeActionResult.UnknownOutcome(wait.Detail),
+            NetherCheckpointPopupWaitResultKind.ParentCompletedEarly => NetherNativeActionResult.BindingUnavailable(wait.Detail),
+            NetherCheckpointPopupWaitResultKind.Stale => NetherNativeActionResult.BindingUnavailable(wait.Detail),
+            _ => NetherNativeActionResult.BindingUnavailable(wait.Detail),
+        };
+        return native.Kind == NetherNativeActionResultKind.Started
+            ? native
+            : TerminalCheckpointFailure(native);
+    }
+
+    private bool IsCurrentCheckpointPopup(PopupRegistration registration, NetherCheckpointPopupKind kind) =>
+        registration.IsLive
+        && registration.OwnerAction == _pendingCheckpointAction?.Kind
+        && registration.OwnerGeneration == _checkpointOwnerGeneration
+        && registration.Sequence > _checkpointMinimumSequence
+        && kind is NetherCheckpointPopupKind.Continue or NetherCheckpointPopupKind.Boost or NetherCheckpointPopupKind.Return;
+
+    private NetherNativeActionResult TerminalCheckpointFailure(NetherNativeActionResult result)
+    {
+        ClearCheckpointNativeFlow();
+        return result;
+    }
+
+    private void CompleteCheckpointNativeFlow()
+    {
         _pendingCheckpointAction = null;
         _checkpointFlow.Complete();
-        return NetherNativeActionResult.Completed("checkpoint-native-flow-completed");
+        _checkpointPopupWait.Reset();
+        _checkpointParentTask = null;
+        _checkpointChildTask = null;
+        _checkpointParentTaskWait.Clear();
+        _checkpointTerminalTaskWait.Clear();
+        _checkpointOwnerGeneration = 0;
+        _checkpointMinimumSequence = 0;
+    }
+
+    private void ClearCheckpointNativeFlow()
+    {
+        _pendingCheckpointAction = null;
+        _checkpointFlow.Clear();
+        _checkpointPopupWait.Reset();
+        _checkpointParentTask = null;
+        _checkpointChildTask = null;
+        _checkpointParentTaskWait.Clear();
+        _checkpointTerminalTaskWait.Clear();
+        _checkpointOwnerGeneration = 0;
+        _checkpointMinimumSequence = 0;
+        _continuePopup = null;
+        _boostPopup = null;
+        _returnPopup = null;
+        _returnScrollController = null;
     }
 
     private NetherNativeActionResult ConfirmBoostOneTicket(PopupRegistration registration)
@@ -1736,6 +2197,15 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             return NetherNativeActionResult.UnknownOutcome("confirm-boost-exception:" + ex.GetType().Name + ":" + ex.Message);
         }
     }
+
+    private static NetherNativeActionResult ToNativeResult(NetherResultSceneStep step) => step.Kind switch
+    {
+        NetherResultSceneStepKind.Pending => NetherNativeActionResult.Started(step.Detail),
+        NetherResultSceneStepKind.Succeeded => NetherNativeActionResult.Completed(step.Detail),
+        NetherResultSceneStepKind.BindingUnavailable => NetherNativeActionResult.BindingUnavailable(step.Detail),
+        NetherResultSceneStepKind.Canceled => NetherNativeActionResult.UnknownOutcome(step.Detail),
+        _ => NetherNativeActionResult.UnknownOutcome(step.Detail),
+    };
 
     private static NetherNativeActionResult PollResultTask(object task)
     {
@@ -1823,6 +2293,32 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             return;
         lock (_gate)
             _nativeActionTask = task;
+    }
+
+    private void RegisterCheckpointParentTask(object? task)
+    {
+        if (task == null)
+            return;
+        lock (_gate)
+        {
+            if (_pendingCheckpointAction == null)
+                return;
+            _checkpointParentTask = task;
+            _checkpointParentTaskWait.ObserveRegistration();
+            _checkpointTerminalTaskWait.ObserveRegistration();
+        }
+    }
+
+    private void RegisterCheckpointChildTask(object? task)
+    {
+        if (task == null)
+            return;
+        lock (_gate)
+        {
+            if (_pendingCheckpointAction == null)
+                return;
+            _checkpointChildTask = task;
+        }
     }
 
     private void RegisterFloorParentTask(object? task)
@@ -2185,6 +2681,51 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         return true;
     }
 
+    /// <summary>
+    /// Derives the only legal post-Continue target from server-authoritative current floor data
+    /// plus the packaged master link <c>m_nether_map_floor_id_next</c>.  The map-floor master
+    /// contains no guessed map ordering, so an absent/broken link intentionally yields null and
+    /// the controller pauses before Continue.
+    /// </summary>
+    private static NetherContinuationTarget? TryMapContinuationTarget(
+        MasterDataStore masterDataStore,
+        NetherData data,
+        long currentFloorId
+    )
+    {
+        if (masterDataStore == null || data == null || currentFloorId <= 0 || data.ContinuanceFloorLevel < 1)
+            return null;
+
+        try
+        {
+            MNetherMapFloors[]? floors = masterDataStore.GetCache<MNetherMapFloors>();
+            if (floors == null || floors.Length == 0)
+                return null;
+
+            MNetherMapFloors? current = floors.FirstOrDefault(row => row != null && row.id == currentFloorId);
+            if (current == null || current.m_nether_map_floor_id_next <= 0)
+                return null;
+
+            MNetherMapFloors? next = floors.FirstOrDefault(row =>
+                row != null && row.id == current.m_nether_map_floor_id_next
+            );
+            if (next == null || next.id <= 0 || next.m_nether_map_id <= 0)
+                return null;
+
+            return new NetherContinuationTarget(
+                next.m_nether_map_id,
+                next.id,
+                data.ContinuanceFloorLevel
+            );
+        }
+        catch
+        {
+            // Master/cache failures cannot be reinterpreted as an actionable continuation
+            // target.  The snapshot carries null and the controller fail-closes before mutation.
+            return null;
+        }
+    }
+
     private static bool TryMapCodes(
         NetherDataStore dataStore,
         MasterRows rows,
@@ -2261,6 +2802,84 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         error = string.Empty;
         return true;
     }
+
+    /// <summary>
+    /// Maps precisely the data consumed by NetherReturnItemSelectionPopupController.InitializeViewAsync:
+    /// live GetOtherAcquiredItemDataList entries plus MItems content type/rarity.  This is kept
+    /// separate from the snapshot mapper because LockReward==0 must not require any item master.
+    /// </summary>
+    private static bool TryMapAuthoritativeReturnPreflightItems(
+        NetherDataStore dataStore,
+        MasterDataStore? masterDataStore,
+        out IReadOnlyList<NetherCheckpointReturnPreflightItem>? items,
+        out string error
+    )
+    {
+        items = null;
+        if (dataStore == null || masterDataStore == null)
+        {
+            error = "missing-return-preflight-store-or-master";
+            return false;
+        }
+
+        MItems[]? masterItems = masterDataStore.GetCache<MItems>();
+        if (masterItems == null || masterItems.Length == 0)
+        {
+            error = "missing-return-preflight-m-items-cache";
+            return false;
+        }
+        var masterById = new Dictionary<long, MItems>();
+        foreach (MItems master in masterItems)
+        {
+            if (master != null && master.id > 0)
+                masterById[master.id] = master;
+        }
+        if (masterById.Count == 0)
+        {
+            error = "empty-return-preflight-m-items-cache";
+            return false;
+        }
+
+        var mapped = new List<NetherCheckpointReturnPreflightItem>();
+        foreach (NetherItemData item in dataStore.GetOtherAcquiredItemDataList())
+        {
+            if (item == null || item.MItemId <= 0 || item.Amount <= 0)
+            {
+                error = "invalid-return-preflight-acquired-item";
+                return false;
+            }
+            if (!masterById.TryGetValue(item.MItemId, out MItems? master))
+            {
+                error = "missing-return-preflight-m-item:" + item.MItemId;
+                return false;
+            }
+            if (master.type is < int.MinValue or > int.MaxValue || master.rarity < 0)
+            {
+                error = "invalid-return-preflight-m-item:" + item.MItemId;
+                return false;
+            }
+
+            mapped.Add(new NetherCheckpointReturnPreflightItem(item.MItemId, item.Amount)
+            {
+                HasMasterData = true,
+                HasContentData = true,
+                HasRarityData = true,
+                ContentType = checked((int)master.type),
+                MasterRarity = master.rarity,
+            });
+        }
+
+        items = mapped;
+        error = string.Empty;
+        return true;
+    }
+
+    private static NetherCheckpointReturnPreflightDecision ReturnPreflightPause(string detail) => new()
+    {
+        Kind = NetherCheckpointReturnPreflightKind.Pause,
+        PauseReason = NetherPauseReason.UnknownMasterData,
+        Detail = detail,
+    };
 
     private static NetherRuntimePopupResult TryMapEventPopup(
         PopupRegistration registration,
@@ -2633,6 +3252,11 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 error = "missing-return-m-item:" + itemId;
                 return false;
             }
+            if (master.type is < int.MinValue or > int.MaxValue || master.rarity < 0)
+            {
+                error = "invalid-return-m-item:" + itemId;
+                return false;
+            }
 
             mapped.Add(new NetherRewardItem(itemId, amount)
             {
@@ -2650,6 +3274,42 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         }
 
         items = mapped;
+        error = string.Empty;
+        return true;
+    }
+
+    private static bool TryMapFreshReturnPreflightItems(
+        IReadOnlyList<NetherRewardItem> items,
+        out IReadOnlyList<NetherCheckpointReturnPreflightItem>? mappedItems,
+        out string error
+    )
+    {
+        mappedItems = null;
+        if (items == null)
+        {
+            error = "missing-fresh-return-preflight-items";
+            return false;
+        }
+
+        var mapped = new List<NetherCheckpointReturnPreflightItem>();
+        foreach (NetherRewardItem item in items)
+        {
+            if (item == null)
+            {
+                error = "null-fresh-return-preflight-item";
+                return false;
+            }
+            mapped.Add(new NetherCheckpointReturnPreflightItem(item.ItemId, item.Amount)
+            {
+                HasMasterData = item.HasMasterData,
+                HasContentData = item.ItemType >= 0,
+                HasRarityData = item.MasterRarity >= 0,
+                ContentType = item.ItemType,
+                MasterRarity = item.MasterRarity,
+            });
+        }
+
+        mappedItems = mapped;
         error = string.Empty;
         return true;
     }
@@ -3155,6 +3815,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         object Controller,
         object Popup,
         object? Close,
+        long Sequence,
+        NetherActionKind OwnerAction,
+        long OwnerGeneration,
+        bool IsLive
+    );
+
+    private readonly record struct CheckpointControllerRegistration(
+        object Controller,
         long Sequence,
         NetherActionKind OwnerAction,
         long OwnerGeneration,

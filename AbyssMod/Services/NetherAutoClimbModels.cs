@@ -36,6 +36,7 @@ internal enum NetherAutoClimbPhase
     Reconciling,
     Stable,
     ExecutingNativeAction,
+    AwaitingContinueSceneHandoff,
     AwaitingBattle,
     AwaitingF11,
     AwaitingBattleSettlement,
@@ -86,6 +87,14 @@ internal enum NetherPauseReason
     BattleSettlementUnchanged,
     BattleSettlementWrongTarget,
     BattleSceneLost,
+    ContinueLifecycleFault,
+    ContinueLifecycleCanceled,
+    ContinueTeardownTimeout,
+    ContinueRebindTimeout,
+    ContinueRebindWrongScene,
+    ContinueSettlementWrongTarget,
+    ResultLifecycleFault,
+    ResultLifecycleCanceled,
     TargetReachedOutsideCheckpoint,
     Lose,
     UserDisabled,
@@ -369,6 +378,17 @@ internal sealed record NetherAutoClimbSettings
     public bool DetailedLogging { get; init; } = true;
 }
 
+/// <summary>
+/// Exact, pre-mutation target for a Sleep continuation, derived from the current map-floor
+/// master chain.  A missing target is intentionally represented as null on the snapshot so the
+/// controller pauses before issuing Continue rather than inferring the next segment.
+/// </summary>
+internal sealed record NetherContinuationTarget(
+    long MapId,
+    long FloorId,
+    int SegmentFloorLevel
+);
+
 internal sealed record NetherSnapshot
 {
     public NetherSessionStatus Status { get; init; }
@@ -388,6 +408,7 @@ internal sealed record NetherSnapshot
     public int CodeReloadCount { get; init; }
     public int CodeCapacity { get; init; }
     public int LockReward { get; init; }
+    public NetherContinuationTarget? ContinuationTarget { get; init; }
     public IReadOnlyList<NetherCharacterState> Characters { get; init; } = Array.Empty<NetherCharacterState>();
     public IReadOnlyList<NetherCodeState> Codes { get; init; } = Array.Empty<NetherCodeState>();
     public IReadOnlyList<NetherFloorNode> Floors { get; init; } = Array.Empty<NetherFloorNode>();
@@ -445,13 +466,19 @@ internal readonly record struct NetherPlannedAction(NetherActionKind Kind)
     public int TicketCount { get; init; }
     public int TicketCost { get; init; }
     public long ExpectedMapId { get; init; }
+    /// <summary>Exact post-Continue floor ID, not the source floor-selection ID.</summary>
+    public long ExpectedFloorId { get; init; }
     public int ExpectedSegmentFloorLevel { get; init; }
     public NetherBattleSettlementContract? BattleSettlement { get; init; }
     /// <summary>
     /// A checkpoint continuation carries only its lock count and explicit user preserve IDs.
-    /// The bridge obtains the policy candidates from the freshly generated native return popup
-    /// after Continue; it never ranks or clicks the stale pre-continuation datastore list.
+    /// The live datastore preflight is captured before starting the native Continue parent and
+    /// the fresh native return popup must match this contract before it can be confirmed.
     /// </summary>
     public int ReturnLockReward { get; init; }
     public IReadOnlyList<long> ReturnPreserveItemIds { get; init; } = Array.Empty<long>();
+    public int ReturnPreflightSelectionLimit { get; init; }
+    public string ReturnExpectedPristineHash { get; init; } = string.Empty;
+    public IReadOnlyList<NetherCheckpointReturnPreflightItem> ReturnPreflightWholeEntrySelection { get; init; }
+        = Array.Empty<NetherCheckpointReturnPreflightItem>();
 }

@@ -332,6 +332,21 @@ public class NetherAutoClimbStateMachineTests
         Assert.Equal(NetherActionKind.BattleSettlement, machine.PendingAction!.Value.Kind);
     }
 
+    [Fact]
+    public void F12_off_awaiting_result_scene_keeps_result_observation_and_blocks_reenable()
+    {
+        var machine = new NetherAutoClimbStateMachine();
+        NetherSnapshotFingerprint clear = Fingerprint(NetherSessionStatus.Clear, 30);
+
+        machine.Toggle(isInNether: true);
+        machine.ObserveStable(clear);
+        machine.Toggle(isInNether: true); // off
+        machine.Toggle(isInNether: true); // attempted re-enable before result terminal
+
+        Assert.False(machine.IsEnabled);
+        Assert.Equal(NetherAutoClimbPhase.AwaitingSceneChange, machine.Phase);
+    }
+
     private static NetherAutoClimbStateMachine StableMachine()
     {
         var machine = new NetherAutoClimbStateMachine();

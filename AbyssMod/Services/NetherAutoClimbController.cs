@@ -20,6 +20,7 @@ internal static class NetherAutoClimbController
     private static readonly NetherCodePolicy CodePolicy = new();
     private static readonly NetherRoutePlanner RoutePlanner = new();
     private static readonly NetherReturnItemPolicy ReturnItemPolicy = new();
+    private static readonly NetherCheckpointReturnPreflight CheckpointReturnPreflight = new();
     private static readonly NetherActionProjectionCalibration ProjectionCalibration = new();
     private static INetherRuntimeBridge _bridge = NetherRuntimeBridge.Instance;
     // This production coordinator is deliberately free of Unity/reflection dependencies.
@@ -28,6 +29,7 @@ internal static class NetherAutoClimbController
     private static readonly NetherRuntimeFlowCoordinator RuntimeFlow = new(_bridge);
     private static readonly NetherReadOnlyReconcileCoordinator ReadOnlyReconcileFlow = new(_bridge);
     private static readonly NetherBattleSettlementCoordinator BattleSettlementFlow = new(_bridge, _bridge);
+    private static readonly NetherContinueSceneRuntimeCoordinator ContinueSceneFlow = new(State, _bridge);
 
     private static bool _initialized;
     private static bool _leaseRestoreCompleted;
@@ -117,6 +119,28 @@ internal static class NetherAutoClimbController
             return;
         }
 
+        // Finish naturally tears FloorSelection down before the separate Result scene
+        // registers CreateNetherResultModelAsync.  Result is a global owner: observe its
+        // bounded task before applying any FloorSelection availability gate.
+        if (State.Phase == NetherAutoClimbPhase.AwaitingSceneChange)
+        {
+            ObserveResult();
+            return;
+        }
+
+        // A native Sleep Continue intentionally tears down the old FloorSelection before the
+        // new NetherTop segment registers.  Its coordinator owns the parent/teardown/rebind
+        // evidence, so it must run before the ordinary "no floor controller" fail-closed gate.
+        if (State.PendingAction?.Kind == NetherActionKind.Continue
+            && State.Phase is (
+                NetherAutoClimbPhase.ExecutingNativeAction
+                or NetherAutoClimbPhase.AwaitingContinueSceneHandoff
+            ))
+        {
+            ObserveContinueSceneHandoff();
+            return;
+        }
+
         bool disabledReconciliation = !State.IsEnabled
             && State.Phase is (
                 NetherAutoClimbPhase.ExecutingNativeAction or
@@ -124,6 +148,7 @@ internal static class NetherAutoClimbController
                 NetherAutoClimbPhase.AwaitingF11 or
                 NetherAutoClimbPhase.AwaitingBattle or
                 NetherAutoClimbPhase.AwaitingBattleSettlement or
+                NetherAutoClimbPhase.AwaitingContinueSceneHandoff or
                 NetherAutoClimbPhase.AwaitingSceneChange
             )
             && State.PendingAction != null;
@@ -158,9 +183,6 @@ internal static class NetherAutoClimbController
             case NetherAutoClimbPhase.AwaitingBattleSettlement:
                 ObserveBattle();
                 return;
-            case NetherAutoClimbPhase.AwaitingSceneChange:
-                ObserveResult();
-                return;
             case NetherAutoClimbPhase.Stable:
                 PlanStableBoundary();
                 return;
@@ -178,6 +200,7 @@ internal static class NetherAutoClimbController
         RuntimeFlow.TerminateParent();
         ReadOnlyReconcileFlow.Reset();
         BattleSettlementFlow.TerminateForSceneLoss();
+        ContinueSceneFlow.Reset();
         _initialized = false;
         _lockedCombatLane = null;
         ProjectionCalibration.Clear();
@@ -452,9 +475,41 @@ internal static class NetherAutoClimbController
         FailClosed(
             result.Kind == NetherNativeActionResultKind.BindingUnavailable
                 ? NetherPauseReason.BindingUnavailable
-                : NetherPauseReason.AmbiguousServerOutcome,
+                : result.Detail.IndexOf("canceled", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? NetherPauseReason.ResultLifecycleCanceled
+                    : NetherPauseReason.ResultLifecycleFault,
             "native-result:" + result.Detail
         );
+    }
+
+    private static void ObserveContinueSceneHandoff()
+    {
+        NetherContinueSceneStep step = ContinueSceneFlow.Pump();
+        switch (step.Kind)
+        {
+            case NetherContinueSceneStepKind.WaitForTeardown:
+            case NetherContinueSceneStepKind.WaitForRebind:
+            case NetherContinueSceneStepKind.Reconcile:
+                return;
+            case NetherContinueSceneStepKind.Complete:
+                if (step.Snapshot != null)
+                    LogAction("continue-handoff-complete", step.Snapshot, step.Detail);
+                return;
+            case NetherContinueSceneStepKind.Pause:
+                // The runtime seam has already terminally cleared the Continue pending action
+                // with an action-specific reason.  Preserve that reason rather than turning an
+                // expected scene handoff into generic "not in Nether".
+                FailClosed(
+                    State.PauseReason == NetherPauseReason.None
+                        ? NetherPauseReason.ContinueLifecycleFault
+                        : State.PauseReason,
+                    "continue-handoff:" + step.Detail
+                );
+                return;
+            default:
+                FailClosed(NetherPauseReason.ContinueLifecycleFault, "continue-handoff-invalid-step:" + step.Kind);
+                return;
+        }
     }
 
     private static void PlanStableBoundary()
@@ -584,19 +639,38 @@ internal static class NetherAutoClimbController
             return;
         }
 
-        // Native HandleGameClearedIfNeededAsync opens Continue first, performs its one-ticket
-        // server mutation, then creates the pristine return popup.  Its current ContentModel
-        // list (including real drop rarity) is selected in the bridge only after that UI exists.
+        // Native HandleGameClearedIfNeededAsync reads LockReward before any
+        // RequestNetherContinueAsync.  A positive value creates the return popup, whose fresh
+        // ContentModel list must match the live datastore preflight before OnConfirmAsync;
         // Finish transitions directly to result and carries no return selection information.
 
-        NetherPlannedAction action = checkpoint.Kind == NetherCheckpointDecisionKind.ContinueOneTicket
-            ? new NetherPlannedAction(NetherActionKind.Continue)
+        NetherPlannedAction action;
+        if (checkpoint.Kind == NetherCheckpointDecisionKind.ContinueOneTicket)
+        {
+            NetherContinuationTarget? target = snapshot.ContinuationTarget;
+            if (target == null)
+            {
+                FailClosed(NetherPauseReason.UnknownMasterData, "continue-target-unavailable-before-native-mutation");
+                return;
+            }
+
+            action = new NetherPlannedAction(NetherActionKind.Continue)
             {
                 TicketCount = checkpoint.TicketCount,
+                TicketCost = 1,
+                ExpectedMapId = target.MapId,
+                ExpectedFloorId = target.FloorId,
+                ExpectedSegmentFloorLevel = target.SegmentFloorLevel,
                 ReturnLockReward = snapshot.LockReward,
                 ReturnPreserveItemIds = preserveIds.OrderBy(itemId => itemId).ToArray(),
-            }
-            : new NetherPlannedAction(NetherActionKind.FinishAtCheckpoint);
+            };
+        }
+        else
+        {
+            // Finish is deliberately not a Continue handoff: it reaches the independent
+            // Result owner/scene path and never waits for a new segment rebind.
+            action = new NetherPlannedAction(NetherActionKind.FinishAtCheckpoint);
+        }
         ExecuteNativeAction(snapshot, action, "checkpoint");
     }
 
@@ -775,6 +849,12 @@ internal static class NetherAutoClimbController
         Action<NetherNativeActionResult>? afterInvoke = null
     )
     {
+        if (action.Kind == NetherActionKind.Continue)
+        {
+            ExecuteContinueNativeAction(snapshot, action, boundary);
+            return;
+        }
+
         if (!State.TryBegin(action, snapshot))
         {
             FailClosed(NetherPauseReason.AmbiguousServerOutcome, "could-not-begin:" + action.Kind);
@@ -801,6 +881,77 @@ internal static class NetherAutoClimbController
         }
         afterInvoke?.Invoke(native);
         HandleInvocationResult(snapshot, action, native, boundary);
+    }
+
+    private static void ExecuteContinueNativeAction(
+        NetherSnapshot snapshot,
+        NetherPlannedAction action,
+        string boundary
+    )
+    {
+        if (action.TicketCount != 1 || action.TicketCost != 1)
+        {
+            FailClosed(NetherPauseReason.InvalidConfiguration, "continue-requires-exact-one-ticket-nonboost");
+            return;
+        }
+
+        // This is intentionally before State.TryBegin/TryBeginContinueSceneHandoff/Invoke.
+        // A pause here proves that no native parent task and therefore no native API chain has
+        // been started for an incomplete carry-out contract.
+        NetherCheckpointReturnPreflightDecision preflight = _bridge.PreflightContinueReturn(action);
+        if (!CheckpointReturnPreflight.CanStartNativeContinueParent(preflight))
+        {
+            FailClosed(
+                preflight.PauseReason == NetherPauseReason.None
+                    ? NetherPauseReason.UnknownMasterData
+                    : preflight.PauseReason,
+                "continue-return-preflight:" + preflight.Detail
+            );
+            return;
+        }
+        action = action with
+        {
+            ReturnLockReward = preflight.SelectionLimit,
+            ReturnPreflightSelectionLimit = preflight.SelectionLimit,
+            ReturnExpectedPristineHash = preflight.ExpectedPristineHash,
+            ReturnPreflightWholeEntrySelection = preflight.WholeEntrySelection,
+        };
+
+        if (!State.TryBegin(action, snapshot))
+        {
+            FailClosed(NetherPauseReason.AmbiguousServerOutcome, "could-not-begin:continue");
+            return;
+        }
+        if (!_bridge.TryBeginContinueSceneHandoff(out long ownerGeneration)
+            || !ContinueSceneFlow.Begin(action, snapshot, ownerGeneration))
+        {
+            State.ObserveActionResult(snapshot.Fingerprint, NetherActionOutcome.NotApplied);
+            FailClosed(NetherPauseReason.BindingUnavailable, "continue-handoff-owner-generation-unavailable");
+            return;
+        }
+
+        NetherNativeActionResult native = _bridge.Invoke(action);
+        LogAction(boundary + ":" + action.Kind, snapshot, native.Detail);
+        switch (native.Kind)
+        {
+            case NetherNativeActionResultKind.Started:
+            case NetherNativeActionResultKind.Completed:
+                // The exact checkpoint parent still owns terminal evidence.  Do not convert
+                // invocation return into generic reconciliation before teardown/rebind.
+                return;
+            case NetherNativeActionResultKind.Rejected:
+                ContinueSceneFlow.Reset();
+                State.ObserveActionResult(snapshot.Fingerprint, NetherActionOutcome.NotApplied);
+                return;
+            case NetherNativeActionResultKind.BindingUnavailable:
+                ContinueSceneFlow.Reset();
+                FailClosed(NetherPauseReason.BindingUnavailable, native.Detail);
+                return;
+            default:
+                ContinueSceneFlow.Reset();
+                FailClosedTerminal(NetherPauseReason.ContinueLifecycleFault, "continue-native-invocation:" + native.Detail);
+                return;
+        }
     }
 
     private static void HandleInvocationResult(

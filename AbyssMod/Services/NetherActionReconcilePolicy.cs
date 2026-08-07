@@ -153,6 +153,7 @@ internal static class NetherActionReconcilePolicy
     {
         if (action.TicketCost <= 0
             || action.ExpectedMapId <= 0
+            || action.ExpectedFloorId <= 0
             || action.ExpectedSegmentFloorLevel <= 0
             || before.TicketCount < action.TicketCost)
         {
@@ -161,6 +162,7 @@ internal static class NetherActionReconcilePolicy
 
         return after.TicketCount == before.TicketCount - action.TicketCost
             && after.MapId == action.ExpectedMapId
+            && after.CurrentFloorId == action.ExpectedFloorId
             && after.FloorLevel == action.ExpectedSegmentFloorLevel
                 ? NetherActionOutcome.Applied
                 : UnchangedOrAmbiguous(before, after);

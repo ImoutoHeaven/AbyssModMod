@@ -107,6 +107,14 @@ internal sealed class NetherAutoClimbStateMachine
     {
         if (!isInNether)
         {
+            // Result owns a scene-global task which normally outlives FloorSelection.  A
+            // temporary lack of that floor controller must not erase the task or let an
+            // off→on repeat start a fresh session before Result reaches a terminal state.
+            if (HasDrainEvidence() && IsDrainPhase(Phase))
+            {
+                IsEnabled = false;
+                return;
+            }
             IsEnabled = false;
             Phase = NetherAutoClimbPhase.Disabled;
             PauseReason = NetherPauseReason.NotInNether;
@@ -117,7 +125,7 @@ internal sealed class NetherAutoClimbStateMachine
         // An off→on key repeat must not replace an in-flight native operation with a fresh
         // reconciliation.  Keep F12 disabled until the existing controller task has reached
         // its terminal observation and the action-specific read-only reconcile is complete.
-        if (!IsEnabled && _pendingAction != null && IsDrainPhase(Phase))
+        if (!IsEnabled && HasDrainEvidence() && IsDrainPhase(Phase))
         {
             return;
         }
@@ -129,7 +137,7 @@ internal sealed class NetherAutoClimbStateMachine
             // discard its identity: observe it to a terminal native result, then reconcile
             // once before allowing a later enable.  This prevents a second non-idempotent
             // request from being issued against an unknown first outcome.
-            if (_pendingAction != null && IsDrainPhase(Phase))
+            if (HasDrainEvidence() && IsDrainPhase(Phase))
             {
                 // Preserve the exact pending phase and action evidence.  An off→on repeat
                 // cannot replace a F11/battle/settlement/native/reconcile drain with a new
@@ -251,6 +259,17 @@ internal sealed class NetherAutoClimbStateMachine
             _knownNotAppliedFingerprint = null;
         }
 
+        // A disabled F12 still drains its one in-flight native chain.  Once that chain reaches
+        // a terminal observation, it must become a safe Disabled boundary rather than retain a
+        // stale handoff phase that could be mistaken for a re-enableable action.
+        if (!IsEnabled)
+        {
+            Phase = NetherAutoClimbPhase.Disabled;
+            PauseReason = NetherPauseReason.UserDisabled;
+            PauseDetail = "user-disabled-after-drain";
+            return;
+        }
+
         ObserveStable(fingerprint);
     }
 
@@ -277,6 +296,27 @@ internal sealed class NetherAutoClimbStateMachine
         }
 
         Phase = NetherAutoClimbPhase.AwaitingBattleSettlement;
+        return true;
+    }
+
+    /// <summary>
+    /// Continue has a parent task whose terminal state intentionally tears the old
+    /// FloorSelection down before a new NetherTop runtime is registered.  Preserve the pending
+    /// action through that expected absence; it remains a drain phase until exact GET-only
+    /// settlement succeeds or pauses.
+    /// </summary>
+    public bool BeginContinueSceneHandoff()
+    {
+        if (_pendingAction?.Kind != NetherActionKind.Continue
+            || Phase is not (
+                NetherAutoClimbPhase.ExecutingNativeAction
+                or NetherAutoClimbPhase.AwaitingContinueSceneHandoff
+            ))
+        {
+            return false;
+        }
+
+        Phase = NetherAutoClimbPhase.AwaitingContinueSceneHandoff;
         return true;
     }
 
@@ -312,8 +352,12 @@ internal sealed class NetherAutoClimbStateMachine
     private static bool RequiresResultScene(NetherSessionStatus status) =>
         status == NetherSessionStatus.Clear;
 
+    private bool HasDrainEvidence() => _pendingAction != null
+        || Phase is NetherAutoClimbPhase.AwaitingSceneChange or NetherAutoClimbPhase.AwaitingContinueSceneHandoff;
+
     private static bool IsDrainPhase(NetherAutoClimbPhase phase) => phase is
         NetherAutoClimbPhase.ExecutingNativeAction or
+        NetherAutoClimbPhase.AwaitingContinueSceneHandoff or
         NetherAutoClimbPhase.Reconciling or
         NetherAutoClimbPhase.AwaitingF11 or
         NetherAutoClimbPhase.AwaitingBattle or
