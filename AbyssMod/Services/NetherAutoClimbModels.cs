@@ -55,6 +55,12 @@ internal enum NetherActionKind
     BuyShopItem,
     SelectCode,
     ReloadCode,
+    /// <summary>
+    /// Exact Abyss-code offer cancel flow.  This is terminal for the owned CodeOffer only
+    /// after the generated HandleCancelSequenceAsync UniTask has completed; it never means a
+    /// visual popup close.
+    /// </summary>
+    KeepCode,
     Continue,
     FinishAtCheckpoint,
     SelectReturnItems,
@@ -151,6 +157,14 @@ internal sealed record NetherNativeMethodDescriptor(
 )
 {
     public int Arity => ParameterTypeNames.Count;
+
+    /// <summary>
+    /// Optional because existing non-reflection policy descriptors intentionally describe only
+    /// a callable shape.  Exact generated callbacks may additionally require their proven
+    /// static/instance ownership, which prevents an adjacent compiler-generated method from
+    /// satisfying a superficially identical signature.
+    /// </summary>
+    public bool? IsStatic { get; init; }
 }
 
 internal readonly record struct NetherNativeBindingSelection(
@@ -205,6 +219,7 @@ internal static class NetherNativeMethodBindingSelector
             !string.Equals(expected.Name, candidate.Name, StringComparison.Ordinal)
             || expected.Arity != candidate.Arity
             || !string.Equals(expected.ReturnTypeName, candidate.ReturnTypeName, StringComparison.Ordinal)
+            || (expected.IsStatic.HasValue && candidate.IsStatic != expected.IsStatic)
         )
             return false;
 

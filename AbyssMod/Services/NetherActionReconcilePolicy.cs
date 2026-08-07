@@ -32,6 +32,7 @@ internal static class NetherActionReconcilePolicy
             NetherActionKind.LeaveShop => UnchangedOrAmbiguous(before, after),
             NetherActionKind.SelectCode => EvaluateCodeSelect(action, before, after),
             NetherActionKind.ReloadCode => EvaluateCodeReload(before, after),
+            NetherActionKind.KeepCode => EvaluateCodeKeep(before, after),
             NetherActionKind.Continue => EvaluateContinue(action, before, after),
             NetherActionKind.BattleSettlement => EvaluateBattleSettlement(action, before, after),
             NetherActionKind.FinishAtCheckpoint => after.Status == NetherSessionStatus.Clear
@@ -72,11 +73,53 @@ internal static class NetherActionReconcilePolicy
             ?? Array.Empty<NetherFloorPopupStage>();
         if (stages.Count != 0)
         {
+            int reloadStageCount = 0;
             foreach (NetherFloorPopupStage stage in stages)
             {
                 if (stage == null || stage.ExpectedAfterStatus != action.ExpectedAfterStatus)
                     return NetherActionOutcome.Ambiguous;
 
+                if (stage.PopupKind == NetherRuntimePopupKind.CodeOffer
+                    && stage.ActionKind == NetherActionKind.ReloadCode)
+                {
+                    try
+                    {
+                        reloadStageCount = checked(reloadStageCount + 1);
+                    }
+                    catch (OverflowException)
+                    {
+                        return NetherActionOutcome.Ambiguous;
+                    }
+                }
+            }
+
+            // Every retained Reload was individually proven by the live epoch coordinator,
+            // but the only authority snapshot is the final GET.  Verify their aggregate
+            // resource delta once; applying before-1 to each stage would reject a valid
+            // [Reload, Reload, Select] chain against its one final snapshot.
+            if (reloadStageCount > 0)
+            {
+                try
+                {
+                    if (before.CodeReloadCount < reloadStageCount
+                        || after.CodeReloadCount != checked(before.CodeReloadCount - reloadStageCount))
+                    {
+                        return UnchangedOrAmbiguous(before, after);
+                    }
+                }
+                catch (OverflowException)
+                {
+                    return NetherActionOutcome.Ambiguous;
+                }
+            }
+
+            foreach (NetherFloorPopupStage stage in stages)
+            {
+                if (stage.PopupKind == NetherRuntimePopupKind.CodeOffer
+                    && stage.ActionKind == NetherActionKind.ReloadCode)
+                {
+                    continue;
+                }
                 NetherActionOutcome outcome = EvaluateOwnedFloorStage(stage, before, after);
                 if (outcome != NetherActionOutcome.Applied)
                     return outcome;
@@ -100,6 +143,8 @@ internal static class NetherActionReconcilePolicy
                 EvaluateCodeSelect(action, before, after),
             NetherRuntimePopupKind.CodeOffer when action.OwnedPopupActionKind == NetherActionKind.ReloadCode =>
                 EvaluateCodeReload(before, after),
+            NetherRuntimePopupKind.CodeOffer when action.OwnedPopupActionKind == NetherActionKind.KeepCode =>
+                EvaluateCodeKeep(before, after),
             _ => NetherActionOutcome.Ambiguous,
         };
     }
@@ -133,6 +178,10 @@ internal static class NetherActionReconcilePolicy
                 EvaluateCodeSelect(child, before, after),
             NetherRuntimePopupKind.CodeOffer when stage.ActionKind == NetherActionKind.ReloadCode =>
                 EvaluateCodeReload(before, after),
+            // Reload consumption is aggregated by the parent transaction.  Keep itself proves
+            // only that the original portfolio survived that cancel sequence unchanged.
+            NetherRuntimePopupKind.CodeOffer when stage.ActionKind == NetherActionKind.KeepCode =>
+                EvaluateCodeKeepPortfolio(before, after),
             _ => NetherActionOutcome.Ambiguous,
         };
     }
@@ -273,6 +322,17 @@ internal static class NetherActionReconcilePolicy
             ? NetherActionOutcome.Applied
             : UnchangedOrAmbiguous(before, after);
 
+    private static NetherActionOutcome EvaluateCodeKeep(NetherSnapshot before, NetherSnapshot after) =>
+        after.CodeReloadCount == before.CodeReloadCount
+            && HasUnchangedCodePortfolio(before, after)
+                ? NetherActionOutcome.Applied
+                : UnchangedOrAmbiguous(before, after);
+
+    private static NetherActionOutcome EvaluateCodeKeepPortfolio(NetherSnapshot before, NetherSnapshot after) =>
+        HasUnchangedCodePortfolio(before, after)
+            ? NetherActionOutcome.Applied
+            : UnchangedOrAmbiguous(before, after);
+
     private static NetherActionOutcome EvaluateContinue(
         NetherPlannedAction action,
         NetherSnapshot before,
@@ -371,6 +431,22 @@ internal static class NetherActionReconcilePolicy
 
     private static string CreateCodeIdentity(NetherSnapshot snapshot) => string.Join(
         ";",
-        snapshot.Codes.Select(code => code.CodeId + ":" + code.Level + ":" + (int)code.EffectKind)
+        snapshot.Codes
+            .Select(code => code.CodeId
+                + ":" + code.Level
+                + ":" + (int)code.EffectKind
+                + ":" + code.IsKnown
+                + ":" + (int)code.Category
+                + ":" + code.Rarity
+                + ":" + code.PartyCoverageKnown
+                + ":" + code.PartyCoverage
+                + ":" + code.IsResearchOnlyKnown
+                + ":" + code.IsResearchOnly)
+            .OrderBy(identity => identity, StringComparer.Ordinal)
     );
+
+    private static bool HasUnchangedCodePortfolio(NetherSnapshot before, NetherSnapshot after) =>
+        !string.IsNullOrWhiteSpace(before.CodeHash)
+        && string.Equals(before.CodeHash, after.CodeHash, StringComparison.Ordinal)
+        && string.Equals(CreateCodeIdentity(before), CreateCodeIdentity(after), StringComparison.Ordinal);
 }

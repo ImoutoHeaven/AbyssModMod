@@ -410,7 +410,9 @@ internal static class NetherAutoClimbController
                 if (result.Detail.StartsWith("shop-purchase-", StringComparison.Ordinal)
                     || result.Detail.StartsWith("owned-popup:shop-purchase-", StringComparison.Ordinal)
                     || result.Detail.StartsWith("code-reload-", StringComparison.Ordinal)
-                    || result.Detail.StartsWith("owned-popup:code-reload-", StringComparison.Ordinal))
+                    || result.Detail.StartsWith("owned-popup:code-reload-", StringComparison.Ordinal)
+                    || result.Detail.StartsWith("code-keep-", StringComparison.Ordinal)
+                    || result.Detail.StartsWith("owned-popup:code-keep-", StringComparison.Ordinal))
                 {
                     FailClosed(NetherPauseReason.BindingUnavailable, result.Detail);
                     return;
@@ -531,12 +533,12 @@ internal static class NetherAutoClimbController
         );
         if (decision.Kind == NetherCodeDecisionKind.Pause)
             return NetherNativeActionResult.BindingUnavailable("owned-code-policy:" + decision.PauseReason + ":" + decision.Detail);
-        if (decision.Kind == NetherCodeDecisionKind.Keep)
-            return NetherNativeActionResult.BindingUnavailable("owned-code-policy-keep:" + decision.Detail);
 
         _lockedCombatLane = decision.LockedLane;
         NetherPlannedAction action = decision.Kind == NetherCodeDecisionKind.Reload
             ? new NetherPlannedAction(NetherActionKind.ReloadCode)
+            : decision.Kind == NetherCodeDecisionKind.Keep
+                ? new NetherPlannedAction(NetherActionKind.KeepCode)
             : new NetherPlannedAction(NetherActionKind.SelectCode)
             {
                 CodeId = decision.SelectedCodeId,
@@ -1029,8 +1031,10 @@ internal static class NetherAutoClimbController
         }
         if (decision.Kind == NetherCodeDecisionKind.Keep)
         {
-            // There is no confirmed native "close without selecting" callback for this popup.
-            FailClosed(NetherPauseReason.UnsupportedPopup, "code-policy-keep:" + decision.Detail);
+            // Keep is bound only as a child of the original SelectFloor parent.  A recovered
+            // Wait session has no owner/parent UniTask to correlate with the generated cancel
+            // sequence, so it remains fail-closed rather than calling b__12_0 bare.
+            FailClosed(NetherPauseReason.BindingUnavailable, "code-keep-requires-owned-floor-parent:" + decision.Detail);
             return;
         }
 

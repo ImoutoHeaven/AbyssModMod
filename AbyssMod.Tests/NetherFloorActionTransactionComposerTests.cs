@@ -248,6 +248,178 @@ public class NetherFloorActionTransactionComposerTests
         Assert.True(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(afterSelect));
     }
 
+    [Fact]
+    public void Same_code_offer_allows_strictly_increasing_reload_epochs_until_one_final_select()
+    {
+        NetherPlannedAction parent = Parent();
+        NetherRuntimePopupContext epoch0 = new()
+        {
+            Kind = NetherRuntimePopupKind.CodeOffer,
+            OwnerAction = NetherActionKind.SelectFloor,
+            OwnerGeneration = 7,
+            Sequence = 2,
+            DecisionEpoch = 0,
+        };
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            epoch0,
+            new NetherPlannedAction(NetherActionKind.ReloadCode),
+            out NetherPlannedAction afterFirstReload
+        ));
+        Assert.False(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(afterFirstReload));
+
+        // The same owner/sequence may reroll again only after the bridge has proven a newer
+        // same-popup decision epoch.  A same-epoch replay remains stale and must not append.
+        Assert.False(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterFirstReload,
+            epoch0,
+            new NetherPlannedAction(NetherActionKind.ReloadCode),
+            out _
+        ));
+
+        NetherRuntimePopupContext epoch1 = epoch0 with { DecisionEpoch = 1 };
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterFirstReload,
+            epoch1,
+            new NetherPlannedAction(NetherActionKind.ReloadCode),
+            out NetherPlannedAction afterSecondReload
+        ));
+        Assert.False(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(afterSecondReload));
+
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterSecondReload,
+            epoch0 with { DecisionEpoch = 2 },
+            new NetherPlannedAction(NetherActionKind.SelectCode) { CodeId = 30024 },
+            out NetherPlannedAction afterSelect
+        ));
+
+        Assert.Equal(3, afterSelect.OwnedPopupStages.Count);
+        Assert.True(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(afterSelect));
+    }
+
+    [Fact]
+    public void Direct_keep_is_a_complete_owned_code_terminal_without_spending_a_reload()
+    {
+        NetherPlannedAction parent = Parent();
+        var popup = new NetherRuntimePopupContext
+        {
+            Kind = NetherRuntimePopupKind.CodeOffer,
+            OwnerAction = NetherActionKind.SelectFloor,
+            OwnerGeneration = 7,
+            Sequence = 2,
+            DecisionEpoch = 0,
+        };
+
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            popup,
+            new NetherPlannedAction(NetherActionKind.KeepCode),
+            out NetherPlannedAction kept
+        ));
+        Assert.Equal(NetherActionKind.KeepCode, kept.OwnedPopupActionKind);
+        Assert.True(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(kept));
+    }
+
+    [Fact]
+    public void Strict_reload_epochs_may_end_in_one_keep_but_stale_or_duplicate_keep_is_rejected()
+    {
+        NetherPlannedAction parent = Parent();
+        var epoch0 = new NetherRuntimePopupContext
+        {
+            Kind = NetherRuntimePopupKind.CodeOffer,
+            OwnerAction = NetherActionKind.SelectFloor,
+            OwnerGeneration = 7,
+            Sequence = 2,
+            DecisionEpoch = 0,
+        };
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            epoch0,
+            new NetherPlannedAction(NetherActionKind.ReloadCode),
+            out NetherPlannedAction afterFirstReload
+        ));
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterFirstReload,
+            epoch0 with { DecisionEpoch = 1 },
+            new NetherPlannedAction(NetherActionKind.ReloadCode),
+            out NetherPlannedAction afterSecondReload
+        ));
+        Assert.False(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterSecondReload,
+            epoch0 with { DecisionEpoch = 1 },
+            new NetherPlannedAction(NetherActionKind.KeepCode),
+            out _
+        ));
+
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterSecondReload,
+            epoch0 with { DecisionEpoch = 2 },
+            new NetherPlannedAction(NetherActionKind.KeepCode),
+            out NetherPlannedAction kept
+        ));
+        Assert.True(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(kept));
+        Assert.False(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            kept,
+            epoch0 with { DecisionEpoch = 3 },
+            new NetherPlannedAction(NetherActionKind.KeepCode),
+            out _
+        ));
+    }
+
+    [Fact]
+    public void Code_child_of_a_battle_event_inherits_the_parent_battle_terminal()
+    {
+        NetherPlannedAction parent = Parent();
+        NetherPlannedAction eventChoice = new(NetherActionKind.SelectEventOption)
+        {
+            OptionNumber = 1,
+            ExpectedEffects = new[]
+            {
+                new NetherEffect(NetherEffectKind.NetherGoldGain, 5),
+                new NetherEffect(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
+                new NetherEffect(NetherEffectKind.Battle, 0),
+            },
+        };
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            new NetherRuntimePopupContext
+            {
+                Kind = NetherRuntimePopupKind.Event,
+                OwnerAction = NetherActionKind.SelectFloor,
+                OwnerGeneration = 7,
+                Sequence = 1,
+            },
+            eventChoice,
+            out NetherPlannedAction afterEvent
+        ));
+        Assert.Equal(NetherSessionStatus.Battle, afterEvent.ExpectedAfterStatus);
+
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterEvent,
+            new NetherRuntimePopupContext
+            {
+                Kind = NetherRuntimePopupKind.CodeOffer,
+                OwnerAction = NetherActionKind.SelectFloor,
+                OwnerGeneration = 7,
+                Sequence = 2,
+            },
+            new NetherPlannedAction(NetherActionKind.SelectCode) { CodeId = 30024 },
+            out NetherPlannedAction afterCode
+        ));
+
+        Assert.All(afterCode.OwnedPopupStages, stage =>
+            Assert.Equal(NetherSessionStatus.Battle, stage.ExpectedAfterStatus));
+        Assert.True(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(afterCode));
+    }
+
     private static NetherPlannedAction Parent() => new(NetherActionKind.SelectFloor)
     {
         FloorId = 11,

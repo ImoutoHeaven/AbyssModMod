@@ -53,15 +53,20 @@ internal static class NetherFloorActionTransactionComposer
             return false;
         }
 
-        NetherSessionStatus terminal = GetTerminal(popup.Kind, child);
-        if (terminal == NetherSessionStatus.Unknown
-            || !CanUseTerminal(settlement.ExpectedAfterStatus, terminal))
+        // CodeOffer is an owned intermediate of its original SelectFloor parent.  A
+        // code-changing Event may itself finish by transitioning the parent into Battle;
+        // the nested code choice is still local Play work, but its retained transaction must
+        // inherit that root terminal rather than conflict with it.
+        NetherSessionStatus terminal = ResolveTerminal(settlement.ExpectedAfterStatus, popup.Kind, child);
+        if (!TryGetStages(settlement, out List<NetherFloorPopupStage> stages)
+            || terminal == NetherSessionStatus.Unknown
+            || (!CanUseTerminal(settlement.ExpectedAfterStatus, terminal)
+                && !CanPromoteProvisionalInteractiveParent(settlement, stages, popup, child, terminal)))
         {
             return false;
         }
 
-        if (!TryGetStages(settlement, out List<NetherFloorPopupStage> stages)
-            || !TryCreateStage(popup, child, terminal, out NetherFloorPopupStage? stage)
+        if (!TryCreateStage(popup, child, terminal, out NetherFloorPopupStage? stage)
             || stage == null
             || !CanAppend(ownerParent, stages, stage))
         {
@@ -133,9 +138,9 @@ internal static class NetherFloorActionTransactionComposer
 
         // RerollAsync is an intermediate mutation of the same live CodeOffer, never a parent
         // settlement.  The owner may reach its terminal only after the bridge has advanced the
-        // popup epoch and the controller has appended one exact terminal code selection.  Keep
-        // and close have no independently verified native terminal binding in this flow, so
-        // they deliberately remain incomplete/fail-closed instead of being guessed as success.
+        // popup epoch and the controller has appended one exact terminal choice: Receive or
+        // the separately observed generated Keep/cancel sequence.  A visual popup close is
+        // not represented as either terminal action.
         if (!HasTerminalSelectionAfterEveryReload(stages))
             return false;
 
@@ -159,29 +164,57 @@ internal static class NetherFloorActionTransactionComposer
         IReadOnlyList<NetherFloorPopupStage> stages
     )
     {
+        int firstCodeStage = -1;
+        int firstReload = -1;
         for (int index = 0; index < stages.Count; index++)
+        {
+            if (stages[index].PopupKind != NetherRuntimePopupKind.CodeOffer)
+                continue;
+            if (firstCodeStage < 0)
+                firstCodeStage = index;
+            if (stages[index].ActionKind == NetherActionKind.ReloadCode && firstReload < 0)
+            {
+                firstReload = index;
+            }
+        }
+        if (firstCodeStage < 0)
+            return true;
+
+        // Every CodeOffer chain has exactly one final terminal choice.  A direct Keep at the
+        // reload reserve is valid; a reroll run may use strictly increasing epochs before that
+        // one Select/Keep.  No later stage may reopen an already-terminal offer.
+        int terminalIndex = stages.Count - 1;
+        NetherFloorPopupStage terminal = stages[terminalIndex];
+        if (terminal.PopupKind != NetherRuntimePopupKind.CodeOffer
+            || terminal.ActionKind is not (NetherActionKind.SelectCode or NetherActionKind.KeepCode)
+            || stages.Count(stage => stage.PopupKind == NetherRuntimePopupKind.CodeOffer
+                && stage.ActionKind is NetherActionKind.SelectCode or NetherActionKind.KeepCode) != 1)
+        {
+            return false;
+        }
+
+        // With no reload, the one direct code terminal is complete as long as it is the final
+        // stage; code-change correctness is checked separately below and requires Select.
+        if (firstReload < 0)
+            return firstCodeStage == terminalIndex;
+
+        NetherFloorPopupStage? previousReload = null;
+        for (int index = firstReload; index < terminalIndex; index++)
         {
             NetherFloorPopupStage reload = stages[index];
             if (reload.PopupKind != NetherRuntimePopupKind.CodeOffer
-                || reload.ActionKind != NetherActionKind.ReloadCode)
-            {
-                continue;
-            }
-
-            if (index + 1 >= stages.Count)
-                return false;
-
-            NetherFloorPopupStage terminal = stages[index + 1];
-            if (terminal.PopupKind != NetherRuntimePopupKind.CodeOffer
-                || terminal.ActionKind != NetherActionKind.SelectCode
-                || terminal.OwnerGeneration != reload.OwnerGeneration
-                || terminal.Sequence != reload.Sequence
-                || terminal.DecisionEpoch <= reload.DecisionEpoch)
+                || reload.ActionKind != NetherActionKind.ReloadCode
+                || reload.OwnerGeneration != terminal.OwnerGeneration
+                || reload.Sequence != terminal.Sequence)
             {
                 return false;
             }
+            if (previousReload != null && reload.DecisionEpoch <= previousReload.DecisionEpoch)
+                return false;
+            previousReload = reload;
         }
-        return true;
+
+        return previousReload != null && terminal.DecisionEpoch > previousReload.DecisionEpoch;
     }
 
     private static bool IsValidParent(NetherPlannedAction parent) =>
@@ -213,12 +246,51 @@ internal static class NetherFloorActionTransactionComposer
                 NetherSessionStatus.Play,
             NetherRuntimePopupKind.CodeOffer when child.Kind == NetherActionKind.ReloadCode =>
                 NetherSessionStatus.Play,
+            NetherRuntimePopupKind.CodeOffer when child.Kind == NetherActionKind.KeepCode =>
+                NetherSessionStatus.Play,
             _ => NetherSessionStatus.Unknown,
         };
+
+    private static NetherSessionStatus ResolveTerminal(
+        NetherSessionStatus existingTerminal,
+        NetherRuntimePopupKind popupKind,
+        NetherPlannedAction child
+    )
+    {
+        NetherSessionStatus intrinsic = GetTerminal(popupKind, child);
+        return intrinsic == NetherSessionStatus.Play
+            && existingTerminal == NetherSessionStatus.Battle
+            && popupKind == NetherRuntimePopupKind.CodeOffer
+            && child.Kind is NetherActionKind.SelectCode or NetherActionKind.ReloadCode or NetherActionKind.KeepCode
+                ? NetherSessionStatus.Battle
+                : intrinsic;
+    }
 
     private static bool CanUseTerminal(NetherSessionStatus existing, NetherSessionStatus next) =>
         existing is NetherSessionStatus.Wait or NetherSessionStatus.Unknown
         || existing == next;
+
+    /// <summary>
+    /// Route selection begins with a provisional Play terminal for every non-combat floor.
+    /// The only packaged owned-modal flow that can refine that provisional value to Battle is
+    /// a first exact Event/Recovery/Treasure option that itself contains the Battle effect.
+    /// Keeping this narrow prevents a later stale popup or an unrelated child from rewriting
+    /// an established transaction terminal.
+    /// </summary>
+    private static bool CanPromoteProvisionalInteractiveParent(
+        NetherPlannedAction settlement,
+        IReadOnlyList<NetherFloorPopupStage> stages,
+        NetherRuntimePopupContext popup,
+        NetherPlannedAction child,
+        NetherSessionStatus terminal
+    ) => stages.Count == 0
+        && settlement.OwnedPopupKind == NetherRuntimePopupKind.None
+        && settlement.OwnedPopupActionKind == NetherActionKind.None
+        && settlement.ExpectedAfterStatus == NetherSessionStatus.Play
+        && terminal == NetherSessionStatus.Battle
+        && popup.Kind is NetherRuntimePopupKind.Event or NetherRuntimePopupKind.Recovery or NetherRuntimePopupKind.Treasure
+        && child.Kind == NetherActionKind.SelectEventOption
+        && child.ExpectedEffects.Any(effect => effect.Kind == NetherEffectKind.Battle);
 
     private static bool TryGetStages(NetherPlannedAction settlement, out List<NetherFloorPopupStage> stages)
     {
@@ -309,7 +381,12 @@ internal static class NetherFloorActionTransactionComposer
             CodeId = stage.CodeId,
             ReplaceCodeId = stage.ReplaceCodeId,
         };
-        return GetTerminal(stage.PopupKind, child) == stage.ExpectedAfterStatus;
+        NetherSessionStatus intrinsic = GetTerminal(stage.PopupKind, child);
+        return intrinsic == stage.ExpectedAfterStatus
+            || (intrinsic == NetherSessionStatus.Play
+                && stage.ExpectedAfterStatus == NetherSessionStatus.Battle
+                && stage.PopupKind == NetherRuntimePopupKind.CodeOffer
+                && stage.ActionKind is NetherActionKind.SelectCode or NetherActionKind.ReloadCode or NetherActionKind.KeepCode);
     }
 
     private static bool CanAppend(
@@ -327,8 +404,7 @@ internal static class NetherFloorActionTransactionComposer
         if (previous.OwnerGeneration <= 0 || previous.Sequence <= 0
             || next.OwnerGeneration <= 0 || next.Sequence <= 0
             || next.OwnerGeneration != previous.OwnerGeneration
-            || !HasMonotonicStageIdentity(previous, next)
-            || next.PopupKind == previous.PopupKind && next.ActionKind == previous.ActionKind)
+            || !HasMonotonicStageIdentity(previous, next))
         {
             return false;
         }
@@ -344,6 +420,18 @@ internal static class NetherFloorActionTransactionComposer
         // and that offer may only select the exact replacement (or first reroll, whose later
         // same-popup epoch is completed by the code-flow seam).  This makes duplicate or
         // conflicting effect keys fail closed instead of being silently summed.
+        // An exact code selection is terminal for the current owned chain.  The only legal
+        // same-popup continuation is a Reload run: [Reload e0, Reload e1, ..., Select eN].
+        if (previous.PopupKind == NetherRuntimePopupKind.CodeOffer)
+        {
+            if (previous.ActionKind != NetherActionKind.ReloadCode
+                || next.PopupKind != NetherRuntimePopupKind.CodeOffer
+                || next.ActionKind is not (NetherActionKind.ReloadCode or NetherActionKind.SelectCode or NetherActionKind.KeepCode))
+            {
+                return false;
+            }
+        }
+
         if (codeChange == CodeChangeExpectation.Valid)
         {
             if (next.PopupKind != NetherRuntimePopupKind.CodeOffer
@@ -360,7 +448,7 @@ internal static class NetherFloorActionTransactionComposer
         return previous.PopupKind == NetherRuntimePopupKind.CodeOffer
             && previous.ActionKind == NetherActionKind.ReloadCode
             && next.PopupKind == NetherRuntimePopupKind.CodeOffer
-            && next.ActionKind == NetherActionKind.SelectCode
+            && next.ActionKind is NetherActionKind.ReloadCode or NetherActionKind.SelectCode or NetherActionKind.KeepCode
             && ownerParent.Kind == NetherActionKind.SelectFloor;
     }
 

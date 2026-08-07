@@ -450,3 +450,29 @@ Milestone B2 may extend `NetherReadOnlyReconcileCoordinator` and the immutable `
 - Fresh RO game build used `ABYSS_GAME_DIR=/game` and `BaseOutputPath=/repo/release/nether-auto-climb/`: Release succeeded with `0` warnings / `0` errors; artifact `release/nether-auto-climb/Release/net6.0/AbyssMod.dll`.
 - The only intentional live-only boundary remains the previously accepted recovered direct-Wait Event/Recovery/Treasure path: without the original owner-correlated floor parent `UniTask`, it pauses as `direct-wait-event-parent-task-unavailable` with zero native mutation and zero GET. No speculative late `MoveNext` observer was added.
 - Independent post-audit expanded focused verification (all `NetherBattleSettingsLease*` plus the composer, reconciliation, Shop/Reload, runtime-flow, and controller E2E suites) passed `75/75`, `0` failed/skipped. A second fresh copied-repository complete-suite run remained `570/570`; the independent fresh Release build remained `0` warnings / `0` errors.
+
+## Review round 5 remediation — multi-reload Code chains and shared native stage runtime
+
+### Wave A — cumulative reload and root-terminal composition
+
+- The transaction composer now accepts an owner/generation/sequence-matched sequence of strictly advancing Code decision epochs. Each Reload must prove a fresh candidate fingerprint and an exact count decrement; repeated, stale, unchanged, or backward epochs remain fail-closed. At parent terminal, reconciliation aggregates the retained Reload stages with checked arithmetic rather than incorrectly requiring each stage to observe the original pre-count.
+- A terminal `SelectCode` remains required after one or more Reload stages. The production controller seam covers `count=3 → Reload → count=2 → Reload → count=1 → Select → original parent → one GET`, including off/fault/stale no-replay cases.
+- Event children now inherit the immutable root SelectFloor terminal contract. An Event with resource effects plus Code change followed by Battle therefore retains all resource, Code, and root-Battle postconditions until the one original parent terminal and the one authority reconciliation. Partial resource, code, or battle mismatch pauses as Ambiguous.
+
+### Wave B — exact Keep/cancel terminal
+
+- `KeepCode` is an explicit terminal Code stage. The only native binding is the RO-confirmed `AbyssCodeSelectPopupController.<SetupPopupEvent>b__12_0` cancel chain through `NetherUtility.<OpenAbyssCodeSelectPopupIfNeededAsync>g__HandleCancelSequenceAsync|19_3` to `RequestNetherFixCodeAsync(0,0)`.
+- The callback itself is fire-and-forget, so the bridge observes and owner-correlates the generated cancel task. It waits that task, then the original SelectFloor parent, then performs one GET. It never treats visual close as completion. Direct Keep, Reload→Keep, and Reload→Reload→Keep retain the same owner/sequence; stale, off, fault, timeout, and duplicate paths do not replay cancellation.
+- Keep reconciliation requires the pre-action Code portfolio to remain unchanged and applies only the aggregate retained Reload decrement. A partial count or portfolio result is Ambiguous, never Applied.
+
+### Wave C — one production owned-popup dispatch and parent gate
+
+- `NetherOwnedPopupNativeStageRuntime` is the sole state machine for Shop Buy child/close, Code Reload epoch refresh, and Code Keep cancel observation. `NetherOwnedPopupStageBridgeEntry` owns that runtime and exposes the single typed dispatch table and the only parent-poll gate.
+- The reflection bridge now inherits the non-virtual `NetherOwnedPopupStageBridgeAdapter`; it supplies only owner matching and exact native primitive callbacks via `INetherOwnedPopupNativeStagePort`. It no longer retains a local Shop/Reload/Keep switch, coordinator, runtime, or parent-gate state machine. The scripted production-controller seam delegates to the same shared entry rather than reproducing the sequence.
+- Disposable-copy mutation audit demonstrates that the targeted controller/core tests execute the production shared code: changing the shared Shop route made `4/29` tests fail, Reload `7/29`, and Keep `8/29`. Before this extraction, mutating the old real-Bridge delegation route left `29/29` targeted tests passing; that gap is why the shared adapter is now the actual product path.
+
+### Round 5 verification and retained boundary
+
+- Fresh copied-repository focused coverage for BridgeEntry/core/controller/Keep/Shop/Reload/runtime-flow passed `49/49`, `0` failed/skipped. Fresh copied-repository full suite passed `601/601`, `0` failed/skipped. The usual nullable/reflection-fixture/analyzer warnings remain non-fatal.
+- Fresh RO-game Release verification used `ABYSS_GAME_DIR=/game` with `/game:ro` and `/reverse:ro`; it completed with `0` warnings / `0` errors. `git diff --check` passed before staging.
+- The only intentional live-only boundary remains the reviewer-accepted recovered direct-Wait Event/Recovery/Treasure popup with no original owner-correlated floor-parent task. It pauses as `direct-wait-event-parent-task-unavailable` and performs zero native mutation and zero GET; no speculative late state-machine observer is installed.

@@ -75,6 +75,9 @@
     <Compile Include="..\AbyssMod\Services\NetherFloorActionTransactionComposer.cs" Link="NetherFloorActionTransactionComposer.cs" Condition="Exists('..\AbyssMod\Services\NetherFloorActionTransactionComposer.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherShopPurchaseCloseCoordinator.cs" Link="NetherShopPurchaseCloseCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherShopPurchaseCloseCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodeReloadEpochCoordinator.cs" Link="NetherCodeReloadEpochCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeReloadEpochCoordinator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCodeKeepCancelCoordinator.cs" Link="NetherCodeKeepCancelCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeKeepCancelCoordinator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherOwnedPopupNativeStageRuntime.cs" Link="NetherOwnedPopupNativeStageRuntime.cs" Condition="Exists('..\AbyssMod\Services\NetherOwnedPopupNativeStageRuntime.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherOwnedPopupStageBridgeEntry.cs" Link="NetherOwnedPopupStageBridgeEntry.cs" Condition="Exists('..\AbyssMod\Services\NetherOwnedPopupStageBridgeEntry.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherPopupDispatchPolicy.cs" Link="NetherPopupDispatchPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherPopupDispatchPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherPopupOwnershipRegistry.cs" Link="NetherPopupOwnershipRegistry.cs" Condition="Exists('..\AbyssMod\Services\NetherPopupOwnershipRegistry.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherRuntimeFlowCoordinator.cs" Link="NetherRuntimeFlowCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeFlowCoordinator.cs')" />

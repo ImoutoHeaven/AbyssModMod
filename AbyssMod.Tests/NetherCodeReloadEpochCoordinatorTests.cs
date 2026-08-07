@@ -129,6 +129,62 @@ public class NetherCodeReloadEpochCoordinatorTests
         );
     }
 
+    [Fact]
+    public void Second_same_owner_epoch_keeps_the_first_epoch_when_fault_or_stale_refresh_occurs()
+    {
+        var owner = new NetherCodeReloadEpochOwner(NetherActionKind.SelectFloor, 3, 7);
+        var coordinator = new NetherCodeReloadEpochCoordinator();
+        Assert.True(coordinator.Begin(owner, reloadCount: 3, Candidates(100)));
+        coordinator.Pump(
+            () => NetherNativeActionResult.Completed("first-reroll-terminal"),
+            () => Refresh(owner, 2, Candidates(200))
+        );
+        Assert.Equal(
+            NetherNativeActionResultKind.Completed,
+            coordinator.Pump(
+                () => throw new Xunit.Sdk.XunitException("must-not-repoll-first-reroll"),
+                () => Refresh(owner, 2, Candidates(200))
+            ).Kind
+        );
+        Assert.Equal(1, coordinator.DecisionEpoch);
+
+        Assert.True(coordinator.Begin(owner, reloadCount: 2, Candidates(200)));
+        Assert.Equal(
+            NetherNativeActionResultKind.BindingUnavailable,
+            coordinator.Pump(
+                () => NetherNativeActionResult.UnknownOutcome("second-reroll-fault"),
+                () => Refresh(owner, 1, Candidates(300))
+            ).Kind
+        );
+        Assert.Equal(NetherCodeReloadEpochStage.Faulted, coordinator.Stage);
+        Assert.Equal(1, coordinator.DecisionEpoch);
+
+        coordinator.Reset();
+        Assert.True(coordinator.Begin(owner, reloadCount: 3, Candidates(100)));
+        coordinator.Pump(
+            () => NetherNativeActionResult.Completed("first-reroll-terminal"),
+            () => Refresh(owner, 2, Candidates(200))
+        );
+        coordinator.Pump(
+            () => throw new Xunit.Sdk.XunitException("must-not-repoll-first-reroll"),
+            () => Refresh(owner, 2, Candidates(200))
+        );
+        Assert.True(coordinator.Begin(owner, reloadCount: 2, Candidates(200)));
+        coordinator.Pump(
+            () => NetherNativeActionResult.Completed("second-reroll-terminal"),
+            () => Refresh(owner, 1, Candidates(300))
+        );
+        Assert.Equal(
+            NetherNativeActionResultKind.BindingUnavailable,
+            coordinator.Pump(
+                () => throw new Xunit.Sdk.XunitException("must-not-repoll-second-reroll"),
+                () => Refresh(owner with { Sequence = 8 }, 1, Candidates(300))
+            ).Kind
+        );
+        Assert.Equal(NetherCodeReloadEpochStage.Faulted, coordinator.Stage);
+        Assert.Equal(1, coordinator.DecisionEpoch);
+    }
+
     private static NetherRuntimeCodeCandidatesResult Candidates(params long[] ids) => new(
         ids.Select(id => new NetherCodeCandidate(id, NetherCodeEffectKind.Safe, 1)).ToArray(),
         IsMasterComplete: true,

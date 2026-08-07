@@ -257,6 +257,176 @@ public class NetherActionReconcilePolicyTests
     }
 
     [Fact]
+    public void Multi_reload_parent_aggregates_exact_reload_consumption_once_before_final_code_select()
+    {
+        NetherSnapshot before = Snapshot(floorId: 10, codeReload: 3, codeHash: "codes:none") with
+        {
+            Codes = Array.Empty<NetherCodeState>(),
+        };
+        NetherSnapshot exact = Snapshot(floorId: 11, floorLevel: 11, codeReload: 1, codeHash: "codes:30024") with
+        {
+            Codes = new[] { new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1) },
+        };
+        NetherPlannedAction action = ComposedFloor(
+            NetherRuntimePopupKind.CodeOffer,
+            NetherActionKind.SelectCode
+        ) with
+        {
+            CodeId = 30024,
+            OwnedPopupStages = new NetherFloorPopupStage[]
+            {
+                CodeStage(NetherActionKind.ReloadCode, epoch: 0),
+                CodeStage(NetherActionKind.ReloadCode, epoch: 1),
+                CodeStage(NetherActionKind.SelectCode, epoch: 2, codeId: 30024),
+            },
+        };
+
+        Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(action, before, exact));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(
+            action,
+            before,
+            exact with { CodeReloadCount = 2 }
+        ));
+    }
+
+    [Fact]
+    public void Keep_code_requires_an_unchanged_portfolio_and_unchanged_reload_count()
+    {
+        NetherSnapshot before = Snapshot(codeReload: 2, codeHash: "codes:30024") with
+        {
+            Codes = new[] { new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1) },
+        };
+        NetherSnapshot alteredPortfolio = before with
+        {
+            Codes = new[] { new NetherCodeState(40024, NetherCodeEffectKind.Risk, 1) },
+            CodeHash = "codes:40024",
+        };
+
+        Assert.Equal(
+            NetherActionOutcome.Applied,
+            NetherActionReconcilePolicy.Evaluate(new NetherPlannedAction(NetherActionKind.KeepCode), before, before)
+        );
+        Assert.Equal(
+            NetherActionOutcome.Ambiguous,
+            NetherActionReconcilePolicy.Evaluate(new NetherPlannedAction(NetherActionKind.KeepCode), before, alteredPortfolio)
+        );
+        Assert.Equal(
+            NetherActionOutcome.Ambiguous,
+            NetherActionReconcilePolicy.Evaluate(
+                new NetherPlannedAction(NetherActionKind.KeepCode),
+                before,
+                before with { CodeReloadCount = 1 }
+            )
+        );
+    }
+
+    [Fact]
+    public void Reload_then_keep_aggregates_reload_consumption_while_preserving_the_original_portfolio()
+    {
+        NetherSnapshot before = Snapshot(floorId: 10, codeReload: 2, codeHash: "codes:30024") with
+        {
+            Codes = new[] { new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1) },
+        };
+        NetherSnapshot exact = Snapshot(floorId: 11, floorLevel: 11, codeReload: 1, codeHash: "codes:30024") with
+        {
+            Codes = new[] { new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1) },
+        };
+        NetherPlannedAction action = ComposedFloor(
+            NetherRuntimePopupKind.CodeOffer,
+            NetherActionKind.KeepCode
+        ) with
+        {
+            OwnedPopupStages = new NetherFloorPopupStage[]
+            {
+                CodeStage(NetherActionKind.ReloadCode, epoch: 0),
+                CodeStage(NetherActionKind.KeepCode, epoch: 1),
+            },
+        };
+
+        Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(action, before, exact));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(
+            action,
+            before,
+            exact with { CodeReloadCount = 2 }
+        ));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(
+            action,
+            before,
+            exact with
+            {
+                Codes = new[] { new NetherCodeState(40024, NetherCodeEffectKind.Risk, 1) },
+                CodeHash = "codes:40024",
+            }
+        ));
+    }
+
+    [Fact]
+    public void Event_code_change_battle_and_resource_stage_all_require_one_final_battle_snapshot()
+    {
+        NetherSnapshot before = Snapshot(floorId: 10, gold: 20, codeHash: "codes:none") with
+        {
+            Codes = Array.Empty<NetherCodeState>(),
+        };
+        NetherSnapshot exact = Snapshot(
+            floorId: 11,
+            floorLevel: 11,
+            gold: 25,
+            codeHash: "codes:30024",
+            status: NetherSessionStatus.Battle
+        ) with
+        {
+            Codes = new[] { new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1) },
+        };
+        NetherPlannedAction action = ComposedFloor(
+            NetherRuntimePopupKind.CodeOffer,
+            NetherActionKind.SelectCode
+        ) with
+        {
+            ExpectedAfterStatus = NetherSessionStatus.Battle,
+            CodeId = 30024,
+            OwnedPopupStages = new NetherFloorPopupStage[]
+            {
+                new(
+                    NetherRuntimePopupKind.Event,
+                    NetherActionKind.SelectEventOption,
+                    OwnerGeneration: 7,
+                    Sequence: 1,
+                    ExpectedAfterStatus: NetherSessionStatus.Battle,
+                    OptionNumber: 1,
+                    ExpectedEffects: new NetherEffect[]
+                    {
+                        new(NetherEffectKind.NetherGoldGain, 5),
+                        new(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
+                        new(NetherEffectKind.Battle, 0),
+                    },
+                    ContentId: 0,
+                    ContentAmount: 0,
+                    GoldCost: 0,
+                    CodeId: 0,
+                    ReplaceCodeId: 0
+                ),
+                CodeStage(NetherActionKind.SelectCode, epoch: 0, codeId: 30024, terminal: NetherSessionStatus.Battle),
+            },
+        };
+
+        Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(action, before, exact));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(
+            action,
+            before,
+            exact with { NetherGold = 24 }
+        ));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(
+            action,
+            before,
+            exact with
+            {
+                Codes = new[] { new NetherCodeState(40024, NetherCodeEffectKind.Risk, 1) },
+                CodeHash = "codes:40024",
+            }
+        ));
+    }
+
+    [Fact]
     public void Composed_shop_buy_and_battle_option_require_their_own_terminal_contract()
     {
         NetherSnapshot before = Snapshot(floorId: 10, gold: 100);
@@ -300,6 +470,27 @@ public class NetherActionReconcilePolicyTests
         OwnedPopupKind = popup,
         OwnedPopupActionKind = child,
     };
+
+    private static NetherFloorPopupStage CodeStage(
+        NetherActionKind action,
+        long epoch,
+        long codeId = 0,
+        NetherSessionStatus terminal = NetherSessionStatus.Play
+    ) => new(
+        NetherRuntimePopupKind.CodeOffer,
+        action,
+        OwnerGeneration: 7,
+        Sequence: 2,
+        ExpectedAfterStatus: terminal,
+        OptionNumber: 0,
+        ExpectedEffects: Array.Empty<NetherEffect>(),
+        ContentId: 0,
+        ContentAmount: 0,
+        GoldCost: 0,
+        CodeId: codeId,
+        ReplaceCodeId: 0,
+        DecisionEpoch: epoch
+    );
 
     private static NetherSnapshot Snapshot(
         long floorId = 10,

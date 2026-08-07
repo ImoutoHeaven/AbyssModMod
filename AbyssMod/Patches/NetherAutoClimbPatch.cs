@@ -131,3 +131,28 @@ internal static class NetherAutoClimbCodeSelectionLifecyclePatch
         }
     }
 }
+
+/// <summary>
+/// Observes the exact static generated cancel sequence used by code-offer b__12_0.  The
+/// callback itself is void/Forget, so the bridge correlates this UniTask to the live owned
+/// popup before allowing the original SelectFloor parent to reach reconciliation.
+/// </summary>
+[HarmonyPatch]
+internal static class NetherAutoClimbCodeKeepCancelLifecyclePatch
+{
+    private static MethodBase? TargetMethod() => NetherRuntimeBridge.GetCodeKeepCancelTaskPatchTarget();
+
+    [HarmonyPostfix]
+    private static void Postfix(object[] __args, ref UniTask __result)
+    {
+        try
+        {
+            if (__args != null && __args.Length == 2 && __args[0] != null)
+                NetherRuntimeBridge.ObserveCodeKeepCancelTask(__args[0], __result);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[F12][NetherClimb] native code keep/cancel observation failed: " + ex);
+        }
+    }
+}

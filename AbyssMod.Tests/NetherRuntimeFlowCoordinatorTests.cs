@@ -149,6 +149,39 @@ public class NetherRuntimeFlowCoordinatorTests
         Assert.Equal(2, dispatches);
     }
 
+    [Fact]
+    public void Same_epoch_keep_popup_is_stale_and_cannot_replay_the_cancel_mutation()
+    {
+        var driver = new FakeDriver();
+        var coordinator = new NetherRuntimeFlowCoordinator(driver);
+        var floor = new NetherPlannedAction(NetherActionKind.SelectFloor) { FloorId = 4, FloorLevel = 4 };
+        Assert.True(coordinator.BeginFloorParent(floor));
+        driver.Popup = new NetherRuntimePopupContext
+        {
+            Kind = NetherRuntimePopupKind.CodeOffer,
+            OwnerAction = NetherActionKind.SelectFloor,
+            OwnerGeneration = coordinator.Generation,
+            Sequence = 8,
+            DecisionEpoch = 0,
+        };
+        driver.ParentPoll = NetherNativeActionResult.Started("parent-pending");
+
+        int keepDispatches = 0;
+        Assert.Equal(
+            NetherRuntimeParentPollKind.Pending,
+            coordinator.Poll(_ =>
+            {
+                keepDispatches++;
+                return NetherNativeActionResult.Started("keep-cancel-started");
+            }).Kind
+        );
+        Assert.Equal(
+            NetherRuntimeParentPollKind.Pending,
+            coordinator.Poll(_ => throw new Xunit.Sdk.XunitException("same epoch keep must not replay")).Kind
+        );
+        Assert.Equal(1, keepDispatches);
+    }
+
     private sealed class FakeDriver : INetherRuntimeParentDriver
     {
         public NetherRuntimePopupContext? Popup { get; set; }
