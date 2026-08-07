@@ -9,6 +9,7 @@ namespace AbyssMod.Services;
 internal sealed record NetherCodeCandidate(long CodeId, NetherCodeEffectKind EffectKind, int Level)
 {
     public bool IsKnown { get; init; } = true;
+    public NetherCodeCategory Category { get; init; }
     public int Rarity { get; init; }
     public int PartyCoverage { get; init; }
     public bool IsResearchOnly { get; init; }
@@ -78,6 +79,12 @@ internal sealed class NetherCodePolicy
         List<NetherCodeCandidate> eligible = candidates
             .Where(candidate => !portfolio.CurrentCodes.Any(current => current.CodeId == candidate.CodeId))
             .Where(candidate => candidate.EffectKind != NetherCodeEffectKind.Risk && candidate.CodeId != RejectedRiskCodeId)
+            // The native category extension proves that paired categories are mutually
+            // exclusive.  A non-full portfolio has no exact replacement parent to resolve that
+            // conflict, so leave it for player control; a full portfolio can name the single
+            // conflicting code as the verified replacement target below.
+            .Where(candidate => portfolio.CurrentCodes.Count == portfolio.Capacity
+                || !HasCategoryConflict(candidate, portfolio.CurrentCodes))
             .ToList();
         NetherCodeCandidate? selected = SelectCandidate(eligible, effective, lane);
         if (selected != null)
@@ -85,9 +92,19 @@ internal sealed class NetherCodePolicy
             long removal = 0;
             if (portfolio.CurrentCodes.Count == portfolio.Capacity)
             {
-                if (removable.Count == 0)
-                    return Keep(lane, protectedIds, "all-codes-protected");
-                removal = removable[0].CodeId;
+                IReadOnlyList<NetherCodeState> conflicts = FindCategoryConflicts(selected, portfolio.CurrentCodes);
+                if (conflicts.Count > 0)
+                {
+                    if (conflicts.Count != 1 || protectedIds.Contains(conflicts[0].CodeId))
+                        return Keep(lane, protectedIds, "category-conflict-protected", removable);
+                    removal = conflicts[0].CodeId;
+                }
+                else
+                {
+                    if (removable.Count == 0)
+                        return Keep(lane, protectedIds, "all-codes-protected");
+                    removal = removable[0].CodeId;
+                }
             }
             return new NetherCodeDecision
             {
@@ -177,6 +194,19 @@ internal sealed class NetherCodePolicy
         NetherCodeEffectKind.Impact => NetherCombatLane.Impact,
         _ => null,
     };
+
+    private static bool HasCategoryConflict(
+        NetherCodeCandidate candidate,
+        IReadOnlyList<NetherCodeState> current
+    ) => current.Any(code => NetherCodeCategorySemantics.IsExclusive(candidate.Category, code.Category));
+
+    private static IReadOnlyList<NetherCodeState> FindCategoryConflicts(
+        NetherCodeCandidate candidate,
+        IReadOnlyList<NetherCodeState> current
+    ) => current
+        .Where(code => NetherCodeCategorySemantics.IsExclusive(candidate.Category, code.Category))
+        .OrderBy(code => code.CodeId)
+        .ToArray();
 
     private static IReadOnlyList<long> BuildProtectedIds(
         IReadOnlyList<NetherCodeState> codes,

@@ -271,6 +271,33 @@ internal enum NetherCodeEffectKind
     ErosionRateUp = 7,
     ErosionRateDown = 8,
     ResearchOnly = 9,
+    /// <summary>
+    /// A category-confirmed ordinary tactic code.  The packaged category proves it is
+    /// selectable, but does not prove a Rush/Impact, party-coverage, or research semantic.
+    /// It therefore participates as a deterministic general candidate rather than being
+    /// guessed into either combat lane.
+    /// </summary>
+    General = 10,
+}
+
+/// <summary>
+/// Exact numeric values from Project.NetherCodeCategoryType in the packaged client.
+/// </summary>
+internal enum NetherCodeCategory
+{
+    Unknown = 0,
+    Technique = 1,
+    Strength = 2,
+    ErosionResistance = 3,
+    ErosionEnhancement = 4,
+}
+
+/// <summary>Exact Project.NetherCodeCategoryGroupType values, kept local to the policy seam.</summary>
+internal enum NetherCodeCategoryGroup
+{
+    Unknown = -1,
+    Tactics = 0,
+    Erosion = 1,
 }
 
 internal enum NetherRewardRarity
@@ -341,6 +368,7 @@ internal readonly record struct NetherCharacterState(
 internal sealed record NetherCodeState(long CodeId, NetherCodeEffectKind EffectKind, int Level)
 {
     public bool IsKnown { get; init; } = true;
+    public NetherCodeCategory Category { get; init; }
     public int Rarity { get; init; }
     public int PartyCoverage { get; init; }
     public bool IsResearchOnly { get; init; }

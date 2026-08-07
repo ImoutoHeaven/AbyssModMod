@@ -870,12 +870,17 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
                     return NetherRuntimeCodeCandidatesResult.Failure("invalid-selectable-nether-code-id");
                 if (!masterById.TryGetValue(codeId, out MNetherCodes? row))
                     return NetherRuntimeCodeCandidatesResult.Failure("missing-m-nether-code:" + codeId);
-                (NetherCodeEffectKind kind, bool known) = MapCodeEffect(row.id, row.effect_type);
+                (NetherCodeEffectKind kind, NetherCodeCategory category, bool known) = MapCodeEffect(
+                    row.id,
+                    row.category,
+                    row.effect_type
+                );
                 if (!known && unmappedMasters != null)
                     unmappedMasters[row.id] = row;
                 candidates.Add(new NetherCodeCandidate(row.id, kind, LevelFromMaster(row))
                 {
                     IsKnown = known,
+                    Category = category,
                     Rarity = row.rarity,
                     PartyCoverage = 0,
                     IsResearchOnly = false,
@@ -893,7 +898,11 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
                         && code != null
                         && masterById.TryGetValue(code.MNetherCodeId, out MNetherCodes? master))
                     {
-                        (NetherCodeEffectKind _, bool currentCodeKnown) = MapCodeEffect(master.id, master.effect_type);
+                        (NetherCodeEffectKind _, NetherCodeCategory _, bool currentCodeKnown) = MapCodeEffect(
+                            master.id,
+                            master.category,
+                            master.effect_type
+                        );
                         if (!currentCodeKnown)
                             unmappedMasters[master.id] = master;
                     }
@@ -3049,10 +3058,15 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
                 error = "missing-m-nether-code:" + code.MNetherCodeId;
                 return false;
             }
-            (NetherCodeEffectKind kind, bool known) = MapCodeEffect(master.id, master.effect_type);
+            (NetherCodeEffectKind kind, NetherCodeCategory category, bool known) = MapCodeEffect(
+                master.id,
+                master.category,
+                master.effect_type
+            );
             mapped.Add(new NetherCodeState(master.id, kind, code.Amount)
             {
                 IsKnown = known,
+                Category = category,
                 Rarity = master.rarity,
                 PartyCoverage = 0,
                 IsResearchOnly = false,
@@ -3356,23 +3370,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
         });
     }
 
-    private static (NetherCodeEffectKind Kind, bool Known) MapCodeEffect(long codeId, int effectType)
+    private static (NetherCodeEffectKind Kind, NetherCodeCategory Category, bool Known) MapCodeEffect(
+        long codeId,
+        int category,
+        int effectType
+    )
     {
-        // The two documented code IDs are authoritative.  Other ability-derived Safe/Risk/
-        // Rush/Impact classifications need a fully decoded ability asset and therefore remain
-        // unknown rather than being guessed from localized text or an ID range.
-        if (codeId == 30024)
-            return (NetherCodeEffectKind.Safe, true);
-        if (codeId == 40024)
-            return (NetherCodeEffectKind.Risk, true);
-        return effectType switch
-        {
-            6 => (NetherCodeEffectKind.ErosionAdditionUp, true),
-            7 => (NetherCodeEffectKind.ErosionAdditionDown, true),
-            8 => (NetherCodeEffectKind.ErosionRateUp, true),
-            9 => (NetherCodeEffectKind.ErosionRateDown, true),
-            _ => (NetherCodeEffectKind.Unknown, false),
-        };
+        NetherCodeMasterSemantic semantic = NetherCodeCategorySemantics.Resolve(codeId, category, effectType);
+        return (semantic.EffectKind, semantic.Category, semantic.IsKnown);
     }
 
     private static int LevelFromMaster(MNetherCodes row)

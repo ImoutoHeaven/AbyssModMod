@@ -34,6 +34,8 @@ public class NetherPopupDispatchPolicyTests
         Assert.Equal(NetherPopupDispatchKind.NativeAction, decision.Kind);
         Assert.Equal(NetherActionKind.SelectEventOption, decision.Action.Kind);
         Assert.Equal(1, decision.Action.OptionNumber);
+        Assert.Single(decision.Action.ExpectedEffects);
+        Assert.Equal(NetherEffectKind.Item, decision.Action.ExpectedEffects[0].Kind);
     }
 
     [Fact]

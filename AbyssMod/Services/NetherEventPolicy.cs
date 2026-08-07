@@ -22,6 +22,12 @@ internal sealed record NetherEventDecision
     public long ReplacementCodeId { get; init; }
     public int ProjectedErosion { get; init; }
     public int HpDelta { get; init; }
+    /// <summary>
+    /// Immutable authoritative effect payload for the selected native option.  Reconcile must
+    /// compare this exact server-visible resource delta rather than treating an option click as
+    /// a generic visual close.
+    /// </summary>
+    public IReadOnlyList<NetherEffect> ExpectedEffects { get; init; } = Array.Empty<NetherEffect>();
     public bool StartsBattleAfterSelection { get; init; }
     public NetherPauseReason PauseReason { get; init; }
     public string Detail { get; init; } = string.Empty;
@@ -293,6 +299,7 @@ internal sealed class NetherEventPolicy
         ReplacementCodeId = candidate.ReplacementCodeId,
         ProjectedErosion = candidate.ProjectedErosion,
         HpDelta = candidate.HpDelta,
+        ExpectedEffects = candidate.Option.Effects.ToArray(),
         StartsBattleAfterSelection = candidate.StartsBattle,
     };
 

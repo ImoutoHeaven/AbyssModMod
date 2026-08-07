@@ -58,6 +58,9 @@
     <Compile Include="..\AbyssMod\Services\NetherCodeOfferSelection.cs" Link="NetherCodeOfferSelection.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeOfferSelection.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodeSelectionNativeFlow.cs" Link="NetherCodeSelectionNativeFlow.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeSelectionNativeFlow.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodeDiagnosticAudit.cs" Link="NetherCodeDiagnosticAudit.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeDiagnosticAudit.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCodeCategorySemantics.cs" Link="NetherCodeCategorySemantics.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeCategorySemantics.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherDetailedAuditLogger.cs" Link="NetherDetailedAuditLogger.cs" Condition="Exists('..\AbyssMod\Services\NetherDetailedAuditLogger.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherAutoClimbController.cs" Link="NetherAutoClimbController.cs" Condition="Exists('..\AbyssMod\Services\NetherAutoClimbController.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodePolicy.cs" Link="NetherCodePolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCodePolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherEventPolicy.cs" Link="NetherEventPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherEventPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCheckpointPolicy.cs" Link="NetherCheckpointPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointPolicy.cs')" />

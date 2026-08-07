@@ -111,6 +111,7 @@ internal static class NetherPopupDispatchPolicy
             {
                 OptionNumber = decision.OptionNumber,
                 CodeId = decision.ReplacementCodeId,
+                ExpectedEffects = decision.ExpectedEffects,
             },
             HasEffectProjection = true,
             ProjectedErosion = decision.ProjectedErosion,

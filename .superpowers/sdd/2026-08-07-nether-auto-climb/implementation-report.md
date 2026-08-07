@@ -348,3 +348,33 @@ Milestone B2 may extend `NetherReadOnlyReconcileCoordinator` and the immutable `
 - Fresh Docker complete suite: `dotnet test AbyssMod.Tests/AbyssMod.Tests.csproj --logger 'console;verbosity=minimal'` passed `499/499`, `0` failed/skipped.
 - Fresh RO Release build: `ABYSS_GAME_DIR=/game dotnet build AbyssMod/AbyssMod.csproj -c Release -p:BaseOutputPath=/repo/release/nether-auto-climb/` produced `release/nether-auto-climb/Release/net6.0/AbyssMod.dll` with `0` warnings / `0` errors. NuGet retried once after a transient SSL EOF, then restored successfully; `/game` and `/reverse` remained read-only.
 - `git diff --check` and `git diff --cached --check` passed. The worktree deliberately still contains the user-owned `M README.md` and `?? build/`; neither was edited or staged. The precise C2 stage contains only the lease/controller/runtime/test/report files named by this milestone.
+- C2 commit: `ba84823 fix: coordinate nether battle settings lease`. This commit stages only the C2 lease/controller/runtime/test/report scope; the user-owned `README.md` and `build/` are excluded.
+
+## Fix round 2 — Milestone C3: code semantics, detailed auditing, and production controller E2E
+
+### Authoritative code semantics
+
+- RO evidence used: `reverse_out/cpp2il_latest/DiffableCs/Project/Project/Master/NoaMessagePack/MNetherCodes.cs` exposes the master `category`; `reverse_out/cpp2il_latest/DiffableCs/Project/Project/NetherCodeCategoryType.cs` defines `Technique=1`, `Strength=2`, `ErosionResistance=3`, and `ErosionEnhancement=4`; and `reverse_out/cpp2il_isil/IsilDump/Project/Project/NetherCodeCategoryTypeExtensions.txt` proves the two category groups, Technique/Strength pairing, ErosionResistance/ErosionEnhancement pairing, and same-group exclusivity.
+- `NetherCodeCategorySemantics` is production code used by `NetherCodePolicy` and `NetherRuntimeBridge`. Technique and Strength are supported as ordinary `General` candidates, so common ordinary offers no longer pause merely because no static RO evidence distinguishes a Rush from an Impact lane. ErosionResistance maps to Safe and ErosionEnhancement to Risk. Category pair/exclusive conflict, stable tie-break, capacity/replacement, reload reserve, and the documented `30024`/`40024` overrides remain explicit.
+- Unknown or malformed category/master/effect fields remain fail-closed. No code ID is guessed as Rush, Impact, party coverage, or research-only: the available RO master/UI artifacts establish categories and erosion effects, but do not establish those semantic mappings. This does not block Technique/Strength offers; it only retains a named pause for an offer whose safety-relevant data is genuinely unknown.
+- RED: `NetherCodeCategorySemanticsTests` was added before the production category contracts and failed with `CS0246` for the missing category symbols. GREEN covers all four categories, pair cancellation/exclusive conflicts, `30024`/`40024`, invalid category, capacity/replacement/reserve, and deterministic tie-break. The focused semantic/policy suite is part of the final `27/27` result below.
+
+### Structured DetailedLogging
+
+- New production `NetherDetailedAuditLogger` accepts an injected sink and formats only bounded structured fields. It has per-kind deduplication and a maximum 16 entries per audit kind. Disabled logging returns before formatting/emission, including repeated polling.
+- Controller production wiring records bounded snapshot, route candidate/rejection/reverse-reachability, interactive input, battle projection/actual/drift, F11 block, lease transition, checkpoint carry ordering, native invocation, native task terminal, and reconcile classification evidence. It emits no localized display/name/description/raw-payload fields.
+- RED: logger tests failed before the production type existed. GREEN tests cover disabled polling silence, the required audit kinds, sensitive-key exclusion, field/value bounds, per-kind dedupe, and the 16-entry cap.
+
+### Real-controller fake-runtime E2E
+
+- The test project links the actual production `AbyssMod/Services/NetherAutoClimbController.cs`; its only test boundary is `INetherRuntimeBridge`, introduced through `PushRuntimeBridgeForTests`. The production static controller rebuilds its real state, settings gate, native-flow, GET-only reconcile, battle-settlement, Continue-scene, and lease coordinators around the supplied bridge, then restores the normal live bridge. Unity/IL2CPP reflection remains outside the test adapter; this is a characterization seam, not a parallel controller.
+- `NetherAutoClimbControllerEndToEndTests` drives the real controller through `enable → Play → Event popup → exact GET-only reconcile → route-selected Battle → Sleep/Continue → new segment runtime registration → Result`. It asserts the SelectFloor/Event parent stays pending until terminal, a retained old popup never replays, no native mutation is duplicated, the Continue preflight executes before its native parent, parent/Continue tasks are waited, and two battles each acquire then restore the real settings lease.
+- A second E2E path disables F12 while an Event parent is in flight. Repeated off/play requests cannot re-enable it; the native task and one authority GET drain first, then the state becomes disabled with no duplicate invoke.
+- RED E2E exposed two real production wiring defects. First, `NetherPopupDispatchPolicy.FromEventDecision` lost the selected event effects, making action-specific GET reconciliation correctly return Ambiguous. `NetherEventDecision.ExpectedEffects` now flows into `NetherPlannedAction`. Second, `ObserveBattle` called `BeginBattleSettlement()` on every pending GET poll, repeating a lease-restore edge; it now executes that transition only on entry to `AwaitingBattleSettlement`.
+- GREEN: a fresh Docker E2E-focused command passed `2/2` (`NetherAutoClimbControllerEndToEndTests`). The combined C3 focused command filtered code semantics/policy, detailed audit logging, popup dispatch, and E2E; it passed `27/27`, `0` failed/skipped.
+
+### Final C3 verification
+
+- Fresh Docker command with `/game:ro` and `/reverse:ro`: restored then ran the complete `AbyssMod.Tests` project. Result: `511/511` passed, `0` failed/skipped.
+- Fresh RO Release command: `ABYSS_GAME_DIR=/game dotnet build AbyssMod/AbyssMod.csproj -c Release --no-restore -p:BaseOutputPath=/repo/release/nether-auto-climb/`. Result: `0` warnings / `0` errors; output `release/nether-auto-climb/Release/net6.0/AbyssMod.dll`.
+- The C3 stage is restricted to the category/runtime/controller/policy/test/report files listed by this milestone. It excludes user-owned `README.md`, untracked `build/`, ignored Release output, and all game/reverse paths. Final diff/status checks are recorded with the C3 commit.
