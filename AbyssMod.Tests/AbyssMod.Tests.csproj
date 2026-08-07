@@ -39,6 +39,8 @@
     <Compile Include="..\AbyssMod\Services\NetherErosionPolicy.cs" Link="NetherErosionPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherErosionPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodePolicy.cs" Link="NetherCodePolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCodePolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherEventPolicy.cs" Link="NetherEventPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherEventPolicy.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCheckpointPolicy.cs" Link="NetherCheckpointPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointPolicy.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherReturnItemPolicy.cs" Link="NetherReturnItemPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherReturnItemPolicy.cs')" />
     <Compile Include="..\AbyssMod\Core\UpstreamTranslationPolicy.cs" Link="UpstreamTranslationPolicy.cs" />
     <Compile Include="..\AbyssMod\Models\Manifest.cs" Link="Manifest.cs" />
   </ItemGroup>
