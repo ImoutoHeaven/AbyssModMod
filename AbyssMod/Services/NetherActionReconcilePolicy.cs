@@ -1,6 +1,7 @@
 #nullable enable
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace AbyssMod.Services;
@@ -65,6 +66,24 @@ internal static class NetherActionReconcilePolicy
         // A direct combat parent has no owned modal.  Once a popup was observed, the one
         // SelectFloor parent is instead a composed transaction: accepting the floor/status
         // alone would turn a wrong option, cost, or resource result into a false Applied.
+        // Multiple popup stages belong to the same parent (Event -> Code Offer), so every
+        // stage must prove its exact effect from the one final GET snapshot.
+        IReadOnlyList<NetherFloorPopupStage> stages = action.OwnedPopupStages
+            ?? Array.Empty<NetherFloorPopupStage>();
+        if (stages.Count != 0)
+        {
+            foreach (NetherFloorPopupStage stage in stages)
+            {
+                if (stage == null || stage.ExpectedAfterStatus != action.ExpectedAfterStatus)
+                    return NetherActionOutcome.Ambiguous;
+
+                NetherActionOutcome outcome = EvaluateOwnedFloorStage(stage, before, after);
+                if (outcome != NetherActionOutcome.Applied)
+                    return outcome;
+            }
+            return NetherActionOutcome.Applied;
+        }
+
         if (action.OwnedPopupKind == NetherRuntimePopupKind.None)
             return NetherActionOutcome.Applied;
 
@@ -80,6 +99,39 @@ internal static class NetherActionReconcilePolicy
             NetherRuntimePopupKind.CodeOffer when action.OwnedPopupActionKind == NetherActionKind.SelectCode =>
                 EvaluateCodeSelect(action, before, after),
             NetherRuntimePopupKind.CodeOffer when action.OwnedPopupActionKind == NetherActionKind.ReloadCode =>
+                EvaluateCodeReload(before, after),
+            _ => NetherActionOutcome.Ambiguous,
+        };
+    }
+
+    private static NetherActionOutcome EvaluateOwnedFloorStage(
+        NetherFloorPopupStage stage,
+        NetherSnapshot before,
+        NetherSnapshot after
+    )
+    {
+        NetherPlannedAction child = new(stage.ActionKind)
+        {
+            OptionNumber = stage.OptionNumber,
+            ExpectedEffects = stage.ExpectedEffects,
+            ContentId = stage.ContentId,
+            ContentAmount = stage.ContentAmount,
+            GoldCost = stage.GoldCost,
+            CodeId = stage.CodeId,
+            ReplaceCodeId = stage.ReplaceCodeId,
+        };
+        return stage.PopupKind switch
+        {
+            NetherRuntimePopupKind.Event or NetherRuntimePopupKind.Recovery or NetherRuntimePopupKind.Treasure
+                when stage.ActionKind == NetherActionKind.SelectEventOption =>
+                    EvaluateEventEffects(child, before, after),
+            NetherRuntimePopupKind.Shop when stage.ActionKind == NetherActionKind.LeaveShop =>
+                NetherActionOutcome.Applied,
+            NetherRuntimePopupKind.Shop when stage.ActionKind == NetherActionKind.BuyShopItem =>
+                EvaluateShopBuy(child, before, after),
+            NetherRuntimePopupKind.CodeOffer when stage.ActionKind == NetherActionKind.SelectCode =>
+                EvaluateCodeSelect(child, before, after),
+            NetherRuntimePopupKind.CodeOffer when stage.ActionKind == NetherActionKind.ReloadCode =>
                 EvaluateCodeReload(before, after),
             _ => NetherActionOutcome.Ambiguous,
         };

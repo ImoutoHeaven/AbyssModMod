@@ -276,6 +276,7 @@ public class NetherBattleSettingsLeaseRuntimeCoordinatorTests
         public int AcquireCalls { get; private set; }
         public NetherBattleSettingsLeasePhase Phase => NetherBattleSettingsLeasePhase.Forced;
         public bool NeedsRecovery => true;
+        public NetherNativeActionResult ProbePersistedLease() => NetherNativeActionResult.Rejected("probe-rejected");
         public NetherNativeActionResult AcquireAndForce()
         {
             AcquireCalls++;

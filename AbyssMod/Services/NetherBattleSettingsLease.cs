@@ -33,8 +33,9 @@ internal sealed class NetherBattleSettingsLease : IDisposable, INetherBattleSett
     private INetherBattleSettingsNative? _native;
     private string? _leasePath;
     private bool _initialized;
-    private bool _recoveryLoadAttempted;
+    private bool _startupProbeComplete;
     private bool _recoveryPending;
+    private string _lastStartupProbeFault = string.Empty;
 
     public static NetherBattleSettingsLease Instance { get; } = new();
 
@@ -125,21 +126,53 @@ internal sealed class NetherBattleSettingsLease : IDisposable, INetherBattleSett
         return NetherNativeActionResult.Completed("battle-settings-restored:" + reason);
     }
 
+    /// <summary>
+    /// Reads only the durable lease authority.  It deliberately performs no native accessor
+    /// operation: clean startup may route before a battle view exists, while an active or
+    /// unreadable lease must block route mutation until an exact accessor can restore it.
+    /// </summary>
+    public NetherNativeActionResult ProbePersistedLease()
+    {
+        InitializeCore();
+        // A normal live battle lease is already authoritative in memory.  Do not re-read and
+        // attempt a second RecoverPersistedActive transition when an accessor rebinds.
+        if (_state.NeedsRecovery)
+            return NetherNativeActionResult.Started("active-battle-settings-lease-awaiting-accessor");
+        if (_startupProbeComplete && _state.Phase is NetherBattleSettingsLeasePhase.Empty or NetherBattleSettingsLeasePhase.Restored)
+            return NetherNativeActionResult.Completed("no-active-battle-settings-lease");
+
+        if (!TryReadLease(out LeaseFile? lease, out string readError))
+            return FaultDiscovery("lease-probe-read-failed:" + readError);
+
+        if (lease == null || !lease.Active)
+        {
+            if (!_state.MarkNoPersistedLease())
+                return FaultDiscovery("lease-probe-empty-transition:" + _state.Phase);
+
+            _startupProbeComplete = true;
+            _lastStartupProbeFault = string.Empty;
+            return NetherNativeActionResult.Completed("no-active-battle-settings-lease");
+        }
+
+        if (lease.SchemaVersion != SchemaVersion || lease.OriginalSpeed < 0)
+            return FaultDiscovery("invalid-battle-settings-lease");
+        if (!_state.RecoverPersistedActive(lease.OriginalAutoEnabled, lease.OriginalSpeed))
+            return FaultDiscovery("persisted-battle-settings-lease-transition-failed");
+
+        _startupProbeComplete = true;
+        _lastStartupProbeFault = string.Empty;
+        _recoveryPending = true;
+        return NetherNativeActionResult.Started("active-battle-settings-lease-awaiting-accessor");
+    }
+
     public NetherNativeActionResult RecoverOnLoad()
     {
         InitializeCore();
-        if (_recoveryLoadAttempted)
-            return RetryRestoreAfterNativeAccessorRegistered();
-        _recoveryLoadAttempted = true;
-        if (!TryReadLease(out LeaseFile? lease, out string readError))
-            return NetherNativeActionResult.BindingUnavailable("lease-read-failed:" + readError);
-        if (lease == null || !lease.Active)
-            return NetherNativeActionResult.Completed("no-active-battle-settings-lease");
-        if (lease.SchemaVersion != SchemaVersion || lease.OriginalSpeed < 0)
-            return Fault("invalid-battle-settings-lease", saveFailure: false);
-        if (!_state.RecoverPersistedActive(lease.OriginalAutoEnabled, lease.OriginalSpeed))
-            return Fault("persisted-battle-settings-lease-transition-failed", saveFailure: false);
-        _recoveryPending = true;
+        NetherNativeActionResult probe = ProbePersistedLease();
+        if (probe.Kind == NetherNativeActionResultKind.Completed)
+            return probe;
+        if (probe.Kind != NetherNativeActionResultKind.Started)
+            return probe;
         if (_native == null)
             return NetherNativeActionResult.BindingUnavailable("native-battle-settings-accessor-awaiting-registration");
         return RetryRestoreAfterNativeAccessorRegistered();
@@ -191,6 +224,17 @@ internal sealed class NetherBattleSettingsLease : IDisposable, INetherBattleSett
         else
             _state.FailRestore(reason);
         Logger.Error("[F12][NetherClimb] battle settings lease fault: " + reason);
+        return NetherNativeActionResult.BindingUnavailable(reason);
+    }
+
+    private NetherNativeActionResult FaultDiscovery(string reason)
+    {
+        _state.FailDiscovery(reason);
+        if (!string.Equals(_lastStartupProbeFault, reason, StringComparison.Ordinal))
+        {
+            _lastStartupProbeFault = reason;
+            Logger.Error("[F12][NetherClimb] battle settings lease startup probe fault: " + reason);
+        }
         return NetherNativeActionResult.BindingUnavailable(reason);
     }
 

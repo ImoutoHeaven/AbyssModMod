@@ -58,17 +58,20 @@ internal sealed class NetherBattleSettingsLeaseControllerLifecycle
     // meaning so it cannot accidentally reopen a battle before an exact accessor exists.
     public bool BlocksRouteOrBattle => BlocksBattleEntry;
 
-    public void OnControllerInitialized()
+    public NetherNativeActionResult OnControllerInitialized()
     {
-        // Deliberately no call to RecoverOnLoad: the accessor patch establishes the only safe
-        // moment at which a persisted value can be read back and restored.
+        // Discovery reads only the durable file.  It must happen before Stable can choose a
+        // route, but native write/readback/delete remains deferred until exact accessor
+        // registration below.
+        return _runtime.ProbeStartupLease();
     }
 
     public NetherNativeActionResult OnExactAccessorRegistered()
     {
         _exactAccessorRegistered = true;
         bool needsExactRecovery = !_startupRecoveryRequested
-            || _runtime.State == NetherBattleSettingsLeaseRuntimeState.RetryWait
+            || _runtime.State is NetherBattleSettingsLeaseRuntimeState.RecoveryPending
+                or NetherBattleSettingsLeaseRuntimeState.RetryWait
             || _runtime.LeasePhase is NetherBattleSettingsLeasePhase.Forced
                 or NetherBattleSettingsLeasePhase.RestorePending;
         if (needsExactRecovery)
@@ -125,7 +128,7 @@ internal sealed class NetherBattleSettingsLeaseControllerLifecycle
     {
         if (_updateTick < long.MaxValue)
             _updateTick++;
-        if (!_exactAccessorRegistered)
+        if (!_exactAccessorRegistered && !_runtime.AllowsPreAccessorDiscoveryRetry)
             return NetherBattleSettingsLeaseRetryPumpResult.NotAttempted;
 
         NetherBattleSettingsLeaseRetryPumpResult result = _runtime.PumpScheduledRetry(_updateTick);

@@ -1,5 +1,7 @@
 #nullable enable
 
+using System.Collections.Generic;
+
 namespace AbyssMod.Services;
 
 /// <summary>
@@ -254,13 +256,60 @@ internal sealed class NetherAutoClimbStateMachine
             || composed.ExpectedBeforeStatus != ownerParent.ExpectedBeforeStatus
             || composed.ExpectedAfterStatus == NetherSessionStatus.Unknown
             || composed.OwnedPopupKind == NetherRuntimePopupKind.None
-            || composed.OwnedPopupActionKind == NetherActionKind.None)
+            || composed.OwnedPopupActionKind == NetherActionKind.None
+            || !IsAppendOnlyFloorPopupComposition(pending, composed))
         {
             return false;
         }
 
         _pendingAction = composed;
         return true;
+    }
+
+    private static bool IsAppendOnlyFloorPopupComposition(
+        NetherPlannedAction pending,
+        NetherPlannedAction composed
+    )
+    {
+        IReadOnlyList<NetherFloorPopupStage> existing = pending.OwnedPopupStages
+            ?? System.Array.Empty<NetherFloorPopupStage>();
+        IReadOnlyList<NetherFloorPopupStage> next = composed.OwnedPopupStages
+            ?? System.Array.Empty<NetherFloorPopupStage>();
+
+        // Compatibility for pre-existing isolated state tests.  Production composer calls
+        // always populate stages, and thereafter every replacement must be an exact append.
+        if (existing.Count == 0 && next.Count == 0)
+            return true;
+        if (next.Count != existing.Count + 1)
+            return false;
+
+        for (int index = 0; index < existing.Count; index++)
+        {
+            if (!Equals(existing[index], next[index]))
+                return false;
+        }
+
+        NetherFloorPopupStage appended = next[next.Count - 1];
+        if (appended == null
+            || appended.PopupKind != composed.OwnedPopupKind
+            || appended.ActionKind != composed.OwnedPopupActionKind
+            || appended.ExpectedAfterStatus != composed.ExpectedAfterStatus)
+        {
+            return false;
+        }
+
+        if (existing.Count == 0)
+            return true;
+
+        NetherFloorPopupStage previous = existing[existing.Count - 1];
+        return previous.OwnerGeneration > 0
+            && previous.Sequence > 0
+            && appended.OwnerGeneration == previous.OwnerGeneration
+            && (appended.Sequence > previous.Sequence && appended.DecisionEpoch == 0
+                || appended.Sequence == previous.Sequence
+                    && previous.PopupKind == NetherRuntimePopupKind.CodeOffer
+                    && appended.PopupKind == NetherRuntimePopupKind.CodeOffer
+                    && appended.DecisionEpoch > previous.DecisionEpoch);
     }
 
     public void ObserveActionResult(NetherSnapshotFingerprint fingerprint, NetherActionOutcome outcome)

@@ -65,10 +65,15 @@ public class NetherRuntimeFlowCoordinatorTests
         };
         driver.ParentPoll = NetherNativeActionResult.Started("parent-pending");
 
-        NetherRuntimeParentPollResult result = coordinator.Poll(_ => new NetherNativeActionResult(NetherNativeActionResultKind.Started, "must-not-run"));
+        int dispatches = 0;
+        NetherRuntimeParentPollResult result = coordinator.Poll(_ =>
+        {
+            dispatches++;
+            return new NetherNativeActionResult(NetherNativeActionResultKind.Started, "must-not-run");
+        });
 
         Assert.Equal(NetherRuntimeParentPollKind.Pending, result.Kind);
-        Assert.Equal(0, driver.DispatchCount);
+        Assert.Equal(0, dispatches);
     }
 
     [Fact]
@@ -96,6 +101,52 @@ public class NetherRuntimeFlowCoordinatorTests
         NetherRuntimeParentPollResult second = coordinator.Poll(_ => throw new Xunit.Sdk.XunitException("no second popup"));
 
         Assert.Equal(NetherRuntimeParentPollKind.Completed, second.Kind);
+    }
+
+    [Fact]
+    public void Same_live_code_offer_is_redispatched_only_after_a_monotonic_reload_epoch()
+    {
+        var driver = new FakeDriver();
+        var coordinator = new NetherRuntimeFlowCoordinator(driver);
+        var floor = new NetherPlannedAction(NetherActionKind.SelectFloor) { FloorId = 4, FloorLevel = 4 };
+        Assert.True(coordinator.BeginFloorParent(floor));
+        driver.Popup = new NetherRuntimePopupContext
+        {
+            Kind = NetherRuntimePopupKind.CodeOffer,
+            OwnerAction = NetherActionKind.SelectFloor,
+            OwnerGeneration = coordinator.Generation,
+            Sequence = 8,
+            DecisionEpoch = 0,
+        };
+
+        int dispatches = 0;
+        Assert.Equal(
+            NetherRuntimeParentPollKind.Pending,
+            coordinator.Poll(_ =>
+            {
+                dispatches++;
+                return NetherNativeActionResult.Started("reload");
+            }).Kind
+        );
+
+        // The popup instance/sequence deliberately remains live while RerollAsync rebuilds
+        // its model.  A new decision epoch is the only allowed re-dispatch identity.
+        driver.Popup = driver.Popup with { DecisionEpoch = 1 };
+        Assert.Equal(
+            NetherRuntimeParentPollKind.Pending,
+            coordinator.Poll(_ =>
+            {
+                dispatches++;
+                return NetherNativeActionResult.Started("select-after-reload");
+            }).Kind
+        );
+        Assert.Equal(2, dispatches);
+
+        Assert.Equal(
+            NetherRuntimeParentPollKind.Pending,
+            coordinator.Poll(_ => throw new Xunit.Sdk.XunitException("same epoch must not replay")) .Kind
+        );
+        Assert.Equal(2, dispatches);
     }
 
     private sealed class FakeDriver : INetherRuntimeParentDriver

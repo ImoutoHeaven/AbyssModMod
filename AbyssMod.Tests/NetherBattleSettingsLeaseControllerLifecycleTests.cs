@@ -38,6 +38,71 @@ public class NetherBattleSettingsLeaseControllerLifecycleTests
     }
 
     [Fact]
+    public void ProductionControllerLifecycle_ProbesRealPersistedLeaseBeforeAccessorAndBlocksRouteWithoutNativeWrites()
+    {
+        using var harness = new LeaseHarness(autoEnabled: false, speed: 1);
+        Assert.Equal(NetherNativeActionResultKind.Completed, harness.Lease.AcquireAndForce().Kind);
+        Assert.True(File.Exists(harness.LeaseFilePath));
+
+        var recoveryNative = new NativeSettings(autoEnabled: true, speed: 3);
+        NetherBattleSettingsLease recoveredLease = harness.CreateLeaseWithoutNative();
+        var lifecycle = new NetherBattleSettingsLeaseControllerLifecycle(recoveredLease);
+
+        lifecycle.OnControllerInitialized();
+
+        Assert.True(lifecycle.BlocksRoute);
+        Assert.False(lifecycle.IsExactAccessorRegistered);
+        Assert.Equal(0, recoveryNative.WriteCalls);
+        Assert.True(File.Exists(harness.LeaseFilePath));
+
+        harness.AttachNative(recoveredLease, recoveryNative);
+        NetherNativeActionResult recovery = lifecycle.OnExactAccessorRegistered();
+
+        Assert.Equal(NetherNativeActionResultKind.Completed, recovery.Kind);
+        Assert.False(recoveryNative.AutoEnabled);
+        Assert.Equal(1, recoveryNative.Speed);
+        Assert.Equal(1, recoveryNative.WriteCalls);
+        Assert.False(File.Exists(harness.LeaseFilePath));
+        Assert.False(lifecycle.BlocksRoute);
+    }
+
+    [Fact]
+    public void ProductionControllerLifecycle_NoLeaseStaysRouteableBeforeBattleAccessor()
+    {
+        using var harness = new LeaseHarness(autoEnabled: false, speed: 1);
+        NetherBattleSettingsLease lease = harness.CreateLeaseWithoutNative();
+        var lifecycle = new NetherBattleSettingsLeaseControllerLifecycle(lease);
+
+        lifecycle.OnControllerInitialized();
+
+        Assert.False(File.Exists(harness.LeaseFilePath));
+        Assert.False(lifecycle.BlocksRoute);
+        Assert.False(lifecycle.IsExactAccessorRegistered);
+    }
+
+    [Fact]
+    public void ProductionControllerLifecycle_CorruptLeaseBlocksThenReadOnlyRetryCanReleaseWithoutAccessor()
+    {
+        using var harness = new LeaseHarness(autoEnabled: false, speed: 1);
+        File.WriteAllText(harness.LeaseFilePath, "not-json");
+        NetherBattleSettingsLease lease = harness.CreateLeaseWithoutNative();
+        var lifecycle = new NetherBattleSettingsLeaseControllerLifecycle(lease, retryIntervalUpdates: 1);
+
+        lifecycle.OnControllerInitialized();
+
+        Assert.True(lifecycle.BlocksRoute);
+        Assert.Equal(NetherBattleSettingsLeaseRuntimeState.RetryWait, lifecycle.RuntimeState);
+
+        File.Delete(harness.LeaseFilePath);
+        NetherBattleSettingsLeaseRetryPumpResult retry = lifecycle.PumpUpdate();
+
+        Assert.True(retry.Attempted);
+        Assert.Equal(NetherNativeActionResultKind.Completed, retry.Result?.Kind);
+        Assert.False(lifecycle.BlocksRoute);
+        Assert.False(lifecycle.IsExactAccessorRegistered);
+    }
+
+    [Fact]
     public void ProductionControllerLifecycle_RestoresEachBattleAndUsesOffAndUnloadForLaterBattles()
     {
         using var harness = new LeaseHarness(autoEnabled: false, speed: 1);
@@ -183,6 +248,11 @@ public class NetherBattleSettingsLeaseControllerLifecycleTests
             return lease;
         }
 
+        public NetherBattleSettingsLease CreateLeaseWithoutNative() => (NetherBattleSettingsLease)Activator.CreateInstance(
+            typeof(NetherBattleSettingsLease),
+            nonPublic: true
+        )!;
+
         public void DetachNative(NetherBattleSettingsLease lease) => typeof(NetherBattleSettingsLease)
             .GetField("_native", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(lease, null);
@@ -210,6 +280,7 @@ public class NetherBattleSettingsLeaseControllerLifecycleTests
         public bool AutoEnabled { get; set; }
         public int Speed { get; set; }
         public int ForceCalls { get; private set; }
+        public int WriteCalls { get; private set; }
 
         public bool TryRead(out bool autoEnabled, out int speed, out string error)
         {
@@ -230,6 +301,7 @@ public class NetherBattleSettingsLeaseControllerLifecycleTests
 
         public bool TryWrite(bool autoEnabled, int speed, out string error)
         {
+            WriteCalls++;
             AutoEnabled = autoEnabled;
             Speed = speed;
             error = string.Empty;
@@ -244,6 +316,10 @@ public class NetherBattleSettingsLeaseControllerLifecycleTests
         public int RetryCalls { get; private set; }
         public NetherBattleSettingsLeasePhase Phase { get; private set; } = NetherBattleSettingsLeasePhase.Empty;
         public bool NeedsRecovery { get; private set; }
+
+        public NetherNativeActionResult ProbePersistedLease() => NeedsRecovery
+            ? NetherNativeActionResult.Started("retry-persisted-lease-awaiting-accessor")
+            : NetherNativeActionResult.Completed("retry-no-persisted-lease");
 
         public NetherNativeActionResult AcquireAndForce()
         {

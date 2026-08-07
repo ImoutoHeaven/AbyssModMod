@@ -112,10 +112,14 @@ internal static class NetherAutoClimbController
 
         _initialized = true;
         NetherBattleSettingsLease.Initialize();
-        // Persisted Auto/speed recovery intentionally waits for the exact BottomRight accessor
-        // registration.  Calling RecoverOnLoad here would attempt the lease before the native
-        // object exists and used to hide a later restore behind a session-wide completion bit.
-        BattleSettingsLifecycle.OnControllerInitialized();
+        // Durable discovery intentionally happens before an accessor exists, but performs no
+        // native settings operation.  A valid active/crash-left lease blocks route mutation;
+        // exact accessor registration below remains the first point for write/readback/delete.
+        ObserveBattleSettingsLeaseBoundary(
+            BattleSettingsLifecycle.OnControllerInitialized(),
+            "startup-lease-discovery",
+            pauseEnabledState: false
+        );
     }
 
     public static void Toggle()
@@ -381,12 +385,36 @@ internal static class NetherAutoClimbController
                 return;
             case NetherRuntimeParentPollKind.Completed:
                 _bridge.TerminateFloorParent();
+                if (!NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(settlement))
+                {
+                    // The exact native parent reported terminal before a stage it created
+                    // (for example Event -> CodeOffer) reached a terminal selection.  Do
+                    // not issue a speculative GET or replay anything; evidence remains in
+                    // State for a named fail-closed pause.
+                    FailClosed(
+                        NetherPauseReason.BindingUnavailable,
+                        "floor-parent-incomplete-owned-popup-stage"
+                    );
+                    return;
+                }
                 // The parent task is the only proof that Event/Treasure's internal void flow
                 // has reached its native terminal.  Reconcile before making another decision.
                 State.ObserveUnknownOutcome();
                 return;
             case NetherRuntimeParentPollKind.Faulted:
                 _bridge.TerminateFloorParent();
+                // A Shop purchase child has already sent one non-idempotent native mutation.
+                // Its exact close/parent chain is now unproven, so do not turn that fault into
+                // a speculative GET or a retry on a later frame.  Preserve the pending action
+                // as named evidence for the user to recover manually.
+                if (result.Detail.StartsWith("shop-purchase-", StringComparison.Ordinal)
+                    || result.Detail.StartsWith("owned-popup:shop-purchase-", StringComparison.Ordinal)
+                    || result.Detail.StartsWith("code-reload-", StringComparison.Ordinal)
+                    || result.Detail.StartsWith("owned-popup:code-reload-", StringComparison.Ordinal))
+                {
+                    FailClosed(NetherPauseReason.BindingUnavailable, result.Detail);
+                    return;
+                }
                 State.ObserveUnknownOutcome();
                 return;
             default:
@@ -430,6 +458,7 @@ internal static class NetherAutoClimbController
 
         if (!NetherFloorActionTransactionComposer.TryCompose(
                 ownerParent,
+                settlement,
                 popup,
                 decision.Action,
                 out NetherPlannedAction composed
@@ -515,6 +544,7 @@ internal static class NetherAutoClimbController
             };
         if (!NetherFloorActionTransactionComposer.TryCompose(
                 ownerParent,
+                settlement,
                 popup,
                 action,
                 out NetherPlannedAction composed

@@ -128,6 +128,126 @@ public class NetherFloorActionTransactionComposerTests
         ));
     }
 
+    [Fact]
+    public void Same_floor_parent_keeps_event_effects_when_its_code_change_opens_a_second_owned_popup()
+    {
+        NetherPlannedAction parent = Parent();
+        NetherPlannedAction eventChoice = new(NetherActionKind.SelectEventOption)
+        {
+            OptionNumber = 1,
+            ExpectedEffects = new[]
+            {
+                new NetherEffect(NetherEffectKind.NetherGoldGain, 5),
+                new NetherEffect(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
+            },
+        };
+        NetherPlannedAction codeChoice = new(NetherActionKind.SelectCode)
+        {
+            CodeId = 30024,
+        };
+
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.Event, OwnerGeneration = 7, Sequence = 1 },
+            eventChoice,
+            out NetherPlannedAction afterEvent
+        ));
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            afterEvent,
+            new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.CodeOffer, OwnerGeneration = 7, Sequence = 2 },
+            codeChoice,
+            out NetherPlannedAction afterCode
+        ));
+
+        Assert.Contains(afterCode.ExpectedEffects, effect => effect.Kind == NetherEffectKind.NetherGoldGain && effect.Amount == 5);
+        Assert.Contains(afterCode.ExpectedEffects, effect => effect.Kind == NetherEffectKind.AbyssCodeChanged && effect.ReplacementCodeId == 30024);
+        Assert.Equal(30024, afterCode.CodeId);
+    }
+
+    [Fact]
+    public void Same_parent_rejects_duplicate_effect_keys_and_stale_or_conflicting_code_stage()
+    {
+        NetherPlannedAction duplicateEffect = new(NetherActionKind.SelectEventOption)
+        {
+            OptionNumber = 1,
+            ExpectedEffects = new[]
+            {
+                new NetherEffect(NetherEffectKind.NetherGoldGain, 1),
+                new NetherEffect(NetherEffectKind.NetherGoldGain, 2),
+            },
+        };
+        Assert.False(NetherFloorActionTransactionComposer.TryCompose(
+            Parent(),
+            new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.Event, OwnerGeneration = 7, Sequence = 1 },
+            duplicateEffect,
+            out _
+        ));
+
+        NetherPlannedAction eventChoice = new(NetherActionKind.SelectEventOption)
+        {
+            OptionNumber = 1,
+            ExpectedEffects = new[]
+            {
+                new NetherEffect(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
+            },
+        };
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            Parent(),
+            new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.Event, OwnerGeneration = 7, Sequence = 1 },
+            eventChoice,
+            out NetherPlannedAction afterEvent
+        ));
+
+        Assert.False(NetherFloorActionTransactionComposer.TryCompose(
+            afterEvent,
+            new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.CodeOffer, OwnerGeneration = 7, Sequence = 1 },
+            new NetherPlannedAction(NetherActionKind.SelectCode) { CodeId = 30024 },
+            out _
+        ));
+        Assert.False(NetherFloorActionTransactionComposer.TryCompose(
+            afterEvent,
+            new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.CodeOffer, OwnerGeneration = 7, Sequence = 2 },
+            new NetherPlannedAction(NetherActionKind.SelectCode) { CodeId = 40024 },
+            out _
+        ));
+    }
+
+    [Fact]
+    public void Reload_stage_requires_a_new_epoch_terminal_code_selection_before_parent_may_reconcile()
+    {
+        NetherPlannedAction parent = Parent();
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            new NetherRuntimePopupContext
+            {
+                Kind = NetherRuntimePopupKind.CodeOffer,
+                OwnerAction = NetherActionKind.SelectFloor,
+                OwnerGeneration = 7,
+                Sequence = 2,
+                DecisionEpoch = 0,
+            },
+            new NetherPlannedAction(NetherActionKind.ReloadCode),
+            out NetherPlannedAction afterReload
+        ));
+        Assert.False(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(afterReload));
+
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterReload,
+            new NetherRuntimePopupContext
+            {
+                Kind = NetherRuntimePopupKind.CodeOffer,
+                OwnerAction = NetherActionKind.SelectFloor,
+                OwnerGeneration = 7,
+                Sequence = 2,
+                DecisionEpoch = 1,
+            },
+            new NetherPlannedAction(NetherActionKind.SelectCode) { CodeId = 30024 },
+            out NetherPlannedAction afterSelect
+        ));
+        Assert.True(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(afterSelect));
+    }
+
     private static NetherPlannedAction Parent() => new(NetherActionKind.SelectFloor)
     {
         FloorId = 11,

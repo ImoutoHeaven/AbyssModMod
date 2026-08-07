@@ -97,6 +97,41 @@ internal sealed class NetherBattleSettingsLeaseState
         return RequestRestore("recover-on-load");
     }
 
+    /// <summary>
+    /// A startup probe found no active persisted original values.  This may also clear a prior
+    /// probe-only fault after the lease file has become readable/absent; it must never clear a
+    /// live in-memory lease that still owns original settings.
+    /// </summary>
+    public bool MarkNoPersistedLease()
+    {
+        if (_hasOriginal && Phase is not (NetherBattleSettingsLeasePhase.Empty or NetherBattleSettingsLeasePhase.Restored))
+            return false;
+
+        _hasOriginal = false;
+        OriginalAutoEnabled = false;
+        OriginalSpeed = 0;
+        LastReason = string.Empty;
+        Phase = NetherBattleSettingsLeasePhase.Empty;
+        return true;
+    }
+
+    /// <summary>
+    /// A malformed/unreadable startup file has no safe native restore payload.  Keep the fault
+    /// visible to the coordinator so it blocks route mutation until a later read-only probe can
+    /// prove the file is gone or valid.
+    /// </summary>
+    public void FailDiscovery(string reason)
+    {
+        if (_hasOriginal)
+        {
+            FailRestore(reason);
+            return;
+        }
+
+        LastReason = string.IsNullOrWhiteSpace(reason) ? "lease-discovery-failed" : reason;
+        Phase = NetherBattleSettingsLeasePhase.Faulted;
+    }
+
     public void FailSave(string reason)
     {
         LastReason = string.IsNullOrWhiteSpace(reason) ? "save-failed" : reason;

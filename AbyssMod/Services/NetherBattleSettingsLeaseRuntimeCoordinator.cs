@@ -15,6 +15,8 @@ internal interface INetherBattleSettingsLeaseDriver
 
     bool NeedsRecovery { get; }
 
+    NetherNativeActionResult ProbePersistedLease();
+
     NetherNativeActionResult AcquireAndForce();
 
     NetherNativeActionResult Restore(string reason);
@@ -27,6 +29,7 @@ internal interface INetherBattleSettingsLeaseDriver
 internal enum NetherBattleSettingsLeaseRuntimeState
 {
     Ready,
+    RecoveryPending,
     RetryWait,
     Paused,
 }
@@ -56,6 +59,8 @@ internal sealed class NetherBattleSettingsLeaseRuntimeCoordinator
     private readonly int _retryIntervalUpdates;
     private int _restoreRetries;
     private long _nextRetryUpdate = 1;
+    private bool _retryStartupProbe;
+    private bool _startupProbePendingAccessor;
 
     public NetherBattleSettingsLeaseRuntimeCoordinator(
         INetherBattleSettingsLeaseDriver lease,
@@ -71,7 +76,7 @@ internal sealed class NetherBattleSettingsLeaseRuntimeCoordinator
         _maximumRestoreRetries = maximumRestoreRetries;
         _retryIntervalUpdates = retryIntervalUpdates;
         State = lease.NeedsRecovery
-            ? NetherBattleSettingsLeaseRuntimeState.RetryWait
+            ? NetherBattleSettingsLeaseRuntimeState.RecoveryPending
             : NetherBattleSettingsLeaseRuntimeState.Ready;
     }
 
@@ -81,6 +86,10 @@ internal sealed class NetherBattleSettingsLeaseRuntimeCoordinator
     public NetherBattleSettingsLeasePhase LeasePhase => _lease.Phase;
 
     public int RestoreRetries => _restoreRetries;
+
+    /// <summary>Only a failed disk probe may be retried before a native accessor exists.</summary>
+    public bool AllowsPreAccessorDiscoveryRetry => State == NetherBattleSettingsLeaseRuntimeState.RetryWait
+        && _retryStartupProbe;
 
     public bool BlocksBattleEntry => State != NetherBattleSettingsLeaseRuntimeState.Ready
         || _lease.Phase is not (NetherBattleSettingsLeasePhase.Empty or NetherBattleSettingsLeasePhase.Restored);
@@ -110,6 +119,13 @@ internal sealed class NetherBattleSettingsLeaseRuntimeCoordinator
 
     public NetherNativeActionResult OnAutomationPause() => RequestRestore("automation-pause");
 
+    /// <summary>
+    /// Durable discovery is intentionally independent of native settings restoration.  A
+    /// Started result represents a validated active file and must block routes until accessor
+    /// registration; it is not a native mutation or a retryable UI task.
+    /// </summary>
+    public NetherNativeActionResult ProbeStartupLease() => ObserveStartupProbeResult(_lease.ProbePersistedLease());
+
     public NetherNativeActionResult RecoverOnStartup()
     {
         NetherNativeActionResult result = _lease.RecoverOnLoad();
@@ -127,6 +143,9 @@ internal sealed class NetherBattleSettingsLeaseRuntimeCoordinator
             return NetherNativeActionResult.Rejected("battle-settings-lease-retry-not-pending:" + State);
 
         _restoreRetries++;
+        if (_retryStartupProbe)
+            return ObserveStartupProbeResult(_lease.ProbePersistedLease());
+
         NetherNativeActionResult result = _lease.RetryRestoreAfterNativeAccessorRegistered();
         return ObserveRestoreResult(result);
     }
@@ -151,6 +170,9 @@ internal sealed class NetherBattleSettingsLeaseRuntimeCoordinator
 
     private NetherNativeActionResult RequestRestore(string reason)
     {
+        if (_startupProbePendingAccessor)
+            return NetherNativeActionResult.BindingUnavailable("battle-settings-lease-startup-recovery-awaiting-accessor");
+
         NetherNativeActionResult result = _lease.Phase is NetherBattleSettingsLeasePhase.Faulted
             or NetherBattleSettingsLeasePhase.RestorePending
             ? _lease.RetryRestoreAfterNativeAccessorRegistered()
@@ -169,6 +191,43 @@ internal sealed class NetherBattleSettingsLeaseRuntimeCoordinator
         State = _lease.NeedsRecovery
             ? NetherBattleSettingsLeaseRuntimeState.RetryWait
             : NetherBattleSettingsLeaseRuntimeState.Paused;
+        _retryStartupProbe = false;
+        return result;
+    }
+
+    private NetherNativeActionResult ObserveStartupProbeResult(NetherNativeActionResult result)
+    {
+        if (result.Kind == NetherNativeActionResultKind.Completed
+            && _lease.Phase is NetherBattleSettingsLeasePhase.Empty or NetherBattleSettingsLeasePhase.Restored)
+        {
+            _restoreRetries = 0;
+            _retryStartupProbe = false;
+            _startupProbePendingAccessor = false;
+            State = NetherBattleSettingsLeaseRuntimeState.Ready;
+            return result;
+        }
+
+        if (result.Kind == NetherNativeActionResultKind.Started && _lease.NeedsRecovery)
+        {
+            _retryStartupProbe = false;
+            _startupProbePendingAccessor = true;
+            State = NetherBattleSettingsLeaseRuntimeState.RecoveryPending;
+            return result;
+        }
+
+        if (result.Kind == NetherNativeActionResultKind.Rejected)
+        {
+            _retryStartupProbe = false;
+            _startupProbePendingAccessor = false;
+            State = NetherBattleSettingsLeaseRuntimeState.Paused;
+            return result;
+        }
+
+        _retryStartupProbe = true;
+        _startupProbePendingAccessor = false;
+        State = _restoreRetries < _maximumRestoreRetries
+            ? NetherBattleSettingsLeaseRuntimeState.RetryWait
+            : NetherBattleSettingsLeaseRuntimeState.Paused;
         return result;
     }
 
@@ -178,6 +237,8 @@ internal sealed class NetherBattleSettingsLeaseRuntimeCoordinator
             && _lease.Phase is NetherBattleSettingsLeasePhase.Empty or NetherBattleSettingsLeasePhase.Restored)
         {
             _restoreRetries = 0;
+            _retryStartupProbe = false;
+            _startupProbePendingAccessor = false;
             State = NetherBattleSettingsLeaseRuntimeState.Ready;
             return result;
         }
@@ -188,6 +249,18 @@ internal sealed class NetherBattleSettingsLeaseRuntimeCoordinator
             return result;
         }
 
+        if (_lease.Phase == NetherBattleSettingsLeasePhase.Faulted && !_lease.NeedsRecovery)
+        {
+            _retryStartupProbe = true;
+            _startupProbePendingAccessor = false;
+            State = _restoreRetries < _maximumRestoreRetries
+                ? NetherBattleSettingsLeaseRuntimeState.RetryWait
+                : NetherBattleSettingsLeaseRuntimeState.Paused;
+            return result;
+        }
+
+        _retryStartupProbe = false;
+        _startupProbePendingAccessor = false;
         State = _lease.NeedsRecovery && _restoreRetries < _maximumRestoreRetries
             ? NetherBattleSettingsLeaseRuntimeState.RetryWait
             : NetherBattleSettingsLeaseRuntimeState.Paused;

@@ -33,6 +33,13 @@ internal sealed record NetherRuntimePopupContext
     public NetherActionKind OwnerAction { get; init; }
     public long OwnerGeneration { get; init; }
     public long Sequence { get; init; }
+    /// <summary>
+    /// A CodeOffer can remain the same live native popup while its exact RerollAsync task
+    /// rebuilds the server-provided candidates.  The bridge advances this only after that task
+    /// and a fresh authoritative candidate read both succeed; it is never a visual-frame
+    /// counter.  All other popup kinds remain at epoch zero.
+    /// </summary>
+    public long DecisionEpoch { get; init; }
     public int RawFloorType { get; init; }
     public IReadOnlyList<NetherEventOption> Options { get; init; } = Array.Empty<NetherEventOption>();
     public IReadOnlyList<NetherShopContent> ShopContents { get; init; } = Array.Empty<NetherShopContent>();

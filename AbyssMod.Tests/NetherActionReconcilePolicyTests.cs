@@ -186,6 +186,77 @@ public class NetherActionReconcilePolicyTests
     }
 
     [Fact]
+    public void Multi_stage_event_then_code_parent_requires_both_effect_contracts_from_one_get()
+    {
+        NetherSnapshot before = Snapshot(floorId: 10, gold: 20, codeHash: "codes:none") with
+        {
+            Codes = Array.Empty<NetherCodeState>(),
+        };
+        NetherSnapshot exact = Snapshot(floorId: 11, floorLevel: 11, gold: 25, codeHash: "codes:30024") with
+        {
+            Codes = new[] { new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1) },
+        };
+        NetherPlannedAction action = ComposedFloor(
+            NetherRuntimePopupKind.CodeOffer,
+            NetherActionKind.SelectCode
+        ) with
+        {
+            CodeId = 30024,
+            OwnedPopupStages = new NetherFloorPopupStage[]
+            {
+                new(
+                    NetherRuntimePopupKind.Event,
+                    NetherActionKind.SelectEventOption,
+                    OwnerGeneration: 7,
+                    Sequence: 1,
+                    ExpectedAfterStatus: NetherSessionStatus.Play,
+                    OptionNumber: 1,
+                    ExpectedEffects: new NetherEffect[]
+                    {
+                        new NetherEffect(NetherEffectKind.NetherGoldGain, 5),
+                        new NetherEffect(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
+                    },
+                    ContentId: 0,
+                    ContentAmount: 0,
+                    GoldCost: 0,
+                    CodeId: 0,
+                    ReplaceCodeId: 0
+                ),
+                new(
+                    NetherRuntimePopupKind.CodeOffer,
+                    NetherActionKind.SelectCode,
+                    OwnerGeneration: 7,
+                    Sequence: 2,
+                    ExpectedAfterStatus: NetherSessionStatus.Play,
+                    OptionNumber: 0,
+                    ExpectedEffects: Array.Empty<NetherEffect>(),
+                    ContentId: 0,
+                    ContentAmount: 0,
+                    GoldCost: 0,
+                    CodeId: 30024,
+                    ReplaceCodeId: 0
+                ),
+            },
+        };
+
+        Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(action, before, exact));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(
+            action,
+            before,
+            exact with { NetherGold = 24 }
+        ));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(
+            action,
+            before,
+            exact with
+            {
+                Codes = new[] { new NetherCodeState(40024, NetherCodeEffectKind.Risk, 1) },
+                CodeHash = "codes:40024",
+            }
+        ));
+    }
+
+    [Fact]
     public void Composed_shop_buy_and_battle_option_require_their_own_terminal_contract()
     {
         NetherSnapshot before = Snapshot(floorId: 10, gold: 100);

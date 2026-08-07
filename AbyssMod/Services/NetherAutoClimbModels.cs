@@ -505,6 +505,28 @@ internal sealed record NetherBattleProjectionPayload(
     string ProjectionIdentity
 );
 
+/// <summary>
+/// One immutable, owned modal stage in a SelectFloor native parent chain.  A floor parent can
+/// legitimately create more than one popup (for example Event -> Change Code -> Code Select),
+/// so the final read-only reconcile must retain every stage rather than replacing the first
+/// popup contract with the most recent one.
+/// </summary>
+internal sealed record NetherFloorPopupStage(
+    NetherRuntimePopupKind PopupKind,
+    NetherActionKind ActionKind,
+    long OwnerGeneration,
+    long Sequence,
+    NetherSessionStatus ExpectedAfterStatus,
+    int OptionNumber,
+    IReadOnlyList<NetherEffect> ExpectedEffects,
+    long ContentId,
+    int ContentAmount,
+    int GoldCost,
+    long CodeId,
+    long ReplaceCodeId,
+    long DecisionEpoch = 0
+);
+
 internal readonly record struct NetherPlannedAction(NetherActionKind Kind)
 {
     public long FloorId { get; init; }
@@ -535,6 +557,13 @@ internal readonly record struct NetherPlannedAction(NetherActionKind Kind)
     /// </summary>
     public NetherRuntimePopupKind OwnedPopupKind { get; init; }
     public NetherActionKind OwnedPopupActionKind { get; init; }
+    /// <summary>
+    /// Ordered immutable proof for every owned modal dispatched by this one SelectFloor
+    /// parent.  Legacy scalar fields above mirror the final stage for compact audit output;
+    /// reconciliation uses this collection whenever it is populated.
+    /// </summary>
+    public IReadOnlyList<NetherFloorPopupStage> OwnedPopupStages { get; init; }
+        = Array.Empty<NetherFloorPopupStage>();
     public NetherBattleSettlementContract? BattleSettlement { get; init; }
     /// <summary>Set only for a safety-approved combat floor before its native selection parent begins.</summary>
     public NetherBattleProjectionPayload? BattleProjection { get; init; }

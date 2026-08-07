@@ -38,6 +38,7 @@ internal sealed class NetherRuntimeFlowCoordinator
     private NetherPlannedAction? _parent;
     private long _generation;
     private long _lastDispatchedSequence;
+    private long _lastDispatchedDecisionEpoch;
 
     public NetherRuntimeFlowCoordinator(INetherRuntimeParentDriver driver)
     {
@@ -79,12 +80,13 @@ internal sealed class NetherRuntimeFlowCoordinator
             NetherRuntimePopupContext context = popup.Popup!;
             if (context.OwnerAction == NetherActionKind.SelectFloor
                 && context.OwnerGeneration == _generation
-                && context.Sequence > _lastDispatchedSequence)
+                && IsNewDispatchIdentity(context))
             {
                 NetherNativeActionResult child = dispatchOwnedPopup(context);
                 if (child.Kind == NetherNativeActionResultKind.Started || child.Kind == NetherNativeActionResultKind.Completed)
                 {
                     _lastDispatchedSequence = context.Sequence;
+                    _lastDispatchedDecisionEpoch = context.DecisionEpoch;
                     dispatchedOwnedPopup = true;
                 }
                 else
@@ -111,6 +113,20 @@ internal sealed class NetherRuntimeFlowCoordinator
     {
         _parent = null;
         _lastDispatchedSequence = 0;
+        _lastDispatchedDecisionEpoch = 0;
+    }
+
+    private bool IsNewDispatchIdentity(NetherRuntimePopupContext context)
+    {
+        if (context.Sequence > _lastDispatchedSequence)
+            return context.DecisionEpoch == 0;
+
+        // Exact RerollAsync preserves its CodeOffer popup registration.  It is the sole
+        // permitted same-sequence replay, and only after the bridge has proven a strictly
+        // newer candidate epoch.  No Event/Shop/Checkpoint popup can opt into this path.
+        return context.Kind == NetherRuntimePopupKind.CodeOffer
+            && context.Sequence == _lastDispatchedSequence
+            && context.DecisionEpoch > _lastDispatchedDecisionEpoch;
     }
 
     private NetherRuntimeParentPollResult Complete(string detail)
