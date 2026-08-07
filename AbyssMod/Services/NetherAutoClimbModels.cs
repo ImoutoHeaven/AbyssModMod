@@ -58,6 +58,7 @@ internal enum NetherActionKind
     FinishAtCheckpoint,
     SelectReturnItems,
     AwaitNativeFlow,
+    BattleSettlement,
     RestoreBattleSettings,
 }
 
@@ -80,6 +81,11 @@ internal enum NetherPauseReason
     UnsupportedPopup,
     InvalidConfiguration,
     BattleSettingsLeaseFault,
+    BattleLifecycleFault,
+    BattleLifecycleCanceled,
+    BattleSettlementUnchanged,
+    BattleSettlementWrongTarget,
+    BattleSceneLost,
     TargetReachedOutsideCheckpoint,
     Lose,
     UserDisabled,
@@ -409,16 +415,38 @@ internal sealed record NetherSnapshot
     );
 }
 
+internal sealed record NetherBattleSettlementContract(
+    long EntryMapId,
+    long EntryFloorId,
+    NetherSessionStatus EntryStatus,
+    long ExpectedMapId,
+    long ExpectedFloorId,
+    NetherSessionStatus ExpectedStatus,
+    string ProjectionIdentity
+);
+
 internal readonly record struct NetherPlannedAction(NetherActionKind Kind)
 {
     public long FloorId { get; init; }
     public int FloorLevel { get; init; }
     public int FloorIndex { get; init; }
+    /// <summary>Exact server-owned status required before the selected floor action.</summary>
+    public NetherSessionStatus ExpectedBeforeStatus { get; init; } = NetherSessionStatus.Unknown;
+    /// <summary>Exact server-owned status required after the selected floor action.</summary>
+    public NetherSessionStatus ExpectedAfterStatus { get; init; } = NetherSessionStatus.Unknown;
     public int OptionNumber { get; init; }
+    /// <summary>Only fully mapped effects may be used to prove an event postcondition.</summary>
+    public IReadOnlyList<NetherEffect> ExpectedEffects { get; init; } = Array.Empty<NetherEffect>();
     public long ContentId { get; init; }
+    public int ContentAmount { get; init; }
+    public int GoldCost { get; init; }
     public long CodeId { get; init; }
     public long ReplaceCodeId { get; init; }
     public int TicketCount { get; init; }
+    public int TicketCost { get; init; }
+    public long ExpectedMapId { get; init; }
+    public int ExpectedSegmentFloorLevel { get; init; }
+    public NetherBattleSettlementContract? BattleSettlement { get; init; }
     /// <summary>
     /// A checkpoint continuation carries only its lock count and explicit user preserve IDs.
     /// The bridge obtains the policy candidates from the freshly generated native return popup

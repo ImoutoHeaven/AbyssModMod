@@ -122,7 +122,7 @@ public class NetherAutoClimbStateMachineTests
         var machine = StableMachine();
         NetherSnapshotFingerprint fingerprint = Fingerprint(NetherSessionStatus.Battle, 30);
 
-        Assert.True(machine.TryBegin(new NetherPlannedAction(NetherActionKind.AwaitNativeFlow), fingerprint));
+        Assert.True(machine.TryBegin(BattleSettlementAction(), fingerprint));
         Assert.Equal(NetherAutoClimbPhase.AwaitingBattle, machine.Phase);
 
         machine.ObserveF11Busy(isBusy: true);
@@ -285,6 +285,53 @@ public class NetherAutoClimbStateMachineTests
         Assert.Equal(NetherActionKind.SelectFloor, machine.PendingAction!.Value.Kind);
     }
 
+    [Fact]
+    public void F12_off_awaiting_f11_preserves_battle_settlement_evidence_and_blocks_reenable()
+    {
+        var machine = StableMachine();
+        NetherSnapshotFingerprint fingerprint = Fingerprint(NetherSessionStatus.Battle, 30);
+
+        Assert.True(machine.TryBegin(BattleSettlementAction(), fingerprint));
+        machine.ObserveF11Busy(isBusy: true);
+        machine.Toggle(isInNether: true); // off
+        machine.Toggle(isInNether: true); // attempted re-enable before F11/battle terminal
+
+        Assert.False(machine.IsEnabled);
+        Assert.Equal(NetherAutoClimbPhase.AwaitingF11, machine.Phase);
+        Assert.Equal(NetherActionKind.BattleSettlement, machine.PendingAction!.Value.Kind);
+    }
+
+    [Fact]
+    public void F12_off_awaiting_battle_preserves_battle_settlement_evidence_and_blocks_reenable()
+    {
+        var machine = StableMachine();
+        NetherSnapshotFingerprint fingerprint = Fingerprint(NetherSessionStatus.Battle, 30);
+
+        Assert.True(machine.TryBegin(BattleSettlementAction(), fingerprint));
+        machine.Toggle(isInNether: true); // off
+        machine.Toggle(isInNether: true); // attempted re-enable before clear/close terminal
+
+        Assert.False(machine.IsEnabled);
+        Assert.Equal(NetherAutoClimbPhase.AwaitingBattle, machine.Phase);
+        Assert.Equal(NetherActionKind.BattleSettlement, machine.PendingAction!.Value.Kind);
+    }
+
+    [Fact]
+    public void F12_off_awaiting_battle_settlement_preserves_evidence_and_blocks_reenable()
+    {
+        var machine = StableMachine();
+        NetherSnapshotFingerprint fingerprint = Fingerprint(NetherSessionStatus.Battle, 30);
+
+        Assert.True(machine.TryBegin(BattleSettlementAction(), fingerprint));
+        machine.BeginBattleSettlement();
+        machine.Toggle(isInNether: true); // off
+        machine.Toggle(isInNether: true); // attempted re-enable before GET reconcile
+
+        Assert.False(machine.IsEnabled);
+        Assert.Equal(NetherAutoClimbPhase.AwaitingBattleSettlement, machine.Phase);
+        Assert.Equal(NetherActionKind.BattleSettlement, machine.PendingAction!.Value.Kind);
+    }
+
     private static NetherAutoClimbStateMachine StableMachine()
     {
         var machine = new NetherAutoClimbStateMachine();
@@ -304,4 +351,17 @@ public class NetherAutoClimbStateMachineTests
         codeHash: "30024",
         mapHash: $"map-{floorLevel}"
     );
+
+    private static NetherPlannedAction BattleSettlementAction() => new(NetherActionKind.BattleSettlement)
+    {
+        BattleSettlement = new NetherBattleSettlementContract(
+            EntryMapId: 200,
+            EntryFloorId: 30,
+            EntryStatus: NetherSessionStatus.Battle,
+            ExpectedMapId: 200,
+            ExpectedFloorId: 30,
+            ExpectedStatus: NetherSessionStatus.Play,
+            ProjectionIdentity: "battle-30"
+        ),
+    };
 }

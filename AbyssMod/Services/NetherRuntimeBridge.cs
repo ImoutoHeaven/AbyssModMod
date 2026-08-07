@@ -53,7 +53,7 @@ internal readonly record struct NetherRuntimeCodeCandidatesResult(
 /// directly.  Mutating operations invoke an already registered game controller callback,
 /// and report an exact binding failure when that callback is not available.
 /// </summary>
-internal interface INetherRuntimeBridge : INetherRuntimeParentDriver
+internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherReadOnlyReconcileDriver, INetherBattleSettlementDriver
 {
     bool HasRegisteredFloorSelection { get; }
 
@@ -85,13 +85,7 @@ internal interface INetherRuntimeBridge : INetherRuntimeParentDriver
 
     NetherNativeActionResult PollNativeFlow();
 
-    NetherNativeActionResult PollBattleLifecycle();
-
     NetherNativeActionResult SelectReturnItems(IReadOnlyList<NetherRewardItem> items);
-
-    bool TryConsumeBattleClear();
-
-    bool TryConsumeBattleClose();
 
     bool TryConsumeResultSuccess();
 
@@ -188,6 +182,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 return _battleActive;
         }
     }
+
+    public bool IsF11Busy => BattleSessionAutoSL.HasActiveNetherOperation;
 
     public bool IsResultObserved
     {
@@ -664,25 +660,38 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
 
     public NetherNativeActionResult Reconcile()
     {
-        object? controller;
-        lock (_gate)
-            controller = _floorSelectionController;
-        if (controller == null)
-            return NetherNativeActionResult.BindingUnavailable("missing-floor-selection-controller");
+        return BeginGetOnlyRefresh();
+    }
+
+    /// <summary>
+    /// Binds the public native datastore sync flow, whose packaged ISIL is the no-Start chain
+    /// <c>SyncNetherDataAsync → RequestNetherAsyncInternal → RequestNetherAsync → Apply</c>.
+    /// It is intentionally not the floor controller's CreateNetherModelAsync, which contains
+    /// a NotPlayed branch to RequestNetherStartAsync.
+    /// </summary>
+    public NetherNativeActionResult BeginGetOnlyRefresh()
+    {
+        UserData? userData = Engine.Get<UserData>();
+        NetherDataStore? dataStore = userData?.NetherDataStore;
+        if (dataStore == null)
+            return NetherNativeActionResult.BindingUnavailable("missing-live-nether-data-store");
 
         return TryInvokeExact(
-            controller,
-            new NetherNativeMethodDescriptor(
-                // Current packaged-game proof: this private native controller flow invokes
-                // NetherApiDataStore.RequestNetherAsync in its generated state machine.  It
-                // refreshes the server model without starting/resuming a floor event.
-                "CreateNetherModelAsync",
-                Array.Empty<string>(),
-                UniTaskTypeName
-            ),
-            Array.Empty<object>(),
-            "read-only-reconcile"
+            dataStore,
+            NetherReadOnlyReconcileNativeBinding.SyncDescriptor,
+            new object[] { new CancellationToken() },
+            "read-only-nether-sync"
         );
+    }
+
+    public NetherNativeActionResult PollGetOnlyRefresh() => PollNativeFlow();
+
+    public NetherReadOnlySnapshotResult TryCaptureAppliedSnapshot()
+    {
+        NetherRuntimeSnapshotResult captured = TryCaptureSnapshot();
+        return captured.IsSuccess
+            ? NetherReadOnlySnapshotResult.Success(captured.Snapshot!)
+            : NetherReadOnlySnapshotResult.Failure(captured.Detail);
     }
 
     public NetherNativeActionResult Invoke(NetherPlannedAction action) => action.Kind switch

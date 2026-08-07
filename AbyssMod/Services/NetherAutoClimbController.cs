@@ -26,9 +26,10 @@ internal static class NetherAutoClimbController
     // The bridge remains the thin native adapter; characterization tests exercise the exact
     // owner/generation/parent-terminal transitions used below.
     private static readonly NetherRuntimeFlowCoordinator RuntimeFlow = new(_bridge);
+    private static readonly NetherReadOnlyReconcileCoordinator ReadOnlyReconcileFlow = new(_bridge);
+    private static readonly NetherBattleSettlementCoordinator BattleSettlementFlow = new(_bridge, _bridge);
 
     private static bool _initialized;
-    private static bool _reconcileRequested;
     private static bool _leaseRestoreCompleted;
     private static NetherCombatLane? _lockedCombatLane;
     private static string _lastTransition = string.Empty;
@@ -117,13 +118,25 @@ internal static class NetherAutoClimbController
         }
 
         bool disabledReconciliation = !State.IsEnabled
-            && State.Phase is (NetherAutoClimbPhase.ExecutingNativeAction or NetherAutoClimbPhase.Reconciling)
+            && State.Phase is (
+                NetherAutoClimbPhase.ExecutingNativeAction or
+                NetherAutoClimbPhase.Reconciling or
+                NetherAutoClimbPhase.AwaitingF11 or
+                NetherAutoClimbPhase.AwaitingBattle or
+                NetherAutoClimbPhase.AwaitingBattleSettlement or
+                NetherAutoClimbPhase.AwaitingSceneChange
+            )
             && State.PendingAction != null;
         if (!State.IsEnabled && !disabledReconciliation)
             return;
 
         if (!_bridge.HasRegisteredFloorSelection)
         {
+            if (State.PendingAction?.Kind == NetherActionKind.BattleSettlement)
+            {
+                FailClosedTerminal(NetherPauseReason.BattleSceneLost, "registered-nether-runtime-lost-during-battle-settlement");
+                return;
+            }
             if (State.IsEnabled)
                 FailClosed(NetherPauseReason.NotInNether, "registered-nether-runtime-lost");
             return;
@@ -142,6 +155,7 @@ internal static class NetherAutoClimbController
                 return;
             case NetherAutoClimbPhase.AwaitingBattle:
             case NetherAutoClimbPhase.AwaitingF11:
+            case NetherAutoClimbPhase.AwaitingBattleSettlement:
                 ObserveBattle();
                 return;
             case NetherAutoClimbPhase.AwaitingSceneChange:
@@ -162,8 +176,9 @@ internal static class NetherAutoClimbController
         RestoreLease("plugin-unload");
         _bridge.ClearRegistrations();
         RuntimeFlow.TerminateParent();
+        ReadOnlyReconcileFlow.Reset();
+        BattleSettlementFlow.TerminateForSceneLoss();
         _initialized = false;
-        _reconcileRequested = false;
         _lockedCombatLane = null;
         ProjectionCalibration.Clear();
         _lastTransition = string.Empty;
@@ -180,11 +195,9 @@ internal static class NetherAutoClimbController
                 // Most native controller methods return UniTask but do not expose that task to
                 // Harmony.  Reconcile rather than guessing that the server mutation succeeded.
                 State.ObserveUnknownOutcome();
-                _reconcileRequested = false;
                 return;
             case NetherNativeActionResultKind.UnknownOutcome:
                 State.ObserveUnknownOutcome();
-                _reconcileRequested = false;
                 return;
             case NetherNativeActionResultKind.BindingUnavailable:
                 FailClosed(NetherPauseReason.BindingUnavailable, native.Detail);
@@ -216,12 +229,10 @@ internal static class NetherAutoClimbController
                 // The parent task is the only proof that Event/Treasure's internal void flow
                 // has reached its native terminal.  Reconcile before making another decision.
                 State.ObserveUnknownOutcome();
-                _reconcileRequested = false;
                 return;
             case NetherRuntimeParentPollKind.Faulted:
                 _bridge.TerminateFloorParent();
                 State.ObserveUnknownOutcome();
-                _reconcileRequested = false;
                 return;
             default:
                 FailClosed(NetherPauseReason.BindingUnavailable, "floor-parent-poll:" + result.Detail);
@@ -323,46 +334,21 @@ internal static class NetherAutoClimbController
 
     private static void Reconcile()
     {
-        if (!_reconcileRequested)
+        NetherReadOnlyReconcileStep refresh = ReadOnlyReconcileFlow.Pump();
+        if (refresh.Kind == NetherReadOnlyReconcileStepKind.Pending)
+            return;
+        if (refresh.Kind == NetherReadOnlyReconcileStepKind.BindingUnavailable)
         {
-            NetherNativeActionResult request = _bridge.Reconcile();
-            if (request.Kind == NetherNativeActionResultKind.Started || request.Kind == NetherNativeActionResultKind.Completed)
-            {
-                _reconcileRequested = true;
-                return;
-            }
-            if (request.Kind == NetherNativeActionResultKind.BindingUnavailable)
-            {
-                FailClosed(NetherPauseReason.BindingUnavailable, request.Detail);
-                return;
-            }
-            FailClosed(NetherPauseReason.AmbiguousServerOutcome, "reconcile:" + request.Detail);
+            FailClosed(NetherPauseReason.BindingUnavailable, refresh.Detail);
+            return;
+        }
+        if (refresh.Kind != NetherReadOnlyReconcileStepKind.Applied || refresh.Snapshot == null)
+        {
+            FailClosed(NetherPauseReason.AmbiguousServerOutcome, refresh.Detail);
             return;
         }
 
-        NetherNativeActionResult native = _bridge.PollNativeFlow();
-        if (native.Kind == NetherNativeActionResultKind.Started)
-            return;
-        if (native.Kind == NetherNativeActionResultKind.BindingUnavailable)
-        {
-            FailClosed(NetherPauseReason.BindingUnavailable, "reconcile-poll:" + native.Detail);
-            return;
-        }
-        if (native.Kind is NetherNativeActionResultKind.UnknownOutcome or NetherNativeActionResultKind.Rejected)
-        {
-            FailClosed(NetherPauseReason.AmbiguousServerOutcome, "reconcile-poll:" + native.Detail);
-            return;
-        }
-
-        NetherRuntimeSnapshotResult captured = _bridge.TryCaptureSnapshot();
-        if (!captured.IsSuccess)
-        {
-            FailClosed(NetherPauseReason.UnknownMasterData, "reconcile-snapshot:" + captured.Detail);
-            return;
-        }
-
-        _reconcileRequested = false;
-        NetherSnapshot snapshot = captured.Snapshot!;
+        NetherSnapshot snapshot = refresh.Snapshot;
         NetherProjectionObservation projection = ProjectionCalibration.Observe(snapshot);
         if (projection.IsDrift)
         {
@@ -393,40 +379,59 @@ internal static class NetherAutoClimbController
 
     private static void ObserveBattle()
     {
-        State.ObserveF11Busy(BattleSessionAutoSL.HasActiveNetherOperation);
-        if (State.Phase == NetherAutoClimbPhase.AwaitingF11)
-            return;
-
-        if (!EnsureBattleLease())
-            return;
-
-        NetherNativeActionResult lifecycle = _bridge.PollBattleLifecycle();
-        if (lifecycle.Kind == NetherNativeActionResultKind.Started)
-            return;
-        if (lifecycle.Kind is NetherNativeActionResultKind.UnknownOutcome or NetherNativeActionResultKind.BindingUnavailable)
+        if (State.PendingAction?.Kind != NetherActionKind.BattleSettlement)
         {
-            FailClosed(NetherPauseReason.AmbiguousServerOutcome, "battle-lifecycle:" + lifecycle.Detail);
+            FailClosedTerminal(NetherPauseReason.BattleLifecycleFault, "missing-battle-settlement-pending-action");
             return;
         }
 
-        if (_bridge.TryConsumeBattleClear() || _bridge.TryConsumeBattleClose())
+        NetherBattleSettlementStep step = BattleSettlementFlow.Pump();
+        switch (step.Kind)
         {
-            RestoreLease("battle-native-settled");
-            State.BeginReconcile();
-            _reconcileRequested = false;
-            return;
+            case NetherBattleSettlementStepKind.AwaitingF11:
+                State.ObserveF11Busy(isBusy: true);
+                return;
+            case NetherBattleSettlementStepKind.AwaitingBattle:
+                State.ObserveF11Busy(isBusy: false);
+                if (State.IsEnabled && !EnsureBattleLease())
+                    return;
+                return;
+            case NetherBattleSettlementStepKind.AwaitingSettlement:
+                State.ObserveF11Busy(isBusy: false);
+                if (!State.BeginBattleSettlement())
+                {
+                    FailClosedTerminal(NetherPauseReason.BattleLifecycleFault, "could-not-enter-battle-settlement");
+                    return;
+                }
+                RestoreLease("battle-native-parent-terminal");
+                return;
+            case NetherBattleSettlementStepKind.Settled:
+                if (step.Snapshot == null)
+                {
+                    FailClosedTerminal(NetherPauseReason.BattleSettlementWrongTarget, "battle-settlement-missing-authoritative-snapshot");
+                    return;
+                }
+                State.ObserveActionResult(step.Snapshot.Fingerprint, NetherActionOutcome.Applied);
+                return;
+            case NetherBattleSettlementStepKind.Unchanged:
+                FailClosedTerminal(NetherPauseReason.BattleSettlementUnchanged, "battle-settlement-unchanged:" + step.Detail);
+                return;
+            case NetherBattleSettlementStepKind.WrongTarget:
+                FailClosedTerminal(NetherPauseReason.BattleSettlementWrongTarget, "battle-settlement-wrong-target:" + step.Detail);
+                return;
+            case NetherBattleSettlementStepKind.Canceled:
+                FailClosedTerminal(NetherPauseReason.BattleLifecycleCanceled, "battle-lifecycle-canceled:" + step.Detail);
+                return;
+            case NetherBattleSettlementStepKind.SceneLost:
+                FailClosedTerminal(NetherPauseReason.BattleSceneLost, step.Detail);
+                return;
+            case NetherBattleSettlementStepKind.BindingUnavailable:
+                FailClosedTerminal(NetherPauseReason.BindingUnavailable, "battle-lifecycle-binding:" + step.Detail);
+                return;
+            default:
+                FailClosedTerminal(NetherPauseReason.BattleLifecycleFault, "battle-lifecycle-fault:" + step.Detail);
+                return;
         }
-
-        NetherRuntimeSnapshotResult captured = _bridge.TryCaptureSnapshot();
-        if (!captured.IsSuccess)
-        {
-            FailClosed(NetherPauseReason.UnknownMasterData, "battle-snapshot:" + captured.Detail);
-            return;
-        }
-        NetherSnapshot snapshot = captured.Snapshot!;
-        if (snapshot.Status != NetherSessionStatus.Battle && !_bridge.IsBattleActive)
-            RestoreLease("battle-status-settled");
-        State.ObserveStable(snapshot.Fingerprint);
     }
 
     private static void ObserveResult()
@@ -700,14 +705,33 @@ internal static class NetherAutoClimbController
 
     private static void BeginBattleWait(NetherSnapshot snapshot)
     {
-        if (!State.TryBegin(new NetherPlannedAction(NetherActionKind.AwaitNativeFlow), snapshot))
+        // The native battle tasks prove only that clear/close has ended.  The contract is
+        // settled exclusively by the exact GET-only refresh in BattleSettlementFlow; do not
+        // infer success from the task completing or issue a second battle request.
+        var action = new NetherPlannedAction(NetherActionKind.BattleSettlement)
         {
-            FailClosed(NetherPauseReason.AmbiguousServerOutcome, "could-not-begin-battle-wait");
+            BattleSettlement = new NetherBattleSettlementContract(
+                EntryMapId: snapshot.MapId,
+                EntryFloorId: snapshot.CurrentFloorId,
+                EntryStatus: NetherSessionStatus.Battle,
+                ExpectedMapId: snapshot.MapId,
+                ExpectedFloorId: snapshot.CurrentFloorId,
+                ExpectedStatus: NetherSessionStatus.Play,
+                ProjectionIdentity: "battle:"
+                    + snapshot.MapId + ":"
+                    + snapshot.CurrentFloorId + ":"
+                    + snapshot.FloorLevel + ":"
+                    + snapshot.CodeHash
+            ),
+        };
+        if (!State.TryBegin(action, snapshot) || !BattleSettlementFlow.Begin(action, snapshot))
+        {
+            FailClosedTerminal(NetherPauseReason.BattleLifecycleFault, "could-not-begin-battle-settlement");
             return;
         }
-        if (!BattleSessionAutoSL.HasActiveNetherOperation && !EnsureBattleLease())
+        if (!_bridge.IsF11Busy && !EnsureBattleLease())
             return;
-        LogAction("await-battle", snapshot, string.Empty);
+        LogAction("await-battle-settlement", snapshot, action.BattleSettlement.ProjectionIdentity);
     }
 
     private static bool EnsureBattleLease()
@@ -794,7 +818,6 @@ internal static class NetherAutoClimbController
             case NetherNativeActionResultKind.Completed:
             case NetherNativeActionResultKind.UnknownOutcome:
                 State.ObserveUnknownOutcome();
-                _reconcileRequested = false;
                 return;
             case NetherNativeActionResultKind.BindingUnavailable:
                 FailClosed(NetherPauseReason.BindingUnavailable, native.Detail);
@@ -815,6 +838,18 @@ internal static class NetherAutoClimbController
         ProjectionCalibration.Clear();
         RestoreLease("pause:" + reason);
         LogTransition("PAUSED " + reason + ":" + detail);
+    }
+
+    private static void FailClosedTerminal(NetherPauseReason reason, string detail)
+    {
+        // Unlike an ordinary pause, a terminal battle fault must invalidate the pending
+        // action evidence.  Re-enabling F12 cannot replay or reconcile a task after the
+        // native scene/controller that owned it has faulted, been canceled, or disappeared.
+        BattleSettlementFlow.TerminateForSceneLoss();
+        State.TerminatePendingAndPause(reason, detail);
+        ProjectionCalibration.Clear();
+        RestoreLease("terminal-pause:" + reason);
+        LogTransition("PAUSED terminal " + reason + ":" + detail);
     }
 
     private static void RestoreLease(string reason)

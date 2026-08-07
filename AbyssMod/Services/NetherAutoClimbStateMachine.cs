@@ -117,8 +117,7 @@ internal sealed class NetherAutoClimbStateMachine
         // An off→on key repeat must not replace an in-flight native operation with a fresh
         // reconciliation.  Keep F12 disabled until the existing controller task has reached
         // its terminal observation and the action-specific read-only reconcile is complete.
-        if (!IsEnabled && _pendingAction != null
-            && Phase is (NetherAutoClimbPhase.ExecutingNativeAction or NetherAutoClimbPhase.Reconciling))
+        if (!IsEnabled && _pendingAction != null && IsDrainPhase(Phase))
         {
             return;
         }
@@ -130,16 +129,11 @@ internal sealed class NetherAutoClimbStateMachine
             // discard its identity: observe it to a terminal native result, then reconcile
             // once before allowing a later enable.  This prevents a second non-idempotent
             // request from being issued against an unknown first outcome.
-            if (_pendingAction != null && Phase == NetherAutoClimbPhase.ExecutingNativeAction)
+            if (_pendingAction != null && IsDrainPhase(Phase))
             {
-                // Keep polling the actual controller task before a read-only reconciliation.
-                // Jumping directly to Reconcile can race a still-running non-idempotent UI
-                // action and makes its server outcome impossible to classify safely.
-                Phase = NetherAutoClimbPhase.ExecutingNativeAction;
-            }
-            else if (_pendingAction != null && Phase == NetherAutoClimbPhase.Reconciling)
-            {
-                Phase = NetherAutoClimbPhase.Reconciling;
+                // Preserve the exact pending phase and action evidence.  An off→on repeat
+                // cannot replace a F11/battle/settlement/native/reconcile drain with a new
+                // request before the existing outcome reaches its terminal observation.
             }
             else
             {
@@ -209,7 +203,7 @@ internal sealed class NetherAutoClimbStateMachine
         _preActionFingerprint = fingerprint;
         PauseReason = NetherPauseReason.None;
         PauseDetail = string.Empty;
-        Phase = action.Kind == NetherActionKind.AwaitNativeFlow
+        Phase = action.Kind is NetherActionKind.AwaitNativeFlow or NetherActionKind.BattleSettlement
             ? NetherAutoClimbPhase.AwaitingBattle
             : NetherAutoClimbPhase.ExecutingNativeAction;
         return true;
@@ -274,6 +268,28 @@ internal sealed class NetherAutoClimbStateMachine
             Phase = NetherAutoClimbPhase.AwaitingBattle;
     }
 
+    public bool BeginBattleSettlement()
+    {
+        if (_pendingAction?.Kind != NetherActionKind.BattleSettlement
+            || Phase is not (NetherAutoClimbPhase.AwaitingBattle or NetherAutoClimbPhase.AwaitingF11))
+        {
+            return false;
+        }
+
+        Phase = NetherAutoClimbPhase.AwaitingBattleSettlement;
+        return true;
+    }
+
+    public void TerminatePendingAndPause(NetherPauseReason reason, string detail)
+    {
+        _pendingAction = null;
+        _preActionFingerprint = null;
+        _preActionSnapshot = null;
+        _knownNotAppliedAction = null;
+        _knownNotAppliedFingerprint = null;
+        Pause(reason, detail);
+    }
+
     public void Pause(NetherPauseReason reason, string detail)
     {
         Phase = NetherAutoClimbPhase.Paused;
@@ -295,4 +311,12 @@ internal sealed class NetherAutoClimbStateMachine
 
     private static bool RequiresResultScene(NetherSessionStatus status) =>
         status == NetherSessionStatus.Clear;
+
+    private static bool IsDrainPhase(NetherAutoClimbPhase phase) => phase is
+        NetherAutoClimbPhase.ExecutingNativeAction or
+        NetherAutoClimbPhase.Reconciling or
+        NetherAutoClimbPhase.AwaitingF11 or
+        NetherAutoClimbPhase.AwaitingBattle or
+        NetherAutoClimbPhase.AwaitingBattleSettlement or
+        NetherAutoClimbPhase.AwaitingSceneChange;
 }
