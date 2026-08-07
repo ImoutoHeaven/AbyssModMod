@@ -14,6 +14,7 @@ using Project.Api;
 using Project.Ingame.Exploration;
 using Project.Master;
 using Project.Master.NoaMessagePack;
+using Project.Outgame.UI;
 using Project.User;
 
 namespace AbyssMod.Services;
@@ -47,6 +48,15 @@ internal readonly record struct NetherRuntimeCodeCandidatesResult(
     );
 }
 
+internal readonly record struct NetherRuntimePopupResult(NetherRuntimePopupContext? Popup, string Detail)
+{
+    public bool IsSuccess => Popup != null && Detail.Length == 0;
+
+    public static NetherRuntimePopupResult Success(NetherRuntimePopupContext popup) => new(popup, string.Empty);
+
+    public static NetherRuntimePopupResult Failure(string detail) => new(null, detail);
+}
+
 /// <summary>
 /// The runtime boundary for F12.  No member in this interface issues a Nether endpoint
 /// directly.  Mutating operations invoke an already registered game controller callback,
@@ -64,11 +74,15 @@ internal interface INetherRuntimeBridge
 
     NetherRuntimeCodeCandidatesResult TryGetCodeCandidates();
 
+    NetherRuntimePopupResult TryGetActivePopup();
+
     NetherNativeActionResult Reconcile();
 
     NetherNativeActionResult Invoke(NetherPlannedAction action);
 
     NetherNativeActionResult PollNativeFlow();
+
+    NetherNativeActionResult PollBattleLifecycle();
 
     NetherNativeActionResult SelectReturnItems(IReadOnlyList<NetherRewardItem> items);
 
@@ -77,6 +91,8 @@ internal interface INetherRuntimeBridge
     bool TryConsumeBattleClose();
 
     bool TryConsumeResultSuccess();
+
+    NetherNativeActionResult PollResultFlow();
 
     void ClearRegistrations();
 }
@@ -91,6 +107,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
 {
     private const string UniTaskTypeName = "Cysharp.Threading.Tasks.UniTask";
     private const string UnitTypeName = "UniRx.Unit";
+    private const string NetherUtilityTypeName = "Project.Nether.NetherUtility";
+    private const string NetherPartyModelTypeName = "Project.Nether.NetherPartyModel";
 
     private const string FloorSelectionTypeName = "Project.Nether.FloorSelection.SubViewController";
     private const string EventPopupControllerTypeName = "Project.Nether.NetherEventPopup.NetherEventPopupController";
@@ -103,8 +121,13 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     private const string ReturnScrollControllerTypeName = "Project.Nether.NetherReturnItemSelectionPopup.NetherReturnableItemScrollViewController";
     private const string ContinuePopupControllerTypeName = "Project.Nether.NetherContinueConfirmPopup.NetherContinueConfirmPopupController";
     private const string BoostPopupControllerTypeName = "Project.Nether.NetherBoostConfirmPopup.NetherBoostConfirmPopupController";
+    private static readonly NetherReturnItemPolicy ReturnItemPolicy = new();
+    private readonly NetherNativeWaitGate _resultTaskWait = new(maximumMissingPolls: 600);
+    private readonly NetherNativeWaitGate _codeSelectionTaskWait = new(maximumMissingPolls: 600);
+    private readonly NetherNativeWaitGate _codeReplacementPopupWait = new(maximumMissingPolls: 600);
     private const string NetherApiServiceTypeName = "Project.Ingame.Exploration.NetherAPIService";
     private const string ResultControllerTypeName = "Project.NetherTop.Result.SubViewController";
+    private const string BottomRightViewTypeName = "Project.Ingame.BottomRightView";
 
     private readonly object _gate = new();
     private object? _floorSelectionController;
@@ -119,12 +142,22 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     private PopupRegistration? _boostPopup;
     private object? _returnScrollController;
     private object? _nativeActionTask;
+    private object? _codeSelectionTask;
     private bool _battleActive;
     private bool _battleClearObserved;
     private bool _battleCloseObserved;
     private bool _awaitingBoostConfirmation;
     private bool _resultObserved;
     private object? _resultTask;
+    private object? _battleStartTask;
+    private object? _battleClearTask;
+    private object? _battleCloseTask;
+    private NetherPlannedAction? _pendingCheckpointAction;
+    private bool _checkpointCallbackSubmitted;
+    private bool _checkpointReturnSubmitted;
+    private readonly NetherCheckpointNativeFlow _checkpointFlow = new();
+    private readonly NetherCodeSelectionNativeFlow _codeSelectionFlow = new();
+    private long _popupSequence;
 
     public static NetherRuntimeBridge Instance { get; } = new();
 
@@ -173,9 +206,17 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
 
     public static void ObserveBattleClose() => Instance.ObserveBattleCloseCore();
 
+    public static void ObserveBattleTask(MethodBase originalMethod, object task) => Instance.ObserveBattleTaskCore(originalMethod, task);
+
     public static void ObserveResult() => Instance.ObserveResultCore(null);
 
     public static void ObserveResult(object resultTask) => Instance.ObserveResultCore(resultTask);
+
+    /// <summary>
+    /// Observes the exact generated confirmation task behind an Abyss code-offer Receive click.
+    /// The task is started by the native controller callback and is never synthesized here.
+    /// </summary>
+    public static void ObserveCodeSelectionTask(object resultTask) => Instance.ObserveCodeSelectionTaskCore(resultTask);
 
     internal static IEnumerable<MethodBase> GetPatchTargets()
     {
@@ -191,6 +232,42 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         }
     }
 
+    internal static IEnumerable<MethodBase> GetBattleTaskPatchTargets()
+    {
+        foreach (NativePatchBinding binding in PatchBindings.Where(binding => binding.TypeName == NetherApiServiceTypeName))
+        {
+            Type? type = AccessTools.TypeByName(binding.TypeName);
+            if (type == null)
+                continue;
+            MethodInfo? method = TryResolveExactMethod(type, binding.Method, binding.Flags, out _);
+            if (method != null)
+                yield return method;
+        }
+    }
+
+    internal static MethodBase? GetCodeSelectionTaskPatchTarget()
+    {
+        Type? type = AccessTools.TypeByName(NetherUtilityTypeName);
+        if (type == null)
+            return null;
+        return TryResolveExactMethod(
+            type,
+            new NetherNativeMethodDescriptor(
+                "<OpenAbyssCodeSelectPopupIfNeededAsync>g__HandleConfirmSequenceAsync|19_2",
+                new[]
+                {
+                    CodeSelectPopupControllerTypeName,
+                    "System.Int64",
+                    NetherPartyModelTypeName,
+                    "System.Threading.CancellationToken",
+                },
+                UniTaskTypeName
+            ),
+            StaticFlags,
+            out _
+        );
+    }
+
     internal static void ObservePatchedCall(MethodBase originalMethod, object instance, object[] arguments)
     {
         if (originalMethod == null || instance == null)
@@ -204,18 +281,22 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             return;
         }
 
-        if (typeName == NetherApiServiceTypeName)
+        if (typeName == FloorSelectionTypeName && methodName == "Project.ISubService.Terminate")
         {
-            if (methodName == "StartQuestAsync")
-                ObserveBattleStart();
-            else if (methodName == "ClearQuestAsync")
-                ObserveBattleClear();
-            else if (methodName == "CloseQuestAsync")
-                ObserveBattleClose();
+            UnregisterFloorSelection(instance);
             return;
         }
 
-        if (typeName == ReturnScrollControllerTypeName && methodName == "OnThumbnailClicked")
+        if (typeName == BottomRightViewTypeName)
+        {
+            if (methodName == "ApplyUserSettings" && arguments.Length == 1 && arguments[0] != null)
+                NetherBattleSettingsNativeRegistry.Register(instance, arguments[0]);
+            else if (methodName == "OnDestroy")
+                NetherBattleSettingsNativeRegistry.Unregister(instance);
+            return;
+        }
+
+        if (typeName == ReturnScrollControllerTypeName && (methodName == "InitializeView" || methodName == "OnThumbnailClicked"))
         {
             Instance.RegisterReturnScrollCore(instance);
             return;
@@ -323,7 +404,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             if (userData?.NetherDataStore?.NetherData == null || masterDataStore == null)
                 return NetherRuntimeCodeCandidatesResult.Failure("missing-code-candidate-data");
 
-            NetherData data = userData.NetherDataStore.NetherData;
+            NetherDataStore dataStore = userData.NetherDataStore;
+            NetherData data = dataStore.NetherData;
             MNetherCodes[]? rows = masterDataStore.GetCache<MNetherCodes>();
             if (rows == null || rows.Length == 0)
                 return NetherRuntimeCodeCandidatesResult.Failure("missing-m-nether-codes-cache");
@@ -333,6 +415,10 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             if (selectableCodeIds == null)
                 return NetherRuntimeCodeCandidatesResult.Failure("missing-selectable-nether-code-ids");
 
+            bool detailedLogging = Config.NetherAutoClimbDetailedLogging?.Value ?? false;
+            Dictionary<long, MNetherCodes>? unmappedMasters = detailedLogging
+                ? new Dictionary<long, MNetherCodes>()
+                : null;
             var candidates = new List<NetherCodeCandidate>();
             foreach (object rawCodeId in Enumerate(selectableCodeIds))
             {
@@ -341,6 +427,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 if (!masterById.TryGetValue(codeId, out MNetherCodes? row))
                     return NetherRuntimeCodeCandidatesResult.Failure("missing-m-nether-code:" + codeId);
                 (NetherCodeEffectKind kind, bool known) = MapCodeEffect(row.id, row.effect_type);
+                if (!known && unmappedMasters != null)
+                    unmappedMasters[row.id] = row;
                 candidates.Add(new NetherCodeCandidate(row.id, kind, LevelFromMaster(row))
                 {
                     IsKnown = known,
@@ -350,7 +438,26 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 });
             }
 
-            return new NetherRuntimeCodeCandidatesResult(candidates, true, string.Empty);
+            // A full portfolio can pause before an offer is chosen.  Include its unknown master
+            // rows in the same strictly bounded diagnostic sample, but only while detailed
+            // logging is explicitly enabled.
+            if (unmappedMasters != null)
+            {
+                foreach (object rawCode in Enumerate(dataStore.GetPossessionNetherCodeDataEnumerable()))
+                {
+                    if (rawCode is NetherCodeData code
+                        && code != null
+                        && masterById.TryGetValue(code.MNetherCodeId, out MNetherCodes? master))
+                    {
+                        (NetherCodeEffectKind _, bool currentCodeKnown) = MapCodeEffect(master.id, master.effect_type);
+                        if (!currentCodeKnown)
+                            unmappedMasters[master.id] = master;
+                    }
+                }
+                LogUnknownCodeMasterAudit(unmappedMasters.Values, detailedLogging);
+            }
+
+            return new NetherRuntimeCodeCandidatesResult(candidates, candidates.All(candidate => candidate.IsKnown), string.Empty);
         }
         catch (Exception ex)
         {
@@ -358,6 +465,59 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 "code-candidate-map-exception:" + ex.GetType().Name + ":" + ex.Message
             );
         }
+    }
+
+    public NetherRuntimePopupResult TryGetActivePopup()
+    {
+        PopupRegistration? registration;
+        lock (_gate)
+        {
+            registration = null;
+            foreach (PopupRegistration? candidate in new PopupRegistration?[]
+                {
+                    _eventPopup,
+                    _recoverPopup,
+                    _treasurePopup,
+                    _shopPopup,
+                    _codeSelectPopup,
+                    _codeListPopup,
+                    _returnPopup,
+                    _continuePopup,
+                })
+            {
+                if (candidate != null && (registration == null || candidate.Value.Sequence > registration.Value.Sequence))
+                    registration = candidate;
+            }
+        }
+        if (registration == null)
+            return NetherRuntimePopupResult.Failure("missing-active-native-popup");
+
+        string controllerType = registration.Value.Controller.GetType().FullName ?? string.Empty;
+        try
+        {
+            if (controllerType == CodeSelectPopupControllerTypeName)
+                return NetherRuntimePopupResult.Success(new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.CodeOffer });
+            if (controllerType == CodeListPopupControllerTypeName)
+                return NetherRuntimePopupResult.Failure("owned-code-list-is-not-code-offer");
+            if (controllerType == ContinuePopupControllerTypeName)
+                return NetherRuntimePopupResult.Success(new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.Continue });
+            if (controllerType == ReturnPopupControllerTypeName)
+                return NetherRuntimePopupResult.Success(new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.ReturnItems });
+            if (controllerType == EventPopupControllerTypeName)
+                return TryMapEventPopup(registration.Value, NetherRuntimePopupKind.Event, (int)NetherFloorNodeType.Event);
+            if (controllerType == RecoverPopupControllerTypeName)
+                return TryMapEventPopup(registration.Value, NetherRuntimePopupKind.Recovery, (int)NetherFloorNodeType.Recovery);
+            if (controllerType == TreasurePopupControllerTypeName)
+                return TryMapEventPopup(registration.Value, NetherRuntimePopupKind.Treasure, (int)NetherFloorNodeType.Treasure);
+            if (controllerType == ShopPopupControllerTypeName)
+                return TryMapShopPopup(registration.Value);
+        }
+        catch (Exception ex)
+        {
+            return NetherRuntimePopupResult.Failure("popup-map-exception:" + ex.GetType().Name + ":" + ex.Message);
+        }
+
+        return NetherRuntimePopupResult.Failure("unsupported-native-popup-controller:" + controllerType);
     }
 
     public NetherNativeActionResult Reconcile()
@@ -371,12 +531,15 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         return TryInvokeExact(
             controller,
             new NetherNativeMethodDescriptor(
-                "HandleStartEventByStatusAsync",
-                new[] { "System.Boolean" },
+                // Current packaged-game proof: this private native controller flow invokes
+                // NetherApiDataStore.RequestNetherAsync in its generated state machine.  It
+                // refreshes the server model without starting/resuming a floor event.
+                "CreateNetherModelAsync",
+                Array.Empty<string>(),
                 UniTaskTypeName
             ),
-            new object[] { false },
-            "reconcile"
+            Array.Empty<object>(),
+            "read-only-reconcile"
         );
     }
 
@@ -398,15 +561,35 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     {
         lock (_gate)
         {
+            // A one-ticket continue can open a boost confirmation before it creates the return
+            // popup.  Confirm its native UI first; selecting a stale/early return list would
+            // otherwise race the server continuation response.
             if (_awaitingBoostConfirmation)
             {
                 if (_boostPopup == null)
                     return NetherNativeActionResult.Started("awaiting-native-boost-popup");
 
-                NetherNativeActionResult result = ConfirmBoostOneTicket(_boostPopup.Value);
-                if (result.Kind == NetherNativeActionResultKind.Started)
+                NetherNativeActionResult boost = ConfirmBoostOneTicket(_boostPopup.Value);
+                if (boost.Kind == NetherNativeActionResultKind.Started)
+                {
+                    if (!_checkpointFlow.SubmitBoostConfirmation())
+                        return NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-boost-sequence");
                     _awaitingBoostConfirmation = false;
-                return result;
+                }
+                return boost;
+            }
+
+            if (_pendingCheckpointAction != null)
+            {
+                NetherNativeActionResult checkpoint = PollCheckpointFlow();
+                if (checkpoint.Kind != NetherNativeActionResultKind.Completed || _pendingCheckpointAction == null)
+                    return checkpoint;
+            }
+
+            if (_codeSelectionFlow.Stage is not (NetherCodeSelectionNativeStage.Idle or NetherCodeSelectionNativeStage.Completed)
+                || _codeSelectionTask != null)
+            {
+                return PollCodeSelectionFlow();
             }
 
             if (_resultTask != null)
@@ -422,6 +605,20 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         }
 
         return NetherNativeActionResult.Completed("no-pending-native-flow");
+    }
+
+    public NetherNativeActionResult PollBattleLifecycle()
+    {
+        lock (_gate)
+        {
+            if (!TryCompleteBattleTask(ref _battleStartTask, BattleTaskKind.Start, out NetherNativeActionResult result))
+                return result;
+            if (!TryCompleteBattleTask(ref _battleClearTask, BattleTaskKind.Clear, out result))
+                return result;
+            if (!TryCompleteBattleTask(ref _battleCloseTask, BattleTaskKind.Close, out result))
+                return result;
+            return NetherNativeActionResult.Completed("no-pending-battle-lifecycle-task");
+        }
     }
 
     public NetherNativeActionResult SelectReturnItems(IReadOnlyList<NetherRewardItem> items)
@@ -475,6 +672,32 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         }
     }
 
+    private NetherNativeActionResult SelectCheckpointReturnItems(NetherPlannedAction action)
+    {
+        if (action.ReturnLockReward <= 0)
+            return NetherNativeActionResult.Completed("no-return-items-requested");
+
+        object? scroll;
+        lock (_gate)
+            scroll = _returnScrollController;
+        if (scroll == null)
+            return NetherNativeActionResult.BindingUnavailable("missing-return-scroll-for-pristine-map");
+
+        if (!TryMapPristineReturnItems(scroll, out IReadOnlyList<NetherRewardItem>? items, out string mappingError))
+            return NetherNativeActionResult.BindingUnavailable(mappingError);
+
+        var preserveIds = new HashSet<long>(action.ReturnPreserveItemIds);
+        NetherReturnItemSelection selection = ReturnItemPolicy.Select(items!, action.ReturnLockReward, preserveIds);
+        if (selection.Kind == NetherReturnItemSelectionKind.Pause)
+        {
+            return NetherNativeActionResult.BindingUnavailable(
+                "return-popup-policy:" + selection.PauseReason + ":" + selection.Detail
+            );
+        }
+
+        return SelectReturnItems(selection.Items);
+    }
+
     public bool TryConsumeBattleClear()
     {
         lock (_gate)
@@ -505,8 +728,33 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             if (result.Kind != NetherNativeActionResultKind.Completed)
                 return false;
             _resultTask = null;
+            _resultTaskWait.Clear();
+            _battleStartTask = null;
+            _battleClearTask = null;
+            _battleCloseTask = null;
+            _pendingCheckpointAction = null;
+            _checkpointCallbackSubmitted = false;
+            _checkpointReturnSubmitted = false;
+            _checkpointFlow.Clear();
             _resultObserved = true;
             return true;
+        }
+    }
+
+    public NetherNativeActionResult PollResultFlow()
+    {
+        lock (_gate)
+        {
+            if (_resultTask == null)
+                return _resultTaskWait.AwaitRegistration("result");
+            NetherNativeActionResult result = PollResultTask(_resultTask);
+            if (result.Kind == NetherNativeActionResultKind.Completed)
+            {
+                _resultTask = null;
+                _resultObserved = true;
+                _resultTaskWait.Clear();
+            }
+            return result;
         }
     }
 
@@ -526,12 +774,22 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             _boostPopup = null;
             _returnScrollController = null;
             _nativeActionTask = null;
+            ClearCodeSelectionFlow();
             _awaitingBoostConfirmation = false;
             _resultTask = null;
             _resultObserved = false;
+            _resultTaskWait.Clear();
             _battleActive = false;
             _battleClearObserved = false;
             _battleCloseObserved = false;
+            _battleStartTask = null;
+            _battleClearTask = null;
+            _battleCloseTask = null;
+            _pendingCheckpointAction = null;
+            _checkpointCallbackSubmitted = false;
+            _checkpointReturnSubmitted = false;
+            _checkpointFlow.Clear();
+            _popupSequence = 0;
         }
     }
 
@@ -550,7 +808,12 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         lock (_gate)
         {
             if (ReferenceEquals(_floorSelectionController, controller))
-                _floorSelectionController = null;
+            {
+                // All popup/controller registrations belong to this FloorSelection scene.  Do
+                // not retain a callback across scene teardown: its target may have been
+                // destroyed while a UI result is still visually pending.
+                ClearRegistrations();
+            }
         }
     }
 
@@ -559,7 +822,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         if (controller == null || popup == null)
             return;
 
-        PopupRegistration registration = new(controller, popup, close);
+        PopupRegistration registration = new(controller, popup, close, ++_popupSequence);
         string typeName = controller.GetType().FullName ?? string.Empty;
         lock (_gate)
         {
@@ -630,14 +893,61 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         }
     }
 
+    private void ObserveBattleTaskCore(MethodBase originalMethod, object task)
+    {
+        if (originalMethod == null || task == null)
+            return;
+        lock (_gate)
+        {
+            switch (originalMethod.Name)
+            {
+                case "StartQuestAsync":
+                    _battleStartTask = task;
+                    break;
+                case "ClearQuestAsync":
+                    _battleClearTask = task;
+                    break;
+                case "CloseQuestAsync":
+                    _battleCloseTask = task;
+                    break;
+            }
+        }
+    }
+
     private void ObserveResultCore(object? resultTask)
     {
         lock (_gate)
         {
             _resultObserved = true;
             if (resultTask != null)
+            {
                 _resultTask = resultTask;
+                _resultTaskWait.ObserveRegistration();
+            }
         }
+    }
+
+    private void ObserveCodeSelectionTaskCore(object resultTask)
+    {
+        if (resultTask == null)
+            return;
+        lock (_gate)
+        {
+            // Ignore a player-driven popup outside an F12 action.  In particular, do not let a
+            // stale native callback become a task for a later automatic offer.
+            if (!_codeSelectionFlow.ObserveConfirmationTask())
+                return;
+            _codeSelectionTask = resultTask;
+            _codeSelectionTaskWait.ObserveRegistration();
+        }
+    }
+
+    private void ClearCodeSelectionFlow()
+    {
+        _codeSelectionTask = null;
+        _codeSelectionTaskWait.Clear();
+        _codeReplacementPopupWait.Clear();
+        _codeSelectionFlow.Clear();
     }
 
     private NetherNativeActionResult SelectFloor(NetherPlannedAction action)
@@ -677,10 +987,16 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             if (_treasurePopup != null)
                 active.Add((_treasurePopup.Value, EventFlowKind.Treasure));
         }
-        if (active.Count != 1)
-            return NetherNativeActionResult.BindingUnavailable("ambiguous-or-missing-event-popup");
+        if (active.Count == 0)
+            return NetherNativeActionResult.BindingUnavailable("missing-native-event-popup");
 
-        PopupRegistration registration = active[0].Registration;
+        // Popup controllers can outlive their visual close animation.  The most recently
+        // initialized exact popup is the only active flow; treating stale registrations as an
+        // ambiguity would either deadlock or select a previous event.
+        (PopupRegistration Registration, EventFlowKind Kind) selected = active
+            .OrderByDescending(value => value.Registration.Sequence)
+            .First();
+        PopupRegistration registration = selected.Registration;
         string popupType = registration.Popup.GetType().FullName ?? string.Empty;
         NetherNativeMethodDescriptor select = new(
             "OnPanelSelected",
@@ -688,7 +1004,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             "System.Void"
         );
         NetherNativeMethodDescriptor terminal = new(
-            active[0].Kind == EventFlowKind.Treasure ? "OnConfirm" : "ExecuteEvent",
+            selected.Kind == EventFlowKind.Treasure ? "OnConfirm" : "ExecuteEvent",
             new[] { popupType },
             "System.Void"
         );
@@ -701,7 +1017,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         {
             selectMethod!.Invoke(registration.Controller, new object[] { registration.Popup, action.OptionNumber - 1 });
             terminalMethod!.Invoke(registration.Controller, new[] { registration.Popup });
-            return NetherNativeActionResult.Started("native-event-option:" + active[0].Kind);
+            return NetherNativeActionResult.Started("native-event-option:" + selected.Kind);
         }
         catch (TargetInvocationException ex)
         {
@@ -752,40 +1068,181 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     {
         if (action.CodeId <= 0)
             return NetherNativeActionResult.Rejected("invalid-code-id");
+        if (action.ReplaceCodeId < 0 || action.ReplaceCodeId == action.CodeId)
+            return NetherNativeActionResult.Rejected("invalid-code-replacement");
         PopupRegistration? registration;
         lock (_gate)
-            registration = _codeListPopup;
+            registration = _codeSelectPopup;
         if (registration == null)
-            return NetherNativeActionResult.BindingUnavailable("missing-code-list-popup");
-        if (!TryFindCodeListSelection(registration.Value.Controller, action.CodeId, out int tabIndex, out int modelIndex, out string mappingError))
-            return NetherNativeActionResult.BindingUnavailable(mappingError);
+            return NetherNativeActionResult.BindingUnavailable("missing-code-offer-popup");
+        if (!TryReadMember(registration.Value.Controller, "_mIds", out object? rawOfferIds) || rawOfferIds == null)
+        {
+            return NetherNativeActionResult.BindingUnavailable("missing-native-code-offer-ids");
+        }
 
-        string terminalName = action.ReplaceCodeId > 0 ? "OnClickReplace" : "OnClickChange";
-        NetherNativeMethodDescriptor tab = new("OnChangeTab", new[] { "System.Int32" }, "System.Void");
-        NetherNativeMethodDescriptor select = new("OnClickThumbnail", new[] { "System.Int32" }, "System.Void");
-        NetherNativeMethodDescriptor terminal = new(terminalName, Array.Empty<string>(), "System.Void");
-        if (!TryResolveExactMethod(registration.Value.Controller.GetType(), tab, InstanceFlags, out string tabError, out MethodInfo? tabMethod))
-            return NetherNativeActionResult.BindingUnavailable(tabError);
-        if (!TryResolveExactMethod(registration.Value.Controller.GetType(), select, InstanceFlags, out string selectError, out MethodInfo? selectMethod))
-            return NetherNativeActionResult.BindingUnavailable(selectError);
-        if (!TryResolveExactMethod(registration.Value.Controller.GetType(), terminal, InstanceFlags, out string terminalError, out MethodInfo? terminalMethod))
-            return NetherNativeActionResult.BindingUnavailable(terminalError);
+        var offerIds = new List<long>();
+        foreach (object rawOfferId in Enumerate(rawOfferIds))
+        {
+            if (!TryConvertInt64(rawOfferId, out long offeredId) || offeredId <= 0)
+                return NetherNativeActionResult.BindingUnavailable("invalid-native-code-offer-id");
+            offerIds.Add(offeredId);
+        }
+        if (!NetherCodeOfferSelection.TryResolveIndex(offerIds, action.CodeId, out int offerIndex))
+            return NetherNativeActionResult.BindingUnavailable("selected-code-not-unique-in-native-offer");
 
-        try
+        // `b__12_3` is OnDetailClick -> OnClickDetail.  It changes the popup's selected detail
+        // before the exact Receive callback below forwards controller._onConfirm(selectedId).
+        NetherNativeActionResult selectDetail = TryInvokeGeneratedCallback(
+            registration.Value.Controller,
+            "<SetupPopupEvent>b__12_3",
+            new[] { "System.Int32", CodeSelectPopupControllerTypeName, registration.Value.Popup.GetType().FullName ?? string.Empty },
+            new object?[] { offerIndex, registration.Value.Controller, registration.Value.Popup },
+            "select-code-offer-detail"
+        );
+        if (selectDetail.Kind != NetherNativeActionResultKind.Started)
+            return selectDetail;
+
+        lock (_gate)
         {
-            tabMethod!.Invoke(registration.Value.Controller, new object[] { tabIndex });
-            selectMethod!.Invoke(registration.Value.Controller, new object[] { modelIndex });
-            terminalMethod!.Invoke(registration.Value.Controller, Array.Empty<object>());
-            return NetherNativeActionResult.Started("native-code-select:" + terminalName);
+            if (!_codeSelectionFlow.Begin(action.CodeId, action.ReplaceCodeId, _popupSequence))
+                return NetherNativeActionResult.BindingUnavailable("code-selection-flow-already-in-flight");
+            _codeSelectionTask = null;
+            _codeSelectionTaskWait.Clear();
+            _codeReplacementPopupWait.Clear();
         }
-        catch (TargetInvocationException ex)
+
+        // `AbyssCodeSelectPopupController.<>c.<SetupPopupEvent>b__12_0` is the native
+        // Receive click callback.  It invokes the controller's registered confirm action with
+        // the detail index chosen above; unlike AbyssCodeListPopup it belongs to the current
+        // server-generated offer flow.
+        NetherNativeActionResult confirm = TryInvokeGeneratedCallback(
+            registration.Value.Controller,
+            "<SetupPopupEvent>b__12_0",
+            new[] { UnitTypeName, CodeSelectPopupControllerTypeName },
+            new object?[] { null, registration.Value.Controller },
+            "select-code-offer"
+        );
+        if (confirm.Kind != NetherNativeActionResultKind.Started)
         {
-            return NetherNativeActionResult.UnknownOutcome(FormatInvocationException("select-code", ex));
+            lock (_gate)
+                ClearCodeSelectionFlow();
         }
-        catch (Exception ex)
+        return confirm;
+    }
+
+    private NetherNativeActionResult PollCodeSelectionFlow()
+    {
+        if (_codeSelectionFlow.Stage == NetherCodeSelectionNativeStage.AwaitingConfirmationTask)
         {
-            return NetherNativeActionResult.UnknownOutcome("select-code-exception:" + ex.GetType().Name + ":" + ex.Message);
+            if (_codeSelectionTask == null)
+                return _codeSelectionTaskWait.AwaitRegistration("code-confirmation");
+            if (!_codeSelectionFlow.ObserveConfirmationTask())
+                return NetherNativeActionResult.BindingUnavailable("invalid-native-code-confirmation-sequence");
         }
+
+        if (_codeSelectionFlow.Stage == NetherCodeSelectionNativeStage.AwaitingReplacementPopup)
+        {
+            PopupRegistration? registration = _codeListPopup;
+            if (registration == null || !_codeSelectionFlow.CanSubmitReplacement(registration.Value.Sequence))
+            {
+                if (_codeSelectionTask != null)
+                {
+                    NetherNativeActionResult taskResult = PollResultTask(_codeSelectionTask);
+                    if (taskResult.Kind != NetherNativeActionResultKind.Started)
+                    {
+                        return taskResult.Kind == NetherNativeActionResultKind.Completed
+                            ? NetherNativeActionResult.BindingUnavailable("native-code-confirmation-completed-before-replace-popup")
+                            : taskResult;
+                    }
+                }
+                return _codeReplacementPopupWait.AwaitRegistration("code-replace-popup");
+            }
+
+            NetherNativeActionResult replacement = SelectCodeReplacement(registration.Value);
+            if (replacement.Kind != NetherNativeActionResultKind.Started)
+                return replacement;
+        }
+
+        if (_codeSelectionFlow.Stage != NetherCodeSelectionNativeStage.AwaitingCompletion)
+            return NetherNativeActionResult.BindingUnavailable("invalid-native-code-selection-stage");
+        if (_codeSelectionTask == null)
+            return _codeSelectionTaskWait.AwaitRegistration("code-confirmation");
+
+        NetherNativeActionResult result = PollResultTask(_codeSelectionTask);
+        if (result.Kind == NetherNativeActionResultKind.Started)
+            return result;
+        if (result.Kind != NetherNativeActionResultKind.Completed)
+            return result;
+        if (!_codeSelectionFlow.CompleteConfirmationTask())
+            return NetherNativeActionResult.BindingUnavailable("invalid-native-code-completion-sequence");
+
+        _codeSelectionTask = null;
+        _codeSelectionTaskWait.Clear();
+        _codeReplacementPopupWait.Clear();
+        return NetherNativeActionResult.Completed("native-code-confirmation-succeeded");
+    }
+
+    private NetherNativeActionResult SelectCodeReplacement(PopupRegistration registration)
+    {
+        if (!TryReadMember(registration.Controller, "_popupType", out object? rawPopupType)
+            || rawPopupType == null
+            || !TryConvertInt32(rawPopupType, out int popupType)
+            || popupType != 2) // Project.Nether.NetherAbyssCodeListPopup.AbyssCodeListPopupType.Replace
+        {
+            return NetherNativeActionResult.BindingUnavailable("missing-or-nonreplace-native-code-list-popup");
+        }
+        if (!_codeSelectionFlow.CanSubmitReplacement(registration.Sequence))
+            return _codeReplacementPopupWait.AwaitRegistration("code-replace-popup");
+        if (!TryReadMember(registration.Controller, "_replaceMId", out object? rawReplacementId)
+            || rawReplacementId == null
+            || !TryConvertInt64(rawReplacementId, out long expectedReplacementId)
+            || expectedReplacementId <= 0)
+        {
+            return NetherNativeActionResult.BindingUnavailable("missing-native-code-replacement-id");
+        }
+
+        // The popup's `_replaceMId` is the newly selected offer.  It must agree with the action
+        // selected from the server-generated offer before we choose any code to remove.
+        if (expectedReplacementId != _codeSelectionFlow.SelectedCodeId)
+            return NetherNativeActionResult.BindingUnavailable("native-code-replacement-offer-mismatch");
+
+        // `_replaceMId` is the added code; select the planned code-to-remove from the exact
+        // native dictionary/tab map, then use the controller's private UI methods in the same
+        // order as a player click: tab, thumbnail, Replace.
+        long removeCodeId = _codeSelectionFlow.ReplacementCodeId;
+        if (removeCodeId <= 0)
+            return NetherNativeActionResult.BindingUnavailable("missing-pending-code-replacement-id");
+        if (!TryFindCodeListSelection(registration.Controller, removeCodeId, out int tabIndex, out int modelIndex, out string mapError))
+            return NetherNativeActionResult.BindingUnavailable(mapError);
+
+        NetherNativeActionResult tab = TryInvokeExact(
+            registration.Controller,
+            new NetherNativeMethodDescriptor("OnChangeTab", new[] { "System.Int32" }, "System.Void"),
+            new object[] { tabIndex },
+            "select-code-replacement-tab"
+        );
+        if (tab.Kind != NetherNativeActionResultKind.Started)
+            return tab;
+        NetherNativeActionResult thumbnail = TryInvokeExact(
+            registration.Controller,
+            new NetherNativeMethodDescriptor("OnClickThumbnail", new[] { "System.Int32" }, "System.Void"),
+            new object[] { modelIndex },
+            "select-code-replacement-thumbnail"
+        );
+        if (thumbnail.Kind != NetherNativeActionResultKind.Started)
+            return thumbnail;
+        NetherNativeActionResult replace = TryInvokeExact(
+            registration.Controller,
+            new NetherNativeMethodDescriptor("OnClickReplace", Array.Empty<string>(), "System.Void"),
+            Array.Empty<object>(),
+            "confirm-code-replacement"
+        );
+        if (replace.Kind != NetherNativeActionResultKind.Started)
+            return replace;
+        if (!_codeSelectionFlow.SubmitReplacement(registration.Sequence))
+            return NetherNativeActionResult.BindingUnavailable("invalid-native-code-replacement-sequence");
+        _codeReplacementPopupWait.ObserveRegistration();
+        return NetherNativeActionResult.Started("native-code-replacement-selected");
     }
 
     private NetherNativeActionResult ReloadCode()
@@ -812,45 +1269,140 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     {
         if (action.TicketCount != 1)
             return NetherNativeActionResult.Rejected("continue-requires-exactly-one-ticket");
-        PopupRegistration? registration;
-        lock (_gate)
-            registration = _continuePopup;
-        if (registration == null)
-            return NetherNativeActionResult.BindingUnavailable("missing-continue-popup");
-
-        bool canBoost;
-        if (!TryReadBoolean(registration.Value.Controller, "_canBoost", out canBoost))
-            return NetherNativeActionResult.BindingUnavailable("missing-continue-can-boost-field");
-        NetherNativeActionResult result = TryInvokeGeneratedCallback(
-            registration.Value.Controller,
-            "<SetupPopupEvent>b__8_2",
-            new[] { UnitTypeName, ContinuePopupControllerTypeName },
-            new object?[] { null, registration.Value.Controller },
-            "continue-one-ticket"
-        );
-        if (result.Kind == NetherNativeActionResultKind.Started && canBoost)
-        {
-            lock (_gate)
-                _awaitingBoostConfirmation = true;
-        }
-        return result;
+        return StartCheckpointNativeFlow(action);
     }
 
-    private NetherNativeActionResult FinishAtCheckpoint()
-    {
-        PopupRegistration? registration;
-        lock (_gate)
-            registration = _continuePopup;
-        if (registration == null)
-            return NetherNativeActionResult.BindingUnavailable("missing-continue-popup");
+    private NetherNativeActionResult FinishAtCheckpoint() => StartCheckpointNativeFlow(
+        new NetherPlannedAction(NetherActionKind.FinishAtCheckpoint)
+    );
 
-        return TryInvokeGeneratedCallback(
-            registration.Value.Controller,
-            "<SetupPopupEvent>b__8_1",
-            new[] { UnitTypeName, ContinuePopupControllerTypeName },
-            new object?[] { null, registration.Value.Controller },
-            "finish-at-checkpoint"
+    private NetherNativeActionResult StartCheckpointNativeFlow(NetherPlannedAction action)
+    {
+        object? floorController;
+        lock (_gate)
+        {
+            if (_pendingCheckpointAction != null)
+                return NetherNativeActionResult.Rejected("checkpoint-native-flow-already-pending");
+            if (!_checkpointFlow.Begin(action))
+                return NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-start-sequence");
+            floorController = _floorSelectionController;
+            _continuePopup = null;
+            _returnPopup = null;
+            _returnScrollController = null;
+            _checkpointCallbackSubmitted = false;
+            _checkpointReturnSubmitted = false;
+            _pendingCheckpointAction = action;
+        }
+        if (floorController == null)
+        {
+            lock (_gate)
+            {
+                _pendingCheckpointAction = null;
+                _checkpointFlow.Clear();
+            }
+            return NetherNativeActionResult.BindingUnavailable("missing-floor-selection-controller-for-checkpoint");
+        }
+
+        NetherNativeActionResult start = TryInvokeExact(
+            floorController,
+            new NetherNativeMethodDescriptor(
+                "HandleStartEventByStatusAsync",
+                new[] { "System.Boolean" },
+                UniTaskTypeName
+            ),
+            new object[] { false },
+            "checkpoint-native-flow"
         );
+        if (start.Kind is not (NetherNativeActionResultKind.Started or NetherNativeActionResultKind.Completed))
+        {
+            lock (_gate)
+            {
+                _pendingCheckpointAction = null;
+                _checkpointFlow.Clear();
+            }
+        }
+        return start;
+    }
+
+    private NetherNativeActionResult PollCheckpointFlow()
+    {
+        if (_pendingCheckpointAction == null)
+            return NetherNativeActionResult.Completed("no-pending-checkpoint-flow");
+        NetherPlannedAction action = _pendingCheckpointAction.Value;
+
+        PopupRegistration? registration;
+        registration = _continuePopup;
+        if (!_checkpointCallbackSubmitted)
+        {
+            if (registration == null)
+                return NetherNativeActionResult.Started("awaiting-native-continue-popup");
+
+            NetherNativeActionResult callback;
+            if (action.Kind == NetherActionKind.Continue)
+            {
+                bool canBoost;
+                if (!TryReadBoolean(registration.Value.Controller, "_canBoost", out canBoost))
+                    return NetherNativeActionResult.BindingUnavailable("missing-continue-can-boost-field");
+                callback = TryInvokeGeneratedCallback(
+                    registration.Value.Controller,
+                    "<SetupPopupEvent>b__8_2",
+                    new[] { UnitTypeName, ContinuePopupControllerTypeName },
+                    new object?[] { null, registration.Value.Controller },
+                    "continue-one-ticket"
+                );
+                if (callback.Kind == NetherNativeActionResultKind.Started)
+                {
+                    if (!_checkpointFlow.SubmitContinue(canBoost))
+                        return NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-continue-sequence");
+                    _awaitingBoostConfirmation = canBoost;
+                }
+            }
+            else
+            {
+                callback = TryInvokeGeneratedCallback(
+                    registration.Value.Controller,
+                    "<SetupPopupEvent>b__8_1",
+                    new[] { UnitTypeName, ContinuePopupControllerTypeName },
+                    new object?[] { null, registration.Value.Controller },
+                    "finish-at-checkpoint"
+                );
+                if (callback.Kind == NetherNativeActionResultKind.Started && !_checkpointFlow.SubmitFinish())
+                    return NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-finish-sequence");
+            }
+            if (callback.Kind != NetherNativeActionResultKind.Started)
+                return callback;
+            _checkpointCallbackSubmitted = true;
+            return NetherNativeActionResult.Started("native-checkpoint-callback-submitted");
+        }
+
+        if (action.Kind == NetherActionKind.Continue && _checkpointFlow.CanSubmitReturnSelection && !_checkpointReturnSubmitted)
+        {
+            if (_returnPopup == null || _returnScrollController == null)
+                return NetherNativeActionResult.Started("awaiting-native-return-popup-pristine-list");
+            NetherNativeActionResult select = SelectCheckpointReturnItems(action);
+            if (select.Kind == NetherNativeActionResultKind.Started)
+            {
+                if (!_checkpointFlow.SubmitReturnSelection())
+                    return NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-return-sequence");
+                _checkpointReturnSubmitted = true;
+            }
+            return select;
+        }
+
+        if (_nativeActionTask != null)
+        {
+            NetherNativeActionResult task = PollResultTask(_nativeActionTask);
+            if (task.Kind != NetherNativeActionResultKind.Started)
+            {
+                _nativeActionTask = null;
+                _pendingCheckpointAction = null;
+                _checkpointFlow.Complete();
+            }
+            return task;
+        }
+        _pendingCheckpointAction = null;
+        _checkpointFlow.Complete();
+        return NetherNativeActionResult.Completed("checkpoint-native-flow-completed");
     }
 
     private NetherNativeActionResult ConfirmBoostOneTicket(PopupRegistration registration)
@@ -901,6 +1453,39 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         if (string.Equals(status, "Faulted", StringComparison.Ordinal))
             return NetherNativeActionResult.UnknownOutcome("native-result-faulted");
         return NetherNativeActionResult.UnknownOutcome("unknown-native-result-status:" + status);
+    }
+
+    private bool TryCompleteBattleTask(ref object? task, BattleTaskKind kind, out NetherNativeActionResult result)
+    {
+        if (task == null)
+        {
+            result = NetherNativeActionResult.Completed("no-battle-task");
+            return true;
+        }
+        result = PollResultTask(task);
+        if (result.Kind == NetherNativeActionResultKind.Started)
+            return false;
+        task = null;
+        if (result.Kind != NetherNativeActionResultKind.Completed)
+            return false;
+
+        switch (kind)
+        {
+            case BattleTaskKind.Start:
+                _battleActive = true;
+                break;
+            case BattleTaskKind.Clear:
+                _battleActive = false;
+                _battleClearObserved = true;
+                _battleCloseObserved = false;
+                break;
+            case BattleTaskKind.Close:
+                _battleActive = false;
+                _battleCloseObserved = true;
+                _battleClearObserved = false;
+                break;
+        }
+        return true;
     }
 
     private NetherNativeActionResult TryInvokeExact(
@@ -1016,7 +1601,10 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             error = "binding-unavailable:" + controllerType.FullName + ":missing-generated-singleton";
             return false;
         }
-        return TryResolveExactMethod(holder, descriptor, StaticFlags, out error, out method);
+        // `<>c.<>9` is a singleton instance; its compiler-generated callback methods are
+        // instance methods.  Resolving them as static produced a silent zero-match on the
+        // packaged client and incorrectly made checkpoint flow unavailable.
+        return TryResolveExactMethod(holder, descriptor, InstanceFlags, out error, out method);
     }
 
     private static bool TryResolveExactMethod(
@@ -1336,9 +1924,10 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             mapped.Add(new NetherRewardItem(item.MItemId, item.Amount)
             {
                 HasMasterData = true,
+                // NetherItemData has no server-return-popup rarity.  It remains explicitly
+                // unverified until the post-Continue ContentModel list is available.
+                HasVerifiedDropRarity = false,
                 ItemType = checked((int)master.type),
-                // NetherItemData does not expose a drop-rarity field.  The return-popup
-                // mapping must supply it before a positive LockReward is confirmed.
                 DropRarity = NetherRewardRarity.NoEffect,
                 MasterRarity = master.rarity,
             });
@@ -1346,6 +1935,184 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         items = mapped;
         error = string.Empty;
         return true;
+    }
+
+    private static NetherRuntimePopupResult TryMapEventPopup(
+        PopupRegistration registration,
+        NetherRuntimePopupKind kind,
+        int rawFloorType
+    )
+    {
+        if (!TryReadMember(registration.Controller, "_mNetherEventPartsArray", out object? rawParts) || rawParts == null)
+            return NetherRuntimePopupResult.Failure("missing-native-event-part-array");
+
+        var options = new List<NetherEventOption>();
+        int optionNumber = 1;
+        foreach (object rawPart in Enumerate(rawParts))
+        {
+            if (rawPart is not MNetherFloorEventParts part)
+                return NetherRuntimePopupResult.Failure("invalid-native-event-part-type");
+            if (!TryMapEventPart(part, out IReadOnlyList<NetherEffect>? effects, out string detail))
+                return NetherRuntimePopupResult.Failure("event-part:" + optionNumber + ":" + detail);
+            options.Add(new NetherEventOption(optionNumber, effects!));
+            optionNumber++;
+        }
+        if (options.Count == 0)
+            return NetherRuntimePopupResult.Failure("empty-native-event-part-array");
+
+        return NetherRuntimePopupResult.Success(new NetherRuntimePopupContext
+        {
+            Kind = kind,
+            RawFloorType = rawFloorType,
+            Options = options,
+        });
+    }
+
+    private static bool TryMapEventPart(
+        MNetherFloorEventParts part,
+        out IReadOnlyList<NetherEffect>? effects,
+        out string detail
+    )
+    {
+        effects = null;
+        detail = string.Empty;
+        if (part == null || part.id <= 0)
+        {
+            detail = "invalid-event-part";
+            return false;
+        }
+
+        var mapped = new List<NetherEffect>();
+        if (!TryMapTargetEffect(part.target_type_1, part.select_parameter_1, mapped, out detail)
+            || !TryMapTargetEffect(part.target_type_2, part.select_parameter_2, mapped, out detail)
+            || !TryMapTargetEffect(part.target_type_3, part.select_parameter_3, mapped, out detail))
+        {
+            return false;
+        }
+
+        if (part.content_type != 0)
+        {
+            if (part.content_id <= 0 || part.amount < 0 || part.amount > int.MaxValue)
+            {
+                detail = "invalid-event-content";
+                return false;
+            }
+            NetherEffect? contentEffect = part.content_type switch
+            {
+                // Project.Master.ContentType.Item / NetherItem, confirmed from the packaged
+                // ContentType enum.  Their actual master lookup remains in the native popup.
+                30 or 31 => new NetherEffect(NetherEffectKind.Item, (int)part.amount)
+                {
+                    ContentId = part.content_id,
+                },
+                165 => new NetherEffect(NetherEffectKind.NetherGoldGain, (int)part.amount)
+                {
+                    ContentId = part.content_id,
+                },
+                166 => new NetherEffect(NetherEffectKind.TreasureKeyGain, (int)part.amount)
+                {
+                    ContentId = part.content_id,
+                },
+                _ => null,
+            };
+            if (contentEffect == null)
+            {
+                detail = "unsupported-event-content-type:" + part.content_type;
+                return false;
+            }
+            mapped.Add(contentEffect);
+        }
+
+        if (mapped.Count is < 1 or > 3)
+        {
+            detail = "invalid-event-effect-count:" + mapped.Count;
+            return false;
+        }
+        effects = mapped;
+        return true;
+    }
+
+    private static bool TryMapTargetEffect(
+        int rawType,
+        long parameter,
+        ICollection<NetherEffect> effects,
+        out string detail
+    )
+    {
+        detail = string.Empty;
+        if (rawType == 0)
+            return true;
+        if (parameter < 0 || parameter > int.MaxValue || rawType is < 1 or > 8)
+        {
+            detail = "unsupported-event-target-type-or-parameter:" + rawType;
+            return false;
+        }
+
+        NetherEffectKind kind = (NetherEffectKind)rawType;
+        NetherEffect effect;
+        if (kind == NetherEffectKind.AbyssCodeChanged)
+        {
+            if (parameter <= 0)
+            {
+                detail = "missing-event-replacement-code";
+                return false;
+            }
+            effect = new NetherEffect(kind, 0) { ReplacementCodeId = parameter };
+        }
+        else if (kind == NetherEffectKind.Battle)
+        {
+            // Selecting this event option, rather than the map floor itself, starts the
+            // battle.  Treat it as optional so event policy can prefer non-battle choices.
+            effect = new NetherEffect(kind, (int)parameter) { IsOptionalBattle = true };
+        }
+        else
+        {
+            effect = new NetherEffect(kind, (int)parameter);
+        }
+        effects.Add(effect);
+        return true;
+    }
+
+    private static NetherRuntimePopupResult TryMapShopPopup(PopupRegistration registration)
+    {
+        if (!TryReadMember(registration.Controller, "_mNetherFloorShopContentsArray", out object? rawContents) || rawContents == null)
+            return NetherRuntimePopupResult.Failure("missing-native-shop-content-array");
+
+        MasterDataStore? masterDataStore = Engine.Get<MasterDataStore>();
+        MItems[]? itemRows = masterDataStore?.GetCache<MItems>();
+        var itemById = itemRows == null
+            ? new Dictionary<long, MItems>()
+            : itemRows.Where(item => item != null && item.id > 0).ToDictionary(item => item.id);
+
+        var mapped = new List<NetherShopContent>();
+        foreach (object rawContent in Enumerate(rawContents))
+        {
+            if (rawContent is not MNetherFloorShopContents content || content.id <= 0 || content.content_id <= 0
+                || content.amount is <= 0 or > int.MaxValue || content.consume_amount is < 0 or > int.MaxValue)
+            {
+                return NetherRuntimePopupResult.Failure("invalid-native-shop-content");
+            }
+
+            bool usesNetherGold = content.consume_content_type == 165;
+            MItems? item = null;
+            bool known = usesNetherGold && content.content_type is 30 or 31 && itemById.TryGetValue(content.content_id, out item);
+            mapped.Add(new NetherShopContent(
+                content.id,
+                content.content_id,
+                known ? checked((int)item!.type) : 0,
+                known ? ToRewardRarity(item!.rarity) : NetherRewardRarity.NoEffect,
+                checked((int)content.consume_amount),
+                usesNetherGold,
+                checked((int)content.amount),
+                known
+            ));
+        }
+
+        return NetherRuntimePopupResult.Success(new NetherRuntimePopupContext
+        {
+            Kind = NetherRuntimePopupKind.Shop,
+            ShopContents = mapped,
+        });
     }
 
     private static (NetherCodeEffectKind Kind, bool Known) MapCodeEffect(long codeId, int effectType)
@@ -1376,6 +2143,77 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             return checked((int)row.effect_parameter_1);
         return 1;
     }
+
+    private static void LogUnknownCodeMasterAudit(IEnumerable<MNetherCodes> rows, bool detailedLogging)
+    {
+        if (!detailedLogging)
+            return;
+        try
+        {
+            Project.NetherCodeAbilityAssetDataStore? abilityStore = Engine.Get<Project.NetherCodeAbilityAssetDataStore>();
+            NetherCodeMasterAudit[] audits = rows
+                .OrderBy(row => row.id)
+                .Take(NetherCodeDiagnosticAudit.MaximumEntries)
+                .Select(row => CreateCodeMasterAudit(row, abilityStore))
+                .ToArray();
+            string? audit = NetherCodeDiagnosticAudit.Format(detailedLogging, audits);
+            if (audit != null)
+                Logger.Info("[F12][NetherClimb] " + audit);
+        }
+        catch (Exception ex)
+        {
+            // A diagnostic can never make an unknown code look safe or break the fail-closed
+            // decision.  The exception type is sufficient to request a focused live dump.
+            Logger.Info("[F12][NetherClimb] code-master-audit=unavailable:" + ex.GetType().Name);
+        }
+    }
+
+    private static NetherCodeMasterAudit CreateCodeMasterAudit(
+        MNetherCodes row,
+        Project.NetherCodeAbilityAssetDataStore? abilityStore
+    )
+    {
+        long abilityId = 0;
+        string effectLevelType = "unavailable";
+        string scopeType = "unavailable";
+        string targetType = "unavailable";
+        string abilityEffectType = "unavailable";
+        try
+        {
+            Project.IAbilityEffectData? ability = abilityStore?.GetAbilityEffectAsset(row.id);
+            if (ability != null)
+            {
+                abilityId = ability.ID;
+                effectLevelType = ability.EffectLevelType.ToString();
+                scopeType = RuntimeTypeIdentifier(ability.Scope);
+                targetType = RuntimeTypeIdentifier(ability.Target);
+                abilityEffectType = RuntimeTypeIdentifier(ability.GetAbilityEffect(LevelFromMaster(row), 0));
+            }
+        }
+        catch (Exception ex)
+        {
+            abilityEffectType = "unavailable:" + ex.GetType().Name;
+        }
+
+        return new NetherCodeMasterAudit(
+            row.id,
+            row.category,
+            row.effect_type,
+            row.effect_parameter_1,
+            row.effect_parameter_2,
+            row.effect_parameter_3,
+            row.rarity,
+            row.power,
+            row.asset_id ?? string.Empty,
+            abilityId,
+            effectLevelType,
+            scopeType,
+            targetType,
+            abilityEffectType
+        );
+    }
+
+    private static string RuntimeTypeIdentifier(object? value) => value?.GetType().FullName ?? "null";
 
     private static NetherSessionStatus ToSessionStatus(int value) => Enum.IsDefined(typeof(NetherSessionStatus), value)
         ? (NetherSessionStatus)value
@@ -1419,9 +2257,77 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             floor.FloorId.ToString(CultureInfo.InvariantCulture) + ":"
             + floor.FloorLevel.ToString(CultureInfo.InvariantCulture) + ":"
             + floor.FloorIndex.ToString(CultureInfo.InvariantCulture) + ":"
-            + (floor.IsUnlocked ? "1" : "0")
+            + ((int)floor.NodeType).ToString(CultureInfo.InvariantCulture) + ":"
+            + (floor.IsHidden ? "1" : "0") + ":"
+            + (floor.IsUnlocked ? "1" : "0") + ":"
+            + floor.RewardTier.ToString(CultureInfo.InvariantCulture) + ":"
+            + floor.OptionalCombatCount.ToString(CultureInfo.InvariantCulture) + ":"
+            + string.Join(",", floor.PreviousFloorIds.OrderBy(id => id).Select(id => id.ToString(CultureInfo.InvariantCulture)))
         )
     );
+
+    private static bool TryMapPristineReturnItems(
+        object scroll,
+        out IReadOnlyList<NetherRewardItem>? items,
+        out string error
+    )
+    {
+        items = null;
+        if (!TryReadMember(scroll, "_contentModelList", out object? contentModels) || contentModels == null)
+        {
+            error = "missing-return-content-model-list";
+            return false;
+        }
+
+        MasterDataStore? masterDataStore = Engine.Get<MasterDataStore>();
+        MItems[]? masterItems = masterDataStore?.GetCache<MItems>();
+        if (masterItems == null || masterItems.Length == 0)
+        {
+            error = "missing-return-m-items-cache";
+            return false;
+        }
+        var masterById = masterItems
+            .Where(item => item != null && item.id > 0)
+            .ToDictionary(item => item.id);
+        if (masterById.Count == 0)
+        {
+            error = "empty-return-m-items-cache";
+            return false;
+        }
+
+        var mapped = new List<NetherRewardItem>();
+        foreach (object model in Enumerate(contentModels))
+        {
+            if (model is not ContentModel content || !TryReadContentItem(content, out long itemId, out int amount))
+            {
+                error = "invalid-pristine-return-content-model";
+                return false;
+            }
+            if (!masterById.TryGetValue(itemId, out MItems? master))
+            {
+                error = "missing-return-m-item:" + itemId;
+                return false;
+            }
+
+            mapped.Add(new NetherRewardItem(itemId, amount)
+            {
+                HasMasterData = true,
+                HasVerifiedDropRarity = true,
+                ItemType = checked((int)master.type),
+                DropRarity = ToRewardRarity((int)content.ContentRarity),
+                MasterRarity = master.rarity,
+            });
+        }
+        if (mapped.Count == 0)
+        {
+            error = "empty-pristine-return-content-model-list";
+            return false;
+        }
+
+        items = mapped;
+        error = string.Empty;
+        return true;
+    }
 
     private static bool TryGetReturnSelectionIndexes(
         object scroll,
@@ -1440,7 +2346,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         int index = 0;
         foreach (object model in Enumerate(contentModels))
         {
-            if (!TryReadContentItem(model, out long itemId, out int amount))
+            if (model is not ContentModel content || !TryReadContentItem(content, out long itemId, out int amount))
             {
                 error = "missing-return-content-item-mapping";
                 return false;
@@ -1548,25 +2454,12 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         return false;
     }
 
-    private static bool TryReadContentItem(object model, out long itemId, out int amount)
+    private static bool TryReadContentItem(ContentModel model, out long itemId, out int amount)
     {
         itemId = 0;
         amount = 0;
-        string[] itemNames = { "MItemId", "mItemId", "ItemId", "ContentId", "Id" };
-        foreach (string name in itemNames)
-        {
-            if (TryReadInt(model, name, out itemId))
-                break;
-        }
-        string[] amountNames = { "Amount", "amount", "Count" };
-        foreach (string name in amountNames)
-        {
-            if (TryReadInt(model, name, out long rawAmount) && rawAmount is > 0 and <= int.MaxValue)
-            {
-                amount = (int)rawAmount;
-                break;
-            }
-        }
+        itemId = model.ContentId;
+        amount = model.Amount;
         return itemId > 0 && amount > 0;
     }
 
@@ -1757,6 +2650,25 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             InstanceFlags
         ),
         new(
+            FloorSelectionTypeName,
+            new NetherNativeMethodDescriptor("Project.ISubService.Terminate", Array.Empty<string>(), "System.Void"),
+            InstanceFlags
+        ),
+        new(
+            BottomRightViewTypeName,
+            new NetherNativeMethodDescriptor(
+                "ApplyUserSettings",
+                new[] { "Project.Ingame.IIngameUserSettings" },
+                "System.Void"
+            ),
+            InstanceFlags
+        ),
+        new(
+            BottomRightViewTypeName,
+            new NetherNativeMethodDescriptor("OnDestroy", Array.Empty<string>(), "System.Void"),
+            InstanceFlags
+        ),
+        new(
             EventPopupControllerTypeName,
             new NetherNativeMethodDescriptor(
                 "SetupPopupEvent",
@@ -1839,6 +2751,11 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         ),
         new(
             ReturnScrollControllerTypeName,
+            new NetherNativeMethodDescriptor("InitializeView", Array.Empty<string>(), "System.Void"),
+            InstanceFlags
+        ),
+        new(
+            ReturnScrollControllerTypeName,
             new NetherNativeMethodDescriptor("OnThumbnailClicked", new[] { "System.Int32" }, "System.Void"),
             InstanceFlags
         ),
@@ -1887,7 +2804,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         Treasure,
     }
 
-    private readonly record struct PopupRegistration(object Controller, object Popup, object? Close);
+    private enum BattleTaskKind
+    {
+        Start,
+        Clear,
+        Close,
+    }
+
+    private readonly record struct PopupRegistration(object Controller, object Popup, object? Close, long Sequence);
 
     private readonly record struct NativePatchBinding(
         string TypeName,

@@ -82,3 +82,52 @@ internal static class NetherAutoClimbResultPatch
         }
     }
 }
+
+/// <summary>
+/// Tracks the actual UniTask returned by each native battle request.  The generic lifecycle
+/// observer intentionally does not mark a battle clear merely because the controller method
+/// returned; this patch gives the bridge the returned task to poll to completion.
+/// </summary>
+[HarmonyPatch]
+internal static class NetherAutoClimbBattleLifecyclePatch
+{
+    private static IEnumerable<MethodBase> TargetMethods() => NetherRuntimeBridge.GetBattleTaskPatchTargets();
+
+    [HarmonyPostfix]
+    private static void Postfix(MethodBase __originalMethod, object __result)
+    {
+        try
+        {
+            if (__result != null)
+                NetherRuntimeBridge.ObserveBattleTask(__originalMethod, __result);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[F12][NetherClimb] battle task observation failed: " + ex);
+        }
+    }
+}
+
+/// <summary>
+/// Captures the generated code-confirmation UniTask which starts from the native Receive
+/// callback.  That task awaits the optional replacement UI and the server-owned fix-code flow,
+/// so a main-thread F12 poll can distinguish a click from an actual completed mutation.
+/// </summary>
+[HarmonyPatch]
+internal static class NetherAutoClimbCodeSelectionLifecyclePatch
+{
+    private static MethodBase? TargetMethod() => NetherRuntimeBridge.GetCodeSelectionTaskPatchTarget();
+
+    [HarmonyPostfix]
+    private static void Postfix(ref UniTask __result)
+    {
+        try
+        {
+            NetherRuntimeBridge.ObserveCodeSelectionTask(__result);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[F12][NetherClimb] native code confirmation task observation failed: " + ex);
+        }
+    }
+}

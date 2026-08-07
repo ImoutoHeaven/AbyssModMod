@@ -329,6 +329,9 @@ internal sealed class NetherEventPolicy
         bool OptionalBattle
     )
     {
-        public bool HasPositiveOrNeutralRecoveryEffect => ErosionDelta <= 0 && HpDelta >= 0 && (ErosionDelta < 0 || HpDelta > 0 || SafeCodeBenefit > 0 || Benefit > 0);
+        // Recovery must never select damage/erosion, but an otherwise neutral native option
+        // is a valid safe fallback.  Requiring a positive reward here can deadlock the only
+        // harmless recovery popup even though it has no projected downside.
+        public bool HasPositiveOrNeutralRecoveryEffect => ErosionDelta <= 0 && HpDelta >= 0;
     }
 }

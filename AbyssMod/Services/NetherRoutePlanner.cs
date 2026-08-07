@@ -8,6 +8,8 @@ namespace AbyssMod.Services;
 
 internal sealed record NetherRouteSafetyContext
 {
+    /// <summary>Effective target resolved from configuration, server, and master limits.</summary>
+    public int MaximumFloorLevel { get; init; } = int.MaxValue;
     public IReadOnlyDictionary<long, int> MinimumWorstCaseErosionToTerminal { get; init; } = new Dictionary<long, int>();
     public IReadOnlyDictionary<long, bool> HpSafeByFloorId { get; init; } = new Dictionary<long, bool>();
     public IReadOnlyDictionary<long, bool> KnownNodeByFloorId { get; init; } = new Dictionary<long, bool>();
@@ -75,6 +77,11 @@ internal sealed class NetherRoutePlanner
         var safeCandidates = new List<Candidate>();
         foreach (NetherFloorNode candidate in candidates)
         {
+            if (candidate.FloorLevel > context.MaximumFloorLevel)
+            {
+                audit.Add(new NetherRouteCandidateAudit(candidate.FloorId, "above-target-depth"));
+                continue;
+            }
             if (!candidate.IsUnlocked)
             {
                 audit.Add(new NetherRouteCandidateAudit(candidate.FloorId, "locked"));
@@ -122,9 +129,11 @@ internal sealed class NetherRoutePlanner
                 ? NetherPauseReason.UnsafeErosion
                 : audit.Any(item => item.Reason == "unsafe-hp")
                     ? NetherPauseReason.UnsafeHp
-                    : audit.Any(item => item.Reason == "unknown-node")
-                        ? NetherPauseReason.UnknownMasterData
-                        : NetherPauseReason.NoSafeRoute;
+                : audit.Any(item => item.Reason == "unknown-node")
+                    ? NetherPauseReason.UnknownMasterData
+                    : audit.Any(item => item.Reason == "above-target-depth")
+                        ? NetherPauseReason.TargetReachedOutsideCheckpoint
+                    : NetherPauseReason.NoSafeRoute;
             return Pause(reason, "no-safe-frontier", audit);
         }
 

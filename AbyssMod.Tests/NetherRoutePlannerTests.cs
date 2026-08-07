@@ -92,6 +92,22 @@ public class NetherRoutePlannerTests
     }
 
     [Fact]
+    public void Candidate_above_effective_max_depth_is_rejected_before_route_choice()
+    {
+        NetherRouteSafetyContext context = Context() with { MaximumFloorLevel = 2 };
+        NetherSnapshot snapshot = Snapshot(1,
+            Node(1, 1, NetherFloorNodeType.Recovery),
+            Node(2, 3, NetherFloorNodeType.Recovery, 1),
+            Terminal(3, 4, 2));
+
+        NetherRoutePlan plan = new NetherRoutePlanner().Plan(snapshot, context);
+
+        Assert.Null(plan.SelectedNode);
+        Assert.Equal(NetherPauseReason.TargetReachedOutsideCheckpoint, plan.PauseReason);
+        Assert.Contains(plan.Audit, audit => audit.FloorId == 2 && audit.Reason == "above-target-depth");
+    }
+
+    [Fact]
     public void Equivalent_candidates_use_floor_index_then_id_for_stable_tie_breaking()
     {
         NetherFloorNode laterIndex = Node(30, 2, NetherFloorNodeType.Recovery, 1) with { FloorIndex = 3 };

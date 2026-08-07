@@ -37,11 +37,19 @@
     <Compile Include="..\AbyssMod\Services\NetherAutoClimbStateMachine.cs" Link="NetherAutoClimbStateMachine.cs" Condition="Exists('..\AbyssMod\Services\NetherAutoClimbStateMachine.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherRoutePlanner.cs" Link="NetherRoutePlanner.cs" Condition="Exists('..\AbyssMod\Services\NetherRoutePlanner.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherErosionPolicy.cs" Link="NetherErosionPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherErosionPolicy.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherActionProjectionCalibration.cs" Link="NetherActionProjectionCalibration.cs" Condition="Exists('..\AbyssMod\Services\NetherActionProjectionCalibration.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherNativeWaitGate.cs" Link="NetherNativeWaitGate.cs" Condition="Exists('..\AbyssMod\Services\NetherNativeWaitGate.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCheckpointNativeFlow.cs" Link="NetherCheckpointNativeFlow.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointNativeFlow.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCodeOfferSelection.cs" Link="NetherCodeOfferSelection.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeOfferSelection.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCodeSelectionNativeFlow.cs" Link="NetherCodeSelectionNativeFlow.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeSelectionNativeFlow.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCodeDiagnosticAudit.cs" Link="NetherCodeDiagnosticAudit.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeDiagnosticAudit.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodePolicy.cs" Link="NetherCodePolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCodePolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherEventPolicy.cs" Link="NetherEventPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherEventPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCheckpointPolicy.cs" Link="NetherCheckpointPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherReturnItemPolicy.cs" Link="NetherReturnItemPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherReturnItemPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherBattleSettingsLeaseState.cs" Link="NetherBattleSettingsLeaseState.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleSettingsLeaseState.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherActionReconcilePolicy.cs" Link="NetherActionReconcilePolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherActionReconcilePolicy.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherPopupDispatchPolicy.cs" Link="NetherPopupDispatchPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherPopupDispatchPolicy.cs')" />
     <Compile Include="..\AbyssMod\Core\UpstreamTranslationPolicy.cs" Link="UpstreamTranslationPolicy.cs" />
     <Compile Include="..\AbyssMod\Models\Manifest.cs" Link="Manifest.cs" />
   </ItemGroup>

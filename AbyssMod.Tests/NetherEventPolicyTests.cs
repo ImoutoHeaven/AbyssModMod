@@ -192,6 +192,19 @@ public class NetherEventPolicyTests
         Assert.Equal(2, decision.OptionNumber);
     }
 
+    [Fact]
+    public void Recovery_allows_a_completely_neutral_safe_fallback_when_no_positive_choice_exists()
+    {
+        NetherEventDecision decision = EventPolicy().DecideRecovery(
+            Snapshot(erosion: 70),
+            [Option(1, new NetherEffect(NetherEffectKind.NetherGoldUsed, 0))],
+            Settings()
+        );
+
+        Assert.Equal(NetherEventDecisionKind.Select, decision.Kind);
+        Assert.Equal(1, decision.OptionNumber);
+    }
+
     private static NetherEventPolicy EventPolicy() => new();
 
     private static NetherAutoClimbSettings Settings(

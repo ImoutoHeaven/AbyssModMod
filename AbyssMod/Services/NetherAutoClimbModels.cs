@@ -273,7 +273,13 @@ internal readonly record struct NetherSnapshotFingerprint(
     int erosionPoint,
     string characterHpHash,
     string codeHash,
-    string mapHash
+    string mapHash,
+    long currentFloorId = 0,
+    int ticketCount = 0,
+    int treasureKeyCount = 0,
+    int netherGold = 0,
+    int codeReloadCount = 0,
+    int lockReward = 0
 )
 {
     public NetherSessionStatus Status => status;
@@ -285,6 +291,12 @@ internal readonly record struct NetherSnapshotFingerprint(
     public string CharacterHpHash => characterHpHash ?? string.Empty;
     public string CodeHash => codeHash ?? string.Empty;
     public string MapHash => mapHash ?? string.Empty;
+    public long CurrentFloorId => currentFloorId;
+    public int TicketCount => ticketCount;
+    public int TreasureKeyCount => treasureKeyCount;
+    public int NetherGold => netherGold;
+    public int CodeReloadCount => codeReloadCount;
+    public int LockReward => lockReward;
 }
 
 internal sealed record NetherFloorNode(
@@ -328,6 +340,12 @@ internal sealed record NetherEffect(NetherEffectKind Kind, int Amount)
 internal sealed record NetherRewardItem(long ItemId, int Amount)
 {
     public bool HasMasterData { get; init; } = true;
+    /// <summary>
+    /// The acquisition datastore does not carry the server-return-popup rarity.  A false
+    /// value is deliberately not ranked as <see cref="NetherRewardRarity.NoEffect"/>: the
+    /// item must be remapped from the freshly created native return popup before use.
+    /// </summary>
+    public bool HasVerifiedDropRarity { get; init; } = true;
     public int ItemType { get; init; }
     public NetherRewardRarity DropRarity { get; init; }
     public int MasterRarity { get; init; }
@@ -381,7 +399,13 @@ internal sealed record NetherSnapshot
         ErosionPoint,
         CharacterHpHash,
         CodeHash,
-        MapHash
+        MapHash,
+        CurrentFloorId,
+        TicketCount,
+        TreasureKeyCount,
+        NetherGold,
+        CodeReloadCount,
+        LockReward
     );
 }
 
@@ -395,4 +419,11 @@ internal readonly record struct NetherPlannedAction(NetherActionKind Kind)
     public long CodeId { get; init; }
     public long ReplaceCodeId { get; init; }
     public int TicketCount { get; init; }
+    /// <summary>
+    /// A checkpoint continuation carries only its lock count and explicit user preserve IDs.
+    /// The bridge obtains the policy candidates from the freshly generated native return popup
+    /// after Continue; it never ranks or clicks the stale pre-continuation datastore list.
+    /// </summary>
+    public int ReturnLockReward { get; init; }
+    public IReadOnlyList<long> ReturnPreserveItemIds { get; init; } = Array.Empty<long>();
 }

@@ -84,6 +84,18 @@ public class NetherReturnItemPolicyTests
         Assert.Equal(NetherPauseReason.UnknownMasterData, selection.PauseReason);
     }
 
+    [Fact]
+    public void Unverified_drop_rarity_from_pre_continue_snapshot_cannot_drive_return_selection()
+    {
+        NetherReturnItemSelection selection = Select(
+            [Item(1, rarity: NetherRewardRarity.NoEffect) with { HasVerifiedDropRarity = false }],
+            lockReward: 1
+        );
+
+        Assert.Equal(NetherReturnItemSelectionKind.Pause, selection.Kind);
+        Assert.Equal(NetherPauseReason.UnknownMasterData, selection.PauseReason);
+    }
+
     private static NetherReturnItemSelection Select(
         IReadOnlyList<NetherRewardItem> items,
         int lockReward,

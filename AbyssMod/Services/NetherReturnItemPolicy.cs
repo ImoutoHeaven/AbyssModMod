@@ -37,7 +37,7 @@ internal sealed class NetherReturnItemPolicy
             return Pause(NetherPauseReason.InvalidConfiguration, "negative-lock-reward");
         if (lockReward == 0)
             return new NetherReturnItemSelection { Kind = NetherReturnItemSelectionKind.Select };
-        if (items.Any(item => !item.HasMasterData || item.ItemId <= 0 || item.Amount <= 0))
+        if (items.Any(item => !item.HasMasterData || !item.HasVerifiedDropRarity || item.ItemId <= 0 || item.Amount <= 0))
             return Pause(NetherPauseReason.UnknownMasterData, "missing-or-invalid-return-item-master");
 
         NetherRewardItem[] selected = items

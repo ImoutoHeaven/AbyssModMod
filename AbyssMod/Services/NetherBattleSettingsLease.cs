@@ -33,6 +33,8 @@ internal sealed class NetherBattleSettingsLease : IDisposable
     private INetherBattleSettingsNative? _native;
     private string? _leasePath;
     private bool _initialized;
+    private bool _recoveryLoadAttempted;
+    private bool _recoveryPending;
 
     public static NetherBattleSettingsLease Instance { get; } = new();
 
@@ -51,6 +53,11 @@ internal sealed class NetherBattleSettingsLease : IDisposable
         if (accessor == null)
             throw new ArgumentNullException(nameof(accessor));
         Instance._native = accessor;
+        NetherNativeActionResult recovery = Instance.RetryRestoreAfterNativeAccessorRegistered();
+        if (recovery.Kind is NetherNativeActionResultKind.UnknownOutcome or NetherNativeActionResultKind.BindingUnavailable)
+        {
+            Logger.Error("[F12][NetherClimb] battle settings lease retry requires recovery: " + recovery.Detail);
+        }
     }
 
     public static void UnregisterNativeAccessor(INetherBattleSettingsNative accessor)
@@ -123,6 +130,9 @@ internal sealed class NetherBattleSettingsLease : IDisposable
     public NetherNativeActionResult RecoverOnLoad()
     {
         InitializeCore();
+        if (_recoveryLoadAttempted)
+            return RetryRestoreAfterNativeAccessorRegistered();
+        _recoveryLoadAttempted = true;
         if (!TryReadLease(out LeaseFile? lease, out string readError))
             return NetherNativeActionResult.BindingUnavailable("lease-read-failed:" + readError);
         if (lease == null || !lease.Active)
@@ -131,8 +141,30 @@ internal sealed class NetherBattleSettingsLease : IDisposable
             return Fault("invalid-battle-settings-lease", saveFailure: false);
         if (!_state.RecoverPersistedActive(lease.OriginalAutoEnabled, lease.OriginalSpeed))
             return Fault("persisted-battle-settings-lease-transition-failed", saveFailure: false);
+        _recoveryPending = true;
+        if (_native == null)
+            return NetherNativeActionResult.BindingUnavailable("native-battle-settings-accessor-awaiting-registration");
+        return RetryRestoreAfterNativeAccessorRegistered();
+    }
 
-        return Restore("recover-on-load");
+    /// <summary>
+    /// Called when BottomRightView has supplied the exact native settings service.  A persisted
+    /// Faulted lease is moved through RetryRestore rather than being silently abandoned.
+    /// </summary>
+    public NetherNativeActionResult RetryRestoreAfterNativeAccessorRegistered()
+    {
+        InitializeCore();
+        if (!_recoveryPending && !_state.NeedsRecovery)
+            return NetherNativeActionResult.Completed("no-pending-battle-settings-recovery");
+        if (_native == null)
+            return NetherNativeActionResult.BindingUnavailable("native-battle-settings-accessor-unregistered");
+        if (_state.Phase == NetherBattleSettingsLeasePhase.Faulted && !_state.RetryRestore())
+            return NetherNativeActionResult.Rejected("battle-settings-retry-restore-transition");
+
+        NetherNativeActionResult result = Restore("retry-native-settings-accessor");
+        if (result.Kind == NetherNativeActionResultKind.Completed)
+            _recoveryPending = false;
+        return result;
     }
 
     public void Dispose()

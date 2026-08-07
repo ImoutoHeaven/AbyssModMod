@@ -91,6 +91,7 @@ internal sealed class NetherAutoClimbStateMachine
 {
     private NetherPlannedAction? _pendingAction;
     private NetherSnapshotFingerprint? _preActionFingerprint;
+    private NetherSnapshot? _preActionSnapshot;
     private NetherPlannedAction? _knownNotAppliedAction;
     private NetherSnapshotFingerprint? _knownNotAppliedFingerprint;
 
@@ -100,6 +101,7 @@ internal sealed class NetherAutoClimbStateMachine
     public string PauseDetail { get; private set; } = string.Empty;
     public NetherPlannedAction? PendingAction => _pendingAction;
     public NetherSnapshotFingerprint? PreActionFingerprint => _preActionFingerprint;
+    public NetherSnapshot? PreActionSnapshot => _preActionSnapshot;
 
     public void Toggle(bool isInNether)
     {
@@ -112,10 +114,34 @@ internal sealed class NetherAutoClimbStateMachine
             return;
         }
 
+        // An off→on key repeat must not replace an in-flight native operation with a fresh
+        // reconciliation.  Keep F12 disabled until the existing controller task has reached
+        // its terminal observation and the action-specific read-only reconcile is complete.
+        if (!IsEnabled && _pendingAction != null
+            && Phase is (NetherAutoClimbPhase.ExecutingNativeAction or NetherAutoClimbPhase.Reconciling))
+        {
+            return;
+        }
+
         if (IsEnabled)
         {
             IsEnabled = false;
-            if (Phase != NetherAutoClimbPhase.Reconciling || _pendingAction == null)
+            // A controller call can still be running when the user turns F12 off.  Do not
+            // discard its identity: observe it to a terminal native result, then reconcile
+            // once before allowing a later enable.  This prevents a second non-idempotent
+            // request from being issued against an unknown first outcome.
+            if (_pendingAction != null && Phase == NetherAutoClimbPhase.ExecutingNativeAction)
+            {
+                // Keep polling the actual controller task before a read-only reconciliation.
+                // Jumping directly to Reconcile can race a still-running non-idempotent UI
+                // action and makes its server outcome impossible to classify safely.
+                Phase = NetherAutoClimbPhase.ExecutingNativeAction;
+            }
+            else if (_pendingAction != null && Phase == NetherAutoClimbPhase.Reconciling)
+            {
+                Phase = NetherAutoClimbPhase.Reconciling;
+            }
+            else
             {
                 Phase = NetherAutoClimbPhase.Disabled;
                 PauseReason = NetherPauseReason.UserDisabled;
@@ -151,10 +177,19 @@ internal sealed class NetherAutoClimbStateMachine
             Pause(NetherPauseReason.UnknownStatus, "unknown-status");
             return;
         }
+        if (fingerprint.Status == NetherSessionStatus.Lose)
+        {
+            _pendingAction = null;
+            _preActionFingerprint = null;
+            _preActionSnapshot = null;
+            Pause(NetherPauseReason.Lose, "lose-no-signal-auto-use");
+            return;
+        }
         if (RequiresResultScene(fingerprint.Status))
         {
             _pendingAction = null;
             _preActionFingerprint = null;
+            _preActionSnapshot = null;
             Phase = NetherAutoClimbPhase.AwaitingSceneChange;
             return;
         }
@@ -180,6 +215,16 @@ internal sealed class NetherAutoClimbStateMachine
         return true;
     }
 
+    public bool TryBegin(NetherPlannedAction action, NetherSnapshot snapshot)
+    {
+        if (snapshot == null)
+            throw new System.ArgumentNullException(nameof(snapshot));
+        if (!TryBegin(action, snapshot.Fingerprint))
+            return false;
+        _preActionSnapshot = snapshot;
+        return true;
+    }
+
     public void ObserveActionResult(NetherSnapshotFingerprint fingerprint, NetherActionOutcome outcome)
     {
         if (_pendingAction == null || _preActionFingerprint == null)
@@ -200,6 +245,7 @@ internal sealed class NetherAutoClimbStateMachine
 
         _pendingAction = null;
         _preActionFingerprint = null;
+        _preActionSnapshot = null;
         if (outcome == NetherActionOutcome.NotApplied)
         {
             _knownNotAppliedAction = action;
@@ -242,10 +288,11 @@ internal sealed class NetherAutoClimbStateMachine
 
         _pendingAction = null;
         _preActionFingerprint = null;
+        _preActionSnapshot = null;
         Phase = NetherAutoClimbPhase.Completed;
         return true;
     }
 
     private static bool RequiresResultScene(NetherSessionStatus status) =>
-        status == NetherSessionStatus.Clear || status == NetherSessionStatus.Lose;
+        status == NetherSessionStatus.Clear;
 }

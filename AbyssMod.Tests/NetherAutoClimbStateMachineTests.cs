@@ -88,16 +88,13 @@ public class NetherAutoClimbStateMachineTests
         Assert.False(machine.TryBegin(new NetherPlannedAction(NetherActionKind.SelectFloor), after));
     }
 
-    [Theory]
-    [InlineData((int)NetherSessionStatus.Clear)]
-    [InlineData((int)NetherSessionStatus.Lose)]
-    public void Clear_or_lose_is_not_completed_until_result_response(int statusValue)
+    [Fact]
+    public void Clear_is_not_completed_until_result_response()
     {
         var machine = new NetherAutoClimbStateMachine();
-        NetherSessionStatus status = (NetherSessionStatus)statusValue;
 
         machine.Toggle(isInNether: true);
-        machine.ObserveStable(Fingerprint(status, 20));
+        machine.ObserveStable(Fingerprint(NetherSessionStatus.Clear, 20));
 
         Assert.Equal(NetherAutoClimbPhase.AwaitingSceneChange, machine.Phase);
         Assert.NotEqual(NetherAutoClimbPhase.Completed, machine.Phase);
@@ -105,6 +102,18 @@ public class NetherAutoClimbStateMachineTests
         machine.Complete();
 
         Assert.Equal(NetherAutoClimbPhase.Completed, machine.Phase);
+    }
+
+    [Fact]
+    public void Lose_pauses_for_user_control_and_never_waits_forever_for_a_result_request()
+    {
+        var machine = new NetherAutoClimbStateMachine();
+
+        machine.Toggle(isInNether: true);
+        machine.ObserveStable(Fingerprint(NetherSessionStatus.Lose, 20));
+
+        Assert.Equal(NetherAutoClimbPhase.Paused, machine.Phase);
+        Assert.Equal(NetherPauseReason.Lose, machine.PauseReason);
     }
 
     [Fact]
@@ -245,6 +254,35 @@ public class NetherAutoClimbStateMachineTests
         Assert.Equal(NetherAutoClimbPhase.Reconciling, machine.Phase);
         Assert.Equal(NetherActionKind.SelectFloor, machine.PendingAction!.Value.Kind);
         Assert.False(machine.TryBegin(new NetherPlannedAction(NetherActionKind.SelectFloor), fingerprint));
+    }
+
+    [Fact]
+    public void F12_disable_while_native_action_is_still_in_flight_keeps_polling_before_reconcile()
+    {
+        var machine = StableMachine();
+        NetherSnapshotFingerprint fingerprint = Fingerprint(NetherSessionStatus.Play, 10);
+
+        Assert.True(machine.TryBegin(new NetherPlannedAction(NetherActionKind.SelectFloor), fingerprint));
+        machine.Toggle(isInNether: true);
+
+        Assert.False(machine.IsEnabled);
+        Assert.Equal(NetherAutoClimbPhase.ExecutingNativeAction, machine.Phase);
+        Assert.Equal(NetherActionKind.SelectFloor, machine.PendingAction!.Value.Kind);
+    }
+
+    [Fact]
+    public void F12_cannot_reenable_over_a_still_in_flight_native_action()
+    {
+        var machine = StableMachine();
+        NetherSnapshotFingerprint fingerprint = Fingerprint(NetherSessionStatus.Play, 10);
+
+        Assert.True(machine.TryBegin(new NetherPlannedAction(NetherActionKind.SelectFloor), fingerprint));
+        machine.Toggle(isInNether: true); // off
+        machine.Toggle(isInNether: true); // attempted re-enable before task observation
+
+        Assert.False(machine.IsEnabled);
+        Assert.Equal(NetherAutoClimbPhase.ExecutingNativeAction, machine.Phase);
+        Assert.Equal(NetherActionKind.SelectFloor, machine.PendingAction!.Value.Kind);
     }
 
     private static NetherAutoClimbStateMachine StableMachine()

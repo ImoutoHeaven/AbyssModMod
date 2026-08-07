@@ -47,7 +47,6 @@ public class Plugin : BasePlugin
 
         AddComponent<ToastUI>();
         AbyssMod.Config.Initialize();
-        NetherAutoClimbController.Initialize();
             Logger.Info(
                 $"[F11] Battle session auto-SL initial state: "
                 + $"{(AbyssMod.Config.BattleSessionAutoSL.Value ? "ON" : "OFF")}"
@@ -57,6 +56,10 @@ public class Plugin : BasePlugin
         MasterMapping.Load();
         Initialize();
         PatchManager.Initialize();
+        // Native BottomRightView settings instrumentation must exist before the persisted F12
+        // lease attempts recovery; the exact accessor registers when the game supplies its
+        // IIngameUserSettings instance.
+        NetherAutoClimbController.Initialize();
         Trans.Initialize();
 
         Toast.Success(
