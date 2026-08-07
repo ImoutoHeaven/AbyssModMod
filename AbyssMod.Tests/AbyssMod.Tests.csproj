@@ -41,6 +41,7 @@
     <Compile Include="..\AbyssMod\Services\NetherEventPolicy.cs" Link="NetherEventPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherEventPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCheckpointPolicy.cs" Link="NetherCheckpointPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherReturnItemPolicy.cs" Link="NetherReturnItemPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherReturnItemPolicy.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleSettingsLeaseState.cs" Link="NetherBattleSettingsLeaseState.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleSettingsLeaseState.cs')" />
     <Compile Include="..\AbyssMod\Core\UpstreamTranslationPolicy.cs" Link="UpstreamTranslationPolicy.cs" />
     <Compile Include="..\AbyssMod\Models\Manifest.cs" Link="Manifest.cs" />
   </ItemGroup>

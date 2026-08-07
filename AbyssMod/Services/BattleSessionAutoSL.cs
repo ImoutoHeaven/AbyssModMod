@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using Absf;
 using Cysharp.Threading.Tasks;
 using Il2CppSystem.Threading;
@@ -13,6 +14,12 @@ namespace AbyssMod.Services;
 public static class BattleSessionAutoSL
 {
     private static readonly List<Operation> Operations = new();
+
+    /// <summary>
+    /// F12 reads this only to wait for an existing F11 Nether operation.  The list itself
+    /// remains private so the two hotkeys cannot mutate one another's operation lifetime.
+    /// </summary>
+    public static bool HasActiveNetherOperation => Operations.Any(operation => operation.IsNetherOperation);
 
     public static UniTask<BattleSessionStatusResponseEntity> RunExploration(
         IExplorationQuestAPIService apiService,
@@ -91,6 +98,8 @@ public static class BattleSessionAutoSL
         private long _retryDueTimestamp;
 
         protected virtual string LogPrefix => "[F11][BattleAutoSL]";
+
+        public virtual bool IsNetherOperation => false;
 
         protected Operation(
             UniTask<BattleSessionStatusResponseEntity> initial,
@@ -363,6 +372,8 @@ public static class BattleSessionAutoSL
         private readonly string _source;
 
         protected override string LogPrefix => "[F11][NetherAutoSL]";
+
+        public override bool IsNetherOperation => true;
 
         public NetherOperation(
             IExplorationQuestAPIService apiService,
