@@ -370,7 +370,14 @@ internal sealed record NetherCodeState(long CodeId, NetherCodeEffectKind EffectK
     public bool IsKnown { get; init; } = true;
     public NetherCodeCategory Category { get; init; }
     public int Rarity { get; init; }
+    /// <summary>
+    /// A numeric zero is not evidence that no party member benefits.  Runtime mapping keeps
+    /// this false until an exact ability/party authority proves the value.
+    /// </summary>
+    public bool PartyCoverageKnown { get; init; }
     public int PartyCoverage { get; init; }
+    /// <summary>False is a value only when <see cref="IsResearchOnlyKnown"/> is true.</summary>
+    public bool IsResearchOnlyKnown { get; init; }
     public bool IsResearchOnly { get; init; }
 }
 
@@ -521,6 +528,13 @@ internal readonly record struct NetherPlannedAction(NetherActionKind Kind)
     /// <summary>Exact post-Continue floor ID, not the source floor-selection ID.</summary>
     public long ExpectedFloorId { get; init; }
     public int ExpectedSegmentFloorLevel { get; init; }
+    /// <summary>
+    /// Once a SelectFloor parent has opened an owned popup, these two fields retain the
+    /// immutable child contract used for the single parent reconciliation.  They prevent a
+    /// visual popup close from being treated as an untyped successful floor selection.
+    /// </summary>
+    public NetherRuntimePopupKind OwnedPopupKind { get; init; }
+    public NetherActionKind OwnedPopupActionKind { get; init; }
     public NetherBattleSettlementContract? BattleSettlement { get; init; }
     /// <summary>Set only for a safety-approved combat floor before its native selection parent begins.</summary>
     public NetherBattleProjectionPayload? BattleProjection { get; init; }

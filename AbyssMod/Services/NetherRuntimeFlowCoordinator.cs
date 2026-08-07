@@ -48,6 +48,13 @@ internal sealed class NetherRuntimeFlowCoordinator
 
     public bool HasPendingParent => _parent != null;
 
+    /// <summary>
+    /// The immutable native owner registered at SelectFloor time.  Settlement may enrich the
+    /// StateMachine's copy with popup evidence, but bridge lookup must continue to use this
+    /// original object/generation so a composed transaction cannot lose its owned modal.
+    /// </summary>
+    public NetherPlannedAction? ParentAction => _parent;
+
     public bool BeginFloorParent(NetherPlannedAction action)
     {
         if (action.Kind != NetherActionKind.SelectFloor || _parent != null)

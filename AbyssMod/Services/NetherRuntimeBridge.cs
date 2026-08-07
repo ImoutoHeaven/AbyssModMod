@@ -223,7 +223,10 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
         get
         {
             lock (_gate)
-                return _runtimeGeneration;
+                return NetherRuntimeGenerationVisibility.ForLiveFloorSelection(
+                    _floorSelectionController,
+                    _runtimeGeneration
+                );
         }
     }
 
@@ -870,21 +873,17 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
                     return NetherRuntimeCodeCandidatesResult.Failure("invalid-selectable-nether-code-id");
                 if (!masterById.TryGetValue(codeId, out MNetherCodes? row))
                     return NetherRuntimeCodeCandidatesResult.Failure("missing-m-nether-code:" + codeId);
-                (NetherCodeEffectKind kind, NetherCodeCategory category, bool known) = MapCodeEffect(
+                NetherCodeCandidate candidate = NetherCodeRuntimeSemanticMapper.MapCandidate(
                     row.id,
                     row.category,
-                    row.effect_type
+                    row.effect_type,
+                    LevelFromMaster(row),
+                    row.rarity
                 );
-                if (!known && unmappedMasters != null)
+                if (NetherCodeRuntimeSemanticMapper.RequiresBoundedSemanticAudit(candidate)
+                    && unmappedMasters != null)
                     unmappedMasters[row.id] = row;
-                candidates.Add(new NetherCodeCandidate(row.id, kind, LevelFromMaster(row))
-                {
-                    IsKnown = known,
-                    Category = category,
-                    Rarity = row.rarity,
-                    PartyCoverage = 0,
-                    IsResearchOnly = false,
-                });
+                candidates.Add(candidate);
             }
 
             // A full portfolio can pause before an offer is chosen.  Include its unknown master
@@ -898,12 +897,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
                         && code != null
                         && masterById.TryGetValue(code.MNetherCodeId, out MNetherCodes? master))
                     {
-                        (NetherCodeEffectKind _, NetherCodeCategory _, bool currentCodeKnown) = MapCodeEffect(
+                        NetherCodeState current = NetherCodeRuntimeSemanticMapper.MapState(
                             master.id,
                             master.category,
-                            master.effect_type
+                            master.effect_type,
+                            LevelFromMaster(master),
+                            master.rarity
                         );
-                        if (!currentCodeKnown)
+                        if (!current.IsKnown || current.EffectKind == NetherCodeEffectKind.General)
                             unmappedMasters[master.id] = master;
                     }
                 }
@@ -1835,6 +1836,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
         List<(PopupRegistration Registration, EventFlowKind Kind)> active = new();
         lock (_gate)
         {
+            // ExecuteEvent/OnConfirm are packaged UniTask.Void callbacks.  Their only exact
+            // awaitable owner is the OnFloorClickedEventAsync parent registered when this
+            // automation selected the floor.  A recovered status=Wait session predates that
+            // parent and cannot be retroactively given a task; never fire the void mutation
+            // and then race a GET-only reconcile.  The normal Play→SelectFloor route remains
+            // fully supported through PollFloorParentNativeFlow.
+            if (_floorParentAction == null || _floorParentTask == null)
+                return NetherNativeActionResult.BindingUnavailable("direct-wait-event-parent-task-unavailable");
             if (_eventPopup is PopupRegistration eventPopup && IsCurrentFloorOwnedPopup(eventPopup))
                 active.Add((eventPopup, EventFlowKind.Event));
             if (_recoverPopup is PopupRegistration recoveryPopup && IsCurrentFloorOwnedPopup(recoveryPopup))
@@ -2233,26 +2242,20 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
                     NetherNativeActionResult.BindingUnavailable("missing-continue-can-boost-field")
                 );
             }
-            if (canBoost)
-            {
-                // RO ISIL proves b__8_2 enters OpenNetherBoostConfirmPopupAsync whenever
-                // _canBoost is true.  b__8_1 is the cancel/result-finish callback, not a
-                // non-boost Continue action.  Do not invent a callback or alter a preflight
-                // by selecting a multiplier; at this point no RequestNetherContinueAsync has
-                // been issued, so safe failure preserves user control.
-                return TerminalCheckpointFailure(
-                    NetherNativeActionResult.BindingUnavailable("native-nonboost-continue-callback-unavailable")
-                );
-            }
+            // RO ISIL: the generated <SetupPopupEvent>b__8_2 Unit callback is the exact
+            // Continue entry for both _canBoost values.  When true it opens the owned Boost
+            // confirmation popup; when false it proceeds to the native one-ticket parent.
+            // b__8_1 is Finish/cancel and must never stand in for Continue.
+            NetherNativeMethodDescriptor continueCallback = NetherCheckpointContinueNativeBinding.ContinueCallback;
             callback = TryInvokeGeneratedCallback(
                 registration.Controller,
-                "<SetupPopupEvent>b__8_2",
-                new[] { UnitTypeName, ContinuePopupControllerTypeName },
+                continueCallback.Name,
+                continueCallback.ParameterTypeNames,
                 new object?[] { null, registration.Controller },
                 "continue-one-ticket"
             );
             if (callback.Kind == NetherNativeActionResultKind.Started
-                && !_checkpointFlow.SubmitContinue(canBoost: false))
+                && !NetherCheckpointContinueNativeBinding.SubmitContinue(_checkpointFlow, canBoost))
             {
                 return TerminalCheckpointFailure(
                     NetherNativeActionResult.BindingUnavailable("invalid-native-checkpoint-continue-sequence")
@@ -2472,16 +2475,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
 
     private NetherNativeActionResult ConfirmBoostOneTicket(PopupRegistration registration)
     {
-        NetherNativeMethodDescriptor setCount = new(
-            "<SetupPopupEvent>b__7_2",
-            new[] { "System.Int32", BoostPopupControllerTypeName, registration.Popup.GetType().FullName ?? string.Empty },
-            "System.Void"
-        );
-        NetherNativeMethodDescriptor confirm = new(
-            "<SetupPopupEvent>b__7_1",
-            new[] { UnitTypeName, BoostPopupControllerTypeName, registration.Popup.GetType().FullName ?? string.Empty },
-            "System.Void"
-        );
+        NetherNativeMethodDescriptor setCount = NetherCheckpointContinueNativeBinding.BoostSetCount;
+        NetherNativeMethodDescriptor confirm = NetherCheckpointContinueNativeBinding.BoostConfirm;
         if (!TryResolveGeneratedCallback(registration.Controller.GetType(), setCount, out string setError, out object? singleton, out MethodInfo? setMethod))
             return NetherNativeActionResult.BindingUnavailable(setError);
         if (!TryResolveGeneratedCallback(registration.Controller.GetType(), confirm, out string confirmError, out object? confirmSingleton, out MethodInfo? confirmMethod))
@@ -2489,7 +2484,12 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
 
         try
         {
-            setMethod!.Invoke(singleton, new object[] { 1, registration.Controller, registration.Popup });
+            setMethod!.Invoke(singleton, new object[]
+            {
+                NetherCheckpointContinueNativeBinding.ExactTicketCount,
+                registration.Controller,
+                registration.Popup,
+            });
             object? unit = CreateDefaultValue(confirmMethod!.GetParameters()[0].ParameterType);
             confirmMethod.Invoke(confirmSingleton, new[] { unit, registration.Controller, registration.Popup });
             return NetherNativeActionResult.Started("native-boost-confirm-one-ticket");
@@ -3058,19 +3058,13 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
                 error = "missing-m-nether-code:" + code.MNetherCodeId;
                 return false;
             }
-            (NetherCodeEffectKind kind, NetherCodeCategory category, bool known) = MapCodeEffect(
+            mapped.Add(NetherCodeRuntimeSemanticMapper.MapState(
                 master.id,
                 master.category,
-                master.effect_type
-            );
-            mapped.Add(new NetherCodeState(master.id, kind, code.Amount)
-            {
-                IsKnown = known,
-                Category = category,
-                Rarity = master.rarity,
-                PartyCoverage = 0,
-                IsResearchOnly = false,
-            });
+                master.effect_type,
+                code.Amount,
+                master.rarity
+            ));
         }
         codes = mapped;
         error = string.Empty;
@@ -3368,16 +3362,6 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
             Kind = NetherRuntimePopupKind.Shop,
             ShopContents = mapped,
         });
-    }
-
-    private static (NetherCodeEffectKind Kind, NetherCodeCategory Category, bool Known) MapCodeEffect(
-        long codeId,
-        int category,
-        int effectType
-    )
-    {
-        NetherCodeMasterSemantic semantic = NetherCodeCategorySemantics.Resolve(codeId, category, effectType);
-        return (semantic.EffectKind, semantic.Category, semantic.IsKnown);
     }
 
     private static int LevelFromMaster(MNetherCodes row)

@@ -103,7 +103,7 @@ internal sealed class NetherRouteSafetyContextBuilder
                 continue;
             }
 
-            bool hpSafe = IsHpSafe(floor.EvaluationInput);
+            bool hpSafe = IsHpSafe(floor.EvaluationInput, floor.ProjectedHpDelta);
             context.SetKnown(
                 floorId,
                 hpSafe,
@@ -113,7 +113,18 @@ internal sealed class NetherRouteSafetyContextBuilder
             );
             states[floorId] = new FloorState(
                 IsKnown: true,
-                IsEligibleForTerminalPath: evaluation.IsSafe && hpSafe && projectedErosion != UnknownErosion,
+                // HP is an entry gate, not permission to erase an otherwise known terminal
+                // path. A proved Recovery may be selected, reconciled, and then followed by a
+                // fresh Boss decision; the Boss itself remains HP-ineligible at this snapshot.
+                // The evaluator deliberately reports that Boss as UnsafeHp.  It still has a
+                // known erosion cost for reverse reachability, otherwise a proven Recovery
+                // would be rejected merely because its eventual Boss is not enterable *yet*.
+                // Only that narrowly-scoped combat/HP case may contribute a terminal path;
+                // every other evaluator pause remains terminal-unsafe.
+                IsEligibleForTerminalPath: (evaluation.IsSafe
+                        || (evaluation.PauseReason == NetherPauseReason.UnsafeHp
+                            && IsCombat(floor.EvaluationInput.NodeType)))
+                    && projectedErosion != UnknownErosion,
                 ProjectedErosionDelta: projectedErosion
             );
         }
@@ -334,7 +345,7 @@ internal sealed class NetherRouteSafetyContextBuilder
         }
     }
 
-    private static bool IsHpSafe(NetherFloorSafetyInput input)
+    private static bool IsHpSafe(NetherFloorSafetyInput input, int? projectedHpDelta)
     {
         if (!input.AllInputsKnown
             || input.CurrentHpPermille == null
@@ -345,13 +356,36 @@ internal sealed class NetherRouteSafetyContextBuilder
         {
             if (hpPermille is < 0 or > 1000)
                 return false;
-            if (input.Kind == NetherFloorSafetyKind.Optional
-                && input.NodeType is NetherFloorNodeType.Battle or NetherFloorNodeType.MiniBoss
-                && hpPermille < input.MinimumHpPermille)
-                return false;
+            if (input.NodeType is NetherFloorNodeType.Battle
+                or NetherFloorNodeType.MiniBoss
+                or NetherFloorNodeType.Boss)
+            {
+                if (hpPermille < input.MinimumHpPermille)
+                    return false;
+                continue;
+            }
+            if (hpPermille < input.MinimumHpPermille)
+            {
+                if (!projectedHpDelta.HasValue)
+                    return false;
+                try
+                {
+                    if (checked(hpPermille + projectedHpDelta.Value) < input.MinimumHpPermille)
+                        return false;
+                }
+                catch (OverflowException)
+                {
+                    return false;
+                }
+            }
         }
         return true;
     }
+
+    private static bool IsCombat(NetherFloorNodeType nodeType) => nodeType is
+        NetherFloorNodeType.Battle
+        or NetherFloorNodeType.MiniBoss
+        or NetherFloorNodeType.Boss;
 
     private readonly record struct FloorState(
         bool IsKnown,

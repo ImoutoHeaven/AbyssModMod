@@ -227,6 +227,42 @@ internal sealed class NetherAutoClimbStateMachine
         return true;
     }
 
+    /// <summary>
+    /// Enriches the pending SelectFloor settlement contract after an owned modal has been
+    /// selected.  The native parent remains owned by RuntimeFlow; this method replaces only
+    /// the immutable reconciliation copy and deliberately preserves the original pre-action
+    /// snapshot/fingerprint.  A stale popup cannot replace a newer parent because every
+    /// floor identity and the pre-status must still agree with the registered owner.
+    /// </summary>
+    public bool TryReplacePendingFloorTransaction(
+        NetherPlannedAction ownerParent,
+        NetherPlannedAction composed
+    )
+    {
+        if (_pendingAction is not NetherPlannedAction pending
+            || pending.Kind != NetherActionKind.SelectFloor
+            || ownerParent.Kind != NetherActionKind.SelectFloor
+            || composed.Kind != NetherActionKind.SelectFloor
+            || pending.FloorId <= 0
+            || pending.FloorId != ownerParent.FloorId
+            || pending.FloorLevel != ownerParent.FloorLevel
+            || pending.FloorIndex != ownerParent.FloorIndex
+            || pending.ExpectedBeforeStatus != ownerParent.ExpectedBeforeStatus
+            || composed.FloorId != ownerParent.FloorId
+            || composed.FloorLevel != ownerParent.FloorLevel
+            || composed.FloorIndex != ownerParent.FloorIndex
+            || composed.ExpectedBeforeStatus != ownerParent.ExpectedBeforeStatus
+            || composed.ExpectedAfterStatus == NetherSessionStatus.Unknown
+            || composed.OwnedPopupKind == NetherRuntimePopupKind.None
+            || composed.OwnedPopupActionKind == NetherActionKind.None)
+        {
+            return false;
+        }
+
+        _pendingAction = composed;
+        return true;
+    }
+
     public void ObserveActionResult(NetherSnapshotFingerprint fingerprint, NetherActionOutcome outcome)
     {
         if (_pendingAction == null || _preActionFingerprint == null)

@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 
 namespace AbyssMod.Services;
 
@@ -76,6 +77,20 @@ internal sealed record NetherInteractiveFloorPreEntrySafetyInput(
 /// The safe option proof is retained per possible event row so the later popup dispatcher cannot
 /// mistake a safe option from one weighted row for a safe exit in another row.
 /// </summary>
+internal sealed record NetherInteractiveOptionProjection(
+    int OptionNumber,
+    int ErosionDelta,
+    int HpDelta,
+    IReadOnlyList<NetherEffect> ExpectedEffects
+);
+
+/// <summary>
+/// Conservative aggregate over every server-possible event row. The route planner consumes the
+/// worst erosion and HP outcomes before clicking the floor; popup dispatch retains the per-row
+/// option identity that produced this aggregate.
+/// </summary>
+internal readonly record struct NetherInteractiveWorstCaseProjection(int ErosionDelta, int HpDelta);
+
 internal sealed record NetherInteractiveFloorPreEntrySafetyResult
 {
     public bool IsSafe { get; init; }
@@ -83,14 +98,28 @@ internal sealed record NetherInteractiveFloorPreEntrySafetyResult
     public string Detail { get; init; } = string.Empty;
     public IReadOnlyDictionary<long, int> SafeOptionNumberByEventId { get; init; } =
         new Dictionary<long, int>();
+    public IReadOnlyDictionary<long, NetherInteractiveOptionProjection> SafeOptionProjectionByEventId { get; init; } =
+        new Dictionary<long, NetherInteractiveOptionProjection>();
+    public NetherInteractiveWorstCaseProjection? WorstCaseProjection { get; init; }
 
     public static NetherInteractiveFloorPreEntrySafetyResult Safe(
-        IReadOnlyDictionary<long, int>? safeOptions = null
+        IReadOnlyDictionary<long, int>? safeOptions = null,
+        IReadOnlyDictionary<long, NetherInteractiveOptionProjection>? projections = null,
+        NetherInteractiveWorstCaseProjection? worstCase = null
     ) => new()
     {
         IsSafe = true,
         PauseReason = NetherPauseReason.None,
         SafeOptionNumberByEventId = safeOptions ?? new Dictionary<long, int>(),
+        SafeOptionProjectionByEventId = projections ?? new Dictionary<long, NetherInteractiveOptionProjection>(),
+        WorstCaseProjection = worstCase,
+    };
+
+    public static NetherInteractiveFloorPreEntrySafetyResult SafeNeutral() => new()
+    {
+        IsSafe = true,
+        PauseReason = NetherPauseReason.None,
+        WorstCaseProjection = new NetherInteractiveWorstCaseProjection(ErosionDelta: 0, HpDelta: 0),
     };
 
     public static NetherInteractiveFloorPreEntrySafetyResult Pause(NetherPauseReason reason, string detail) => new()
@@ -248,6 +277,9 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
             return Unknown(partError);
 
         var safeOptions = new Dictionary<long, int>();
+        var projections = new Dictionary<long, NetherInteractiveOptionProjection>();
+        int worstErosion = int.MinValue;
+        int worstHp = int.MaxValue;
         foreach (NetherFloorEventMasterRow row in possibleRows!)
         {
             if (!TryBuildOptions(row, parts!, out IReadOnlyList<NetherEventOption>? options, out string optionError))
@@ -258,6 +290,7 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
                     input.Settings!,
                     isRecovery,
                     out int optionNumber,
+                    out NetherInteractiveOptionProjection projection,
                     out NetherPauseReason rejection,
                     out string rejectionDetail
                 ))
@@ -268,9 +301,19 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
                 );
             }
             safeOptions.Add(row.EventId, optionNumber);
+            projections.Add(row.EventId, projection);
+            worstErosion = Math.Max(worstErosion, projection.ErosionDelta);
+            worstHp = Math.Min(worstHp, projection.HpDelta);
         }
 
-        return NetherInteractiveFloorPreEntrySafetyResult.Safe(safeOptions);
+        if (projections.Count != safeOptions.Count || worstErosion == int.MinValue || worstHp == int.MaxValue)
+            return Unknown("missing-event-option-projection");
+
+        return NetherInteractiveFloorPreEntrySafetyResult.Safe(
+            safeOptions,
+            projections,
+            new NetherInteractiveWorstCaseProjection(worstErosion, worstHp)
+        );
     }
 
     private static bool TryIndexEventMasters(
@@ -522,11 +565,13 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
         NetherAutoClimbSettings settings,
         bool isRecovery,
         out int selectedOptionNumber,
+        out NetherInteractiveOptionProjection selectedProjection,
         out NetherPauseReason rejection,
         out string detail
     )
     {
         selectedOptionNumber = 0;
+        selectedProjection = default!;
         rejection = NetherPauseReason.NoSafeRoute;
         detail = "no-safe-event-option";
         var safeOptions = new List<NetherEventOption>();
@@ -568,6 +613,21 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
             return false;
         }
         selectedOptionNumber = selected.OptionNumber;
+        try
+        {
+            selectedProjection = new NetherInteractiveOptionProjection(
+                selected.OptionNumber,
+                checked(selected.ProjectedErosion - snapshot.ErosionPoint),
+                selected.HpDelta,
+                selected.ExpectedEffects.ToArray()
+            );
+        }
+        catch (OverflowException)
+        {
+            rejection = NetherPauseReason.UnknownEffect;
+            detail = "event-option-projection-overflow";
+            return false;
+        }
         return true;
     }
 
@@ -608,13 +668,6 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
         NetherInteractiveFloorPreEntrySafetyInput input
     )
     {
-        if (input.Settings!.ShopMode != NetherShopMode.Off)
-        {
-            return NetherInteractiveFloorPreEntrySafetyResult.Pause(
-                NetherPauseReason.NoSafeRoute,
-                "interactive-shop-mode-not-off"
-            );
-        }
         if (!input.CanCloseShop)
         {
             return NetherInteractiveFloorPreEntrySafetyResult.Pause(
@@ -622,7 +675,18 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
                 "interactive-shop-close-binding-unavailable"
             );
         }
-        return NetherInteractiveFloorPreEntrySafetyResult.Safe();
+        // ShopOff is the default and uses this proved close exit.  EquipmentBags may also
+        // enter only because the same exact close exists; the later popup policy still has to
+        // prove a particular purchase's content, amount and Gold cost before it mutates.  Do
+        // not reject an otherwise safe route solely because the user enabled an optional buy.
+        if (input.Settings!.ShopMode is not (NetherShopMode.Off or NetherShopMode.EquipmentBags))
+        {
+            return NetherInteractiveFloorPreEntrySafetyResult.Pause(
+                NetherPauseReason.InvalidConfiguration,
+                "interactive-shop-mode-invalid"
+            );
+        }
+        return NetherInteractiveFloorPreEntrySafetyResult.SafeNeutral();
     }
 
     private static NetherInteractiveFloorPreEntrySafetyResult EvaluateTreasureKeyOnly(
@@ -644,7 +708,7 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
                 "interactive-treasure-key-unavailable"
             );
         }
-        return NetherInteractiveFloorPreEntrySafetyResult.Safe();
+        return NetherInteractiveFloorPreEntrySafetyResult.SafeNeutral();
     }
 
     private static NetherInteractiveFloorPreEntrySafetyResult Unknown(string detail) =>

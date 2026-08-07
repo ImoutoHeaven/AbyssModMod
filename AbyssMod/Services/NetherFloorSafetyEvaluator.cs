@@ -113,7 +113,9 @@ internal sealed class NetherFloorSafetyEvaluator
                 projectedMaximum
             );
         }
-        if (input.Kind == NetherFloorSafetyKind.Optional && IsBattle(input.NodeType)
+        // Necessary terminal status relaxes only the erosion soft cap.  It never authorizes
+        // entering a Boss below the configured party HP floor.
+        if (IsCombat(input.NodeType)
             && HasHpBelowMinimum(input.CurrentHpPermille, input.MinimumHpPermille))
         {
             return Pause(
@@ -202,8 +204,8 @@ internal sealed class NetherFloorSafetyEvaluator
         return false;
     }
 
-    private static bool IsBattle(NetherFloorNodeType nodeType) =>
-        nodeType is NetherFloorNodeType.Battle or NetherFloorNodeType.MiniBoss;
+    private static bool IsCombat(NetherFloorNodeType nodeType) =>
+        nodeType is NetherFloorNodeType.Battle or NetherFloorNodeType.MiniBoss or NetherFloorNodeType.Boss;
 
     private static bool IsKnownKind(NetherFloorSafetyKind kind) =>
         kind is NetherFloorSafetyKind.Optional or NetherFloorSafetyKind.NecessaryTerminal;

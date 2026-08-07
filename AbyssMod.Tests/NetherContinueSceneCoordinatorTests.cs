@@ -88,6 +88,28 @@ public class NetherContinueSceneCoordinatorTests
     }
 
     [Fact]
+    public void One_absent_generation_tick_between_teardown_and_new_owner_waits_then_rebinds()
+    {
+        var driver = TerminalParentDriver();
+        var coordinator = new NetherContinueSceneCoordinator(driver, maximumMissingTicks: 2);
+
+        Assert.True(coordinator.Begin(Contract(), BeforeSnapshot(), ownerGeneration: 10));
+        Assert.Equal(NetherContinueSceneStepKind.WaitForTeardown, coordinator.Pump().Kind);
+        driver.FloorOwnerTerminated = true;
+        Assert.Equal(NetherContinueSceneStepKind.WaitForRebind, coordinator.Pump().Kind);
+
+        // Production reports absence (0), not the retained monotonic old-owner number.
+        driver.CurrentRuntimeGeneration = 0;
+        Assert.Equal(NetherContinueSceneStepKind.WaitForRebind, coordinator.Pump().Kind);
+
+        driver.CurrentRuntimeGeneration = 11;
+        Assert.Equal(NetherContinueSceneStepKind.Reconcile, coordinator.Pump().Kind);
+        Assert.Equal(NetherContinueSceneStepKind.Reconcile, coordinator.Pump().Kind);
+        Assert.Equal(NetherContinueSceneStepKind.Complete, coordinator.Pump().Kind);
+        Assert.Equal(1, driver.GetOnlyBeginCalls);
+    }
+
+    [Fact]
     public void Missing_owned_teardown_is_bounded_and_pauses_without_a_get()
     {
         var driver = TerminalParentDriver();

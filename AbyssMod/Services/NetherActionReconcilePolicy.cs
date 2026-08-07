@@ -59,9 +59,30 @@ internal static class NetherActionReconcilePolicy
             return NetherActionOutcome.Ambiguous;
         }
 
-        return after.CurrentFloorId == action.FloorId && after.Status == action.ExpectedAfterStatus
-            ? NetherActionOutcome.Applied
-            : UnchangedOrAmbiguous(before, after);
+        if (after.CurrentFloorId != action.FloorId || after.Status != action.ExpectedAfterStatus)
+            return UnchangedOrAmbiguous(before, after);
+
+        // A direct combat parent has no owned modal.  Once a popup was observed, the one
+        // SelectFloor parent is instead a composed transaction: accepting the floor/status
+        // alone would turn a wrong option, cost, or resource result into a false Applied.
+        if (action.OwnedPopupKind == NetherRuntimePopupKind.None)
+            return NetherActionOutcome.Applied;
+
+        return action.OwnedPopupKind switch
+        {
+            NetherRuntimePopupKind.Event or NetherRuntimePopupKind.Recovery or NetherRuntimePopupKind.Treasure
+                when action.OwnedPopupActionKind == NetherActionKind.SelectEventOption =>
+                    EvaluateEventEffects(action, before, after),
+            NetherRuntimePopupKind.Shop when action.OwnedPopupActionKind == NetherActionKind.LeaveShop =>
+                NetherActionOutcome.Applied,
+            NetherRuntimePopupKind.Shop when action.OwnedPopupActionKind == NetherActionKind.BuyShopItem =>
+                EvaluateShopBuy(action, before, after),
+            NetherRuntimePopupKind.CodeOffer when action.OwnedPopupActionKind == NetherActionKind.SelectCode =>
+                EvaluateCodeSelect(action, before, after),
+            NetherRuntimePopupKind.CodeOffer when action.OwnedPopupActionKind == NetherActionKind.ReloadCode =>
+                EvaluateCodeReload(before, after),
+            _ => NetherActionOutcome.Ambiguous,
+        };
     }
 
     private static NetherActionOutcome EvaluateEvent(
@@ -70,40 +91,95 @@ internal static class NetherActionReconcilePolicy
         NetherSnapshot after
     )
     {
-        if (action.OptionNumber < 0 || action.ExpectedEffects.Count == 0 || action.ExpectedEffects.Any(effect => !effect.Known || !effect.ContentKnown))
-            return NetherActionOutcome.Ambiguous;
+        return EvaluateEventEffects(action, before, after);
+    }
 
-        int erosionDelta = action.ExpectedEffects.Sum(effect => effect.Kind switch
+    private static NetherActionOutcome EvaluateEventEffects(
+        NetherPlannedAction action,
+        NetherSnapshot before,
+        NetherSnapshot after
+    )
+    {
+        if (action.OptionNumber <= 0
+            || action.ExpectedEffects == null
+            || action.ExpectedEffects.Count == 0
+            || action.ExpectedEffects.Any(effect => effect == null
+                || !effect.Known
+                || !effect.ContentKnown
+                || effect.Kind == NetherEffectKind.Unknown
+                || effect.Amount < 0))
         {
-            NetherEffectKind.Erosion => effect.Amount,
-            NetherEffectKind.ErosionHeal => -effect.Amount,
-            _ => 0,
-        });
-        int goldDelta = action.ExpectedEffects.Sum(effect => effect.Kind switch
-        {
-            NetherEffectKind.NetherGoldUsed => -effect.Amount,
-            NetherEffectKind.NetherGoldGain => effect.Amount,
-            _ => 0,
-        });
-        int keyDelta = action.ExpectedEffects.Sum(effect => effect.Kind switch
-        {
-            NetherEffectKind.TreasureKeyUsed => -effect.Amount,
-            NetherEffectKind.TreasureKeyGain => effect.Amount,
-            _ => 0,
-        });
-        bool containsOnlyServerVisibleResources = action.ExpectedEffects.All(effect => effect.Kind is
-            NetherEffectKind.Erosion or NetherEffectKind.ErosionHeal or
-            NetherEffectKind.NetherGoldUsed or NetherEffectKind.NetherGoldGain or
-            NetherEffectKind.TreasureKeyUsed or NetherEffectKind.TreasureKeyGain
-        );
-        if (!containsOnlyServerVisibleResources)
             return NetherActionOutcome.Ambiguous;
+        }
 
-        return after.ErosionPoint == before.ErosionPoint + erosionDelta
-            && after.NetherGold == before.NetherGold + goldDelta
-            && after.TreasureKeyCount == before.TreasureKeyCount + keyDelta
-                ? NetherActionOutcome.Applied
-                : UnchangedOrAmbiguous(before, after);
+        try
+        {
+            int erosionDelta = action.ExpectedEffects.Sum(effect => effect.Kind switch
+            {
+                NetherEffectKind.Erosion => effect.Amount,
+                NetherEffectKind.ErosionHeal => -effect.Amount,
+                _ => 0,
+            });
+            int goldDelta = action.ExpectedEffects.Sum(effect => effect.Kind switch
+            {
+                NetherEffectKind.NetherGoldUsed => -effect.Amount,
+                NetherEffectKind.NetherGoldGain => effect.Amount,
+                _ => 0,
+            });
+            int keyDelta = action.ExpectedEffects.Sum(effect => effect.Kind switch
+            {
+                NetherEffectKind.TreasureKeyUsed => -effect.Amount,
+                NetherEffectKind.TreasureKeyGain => effect.Amount,
+                _ => 0,
+            });
+            int hpDelta = action.ExpectedEffects.Sum(effect => effect.Kind switch
+            {
+                NetherEffectKind.Heal => effect.Amount,
+                NetherEffectKind.Damage => -effect.Amount,
+                _ => 0,
+            });
+            bool resourcesMatch = after.ErosionPoint == checked(before.ErosionPoint + erosionDelta)
+                && after.NetherGold == checked(before.NetherGold + goldDelta)
+                && after.TreasureKeyCount == checked(before.TreasureKeyCount + keyDelta);
+            if (!resourcesMatch)
+                return UnchangedOrAmbiguous(before, after);
+
+            if (hpDelta != 0 && !HasExactHpDelta(before, after, hpDelta))
+                return UnchangedOrAmbiguous(before, after);
+
+            foreach (NetherEffect effect in action.ExpectedEffects)
+            {
+                switch (effect.Kind)
+                {
+                    case NetherEffectKind.Item:
+                        if (effect.ContentId <= 0
+                            || GetAcquiredItemAmount(after, effect.ContentId)
+                                != checked(GetAcquiredItemAmount(before, effect.ContentId) + effect.Amount))
+                        {
+                            return UnchangedOrAmbiguous(before, after);
+                        }
+                        break;
+                    case NetherEffectKind.AbyssCodeChanged:
+                        if (effect.ReplacementCodeId <= 0
+                            || !ContainsCode(after, effect.ReplacementCodeId)
+                            || string.Equals(before.CodeHash, after.CodeHash, StringComparison.Ordinal))
+                        {
+                            return UnchangedOrAmbiguous(before, after);
+                        }
+                        break;
+                    case NetherEffectKind.Battle:
+                        if (after.Status != NetherSessionStatus.Battle)
+                            return UnchangedOrAmbiguous(before, after);
+                        break;
+                }
+            }
+
+            return NetherActionOutcome.Applied;
+        }
+        catch (OverflowException)
+        {
+            return NetherActionOutcome.Ambiguous;
+        }
     }
 
     private static NetherActionOutcome EvaluateShopBuy(
@@ -214,6 +290,27 @@ internal static class NetherActionReconcilePolicy
 
     private static bool AcquiredItemsChanged(NetherSnapshot before, NetherSnapshot after) =>
         !string.Equals(CreateItemIdentity(before), CreateItemIdentity(after), StringComparison.Ordinal);
+
+    private static bool HasExactHpDelta(NetherSnapshot before, NetherSnapshot after, int expectedDelta)
+    {
+        if (before.Characters == null || after.Characters == null
+            || before.Characters.Count == 0
+            || before.Characters.Count != after.Characters.Count)
+        {
+            return false;
+        }
+        try
+        {
+            int beforeTotal = before.Characters.Where(character => character.IsActive).Sum(character => character.HpPermille);
+            int afterTotal = after.Characters.Where(character => character.IsActive).Sum(character => character.HpPermille);
+            return afterTotal == checked(beforeTotal + expectedDelta)
+                && !string.Equals(before.CharacterHpHash, after.CharacterHpHash, StringComparison.Ordinal);
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
 
     private static string CreateItemIdentity(NetherSnapshot snapshot) => string.Join(
         ";",

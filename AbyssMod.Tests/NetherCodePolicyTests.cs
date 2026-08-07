@@ -149,6 +149,46 @@ public class NetherCodePolicyTests
         Assert.Equal(NetherPauseReason.UnknownEffect, decision.PauseReason);
     }
 
+    [Fact]
+    public void Category_confirmed_ordinary_offer_with_unresolved_lane_facts_pauses_without_select_or_reload()
+    {
+        NetherCodeDecision decision = Decide(
+            Portfolio(reloadCount: 3),
+            Candidate(51001, NetherCodeEffectKind.General, rarity: 4, coverage: 0)
+        );
+
+        Assert.Equal(NetherCodeDecisionKind.Pause, decision.Kind);
+        Assert.Equal(NetherPauseReason.UnknownMasterData, decision.PauseReason);
+    }
+
+    [Fact]
+    public void Proven_safe_offer_can_be_selected_without_using_an_unresolved_ordinary_offer()
+    {
+        NetherCodeDecision decision = Decide(
+            Portfolio(),
+            Candidate(51001, NetherCodeEffectKind.General, rarity: 4),
+            Candidate(30024, NetherCodeEffectKind.Safe, level: 1)
+        );
+
+        Assert.Equal(NetherCodeDecisionKind.Select, decision.Kind);
+        Assert.Equal(30024, decision.SelectedCodeId);
+    }
+
+    [Fact]
+    public void Full_portfolio_does_not_rank_or_remove_an_ordinary_code_with_unresolved_facts()
+    {
+        NetherCodeDecision decision = Decide(
+            Portfolio(
+                capacity: 1,
+                current: [Code(51001, NetherCodeEffectKind.General, rarity: 3)]
+            ),
+            Candidate(51002, NetherCodeEffectKind.Safe, level: 1)
+        );
+
+        Assert.Equal(NetherCodeDecisionKind.Pause, decision.Kind);
+        Assert.Equal(NetherPauseReason.UnknownMasterData, decision.PauseReason);
+    }
+
     private static NetherCodeDecision Decide(NetherCodePortfolio portfolio, params NetherCodeCandidate[] candidates) => new NetherCodePolicy().Decide(
         portfolio,
         candidates,
@@ -173,12 +213,16 @@ public class NetherCodePolicyTests
     private static NetherCodeState Code(long id, NetherCodeEffectKind kind, int level = 1, int rarity = 0, int coverage = 0) => new(id, kind, level)
     {
         Rarity = rarity,
+        PartyCoverageKnown = true,
         PartyCoverage = coverage,
+        IsResearchOnlyKnown = true,
     };
 
     private static NetherCodeCandidate Candidate(long id, NetherCodeEffectKind kind, int level = 1, int rarity = 0, int coverage = 0) => new(id, kind, level)
     {
         Rarity = rarity,
+        PartyCoverageKnown = true,
         PartyCoverage = coverage,
+        IsResearchOnlyKnown = true,
     };
 }

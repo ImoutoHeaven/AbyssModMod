@@ -43,6 +43,37 @@ public class NetherAutoClimbStateMachineTests
     }
 
     [Fact]
+    public void Owned_popup_can_enrich_only_its_current_floor_parent_without_losing_pre_snapshot()
+    {
+        var machine = StableMachine();
+        NetherSnapshotFingerprint before = Fingerprint(NetherSessionStatus.Play, 10);
+        NetherPlannedAction parent = new(NetherActionKind.SelectFloor)
+        {
+            FloorId = 22,
+            FloorLevel = 11,
+            FloorIndex = 2,
+            ExpectedBeforeStatus = NetherSessionStatus.Play,
+            ExpectedAfterStatus = NetherSessionStatus.Play,
+        };
+        NetherPlannedAction composed = parent with
+        {
+            OwnedPopupKind = NetherRuntimePopupKind.Event,
+            OwnedPopupActionKind = NetherActionKind.SelectEventOption,
+            OptionNumber = 1,
+            ExpectedEffects = new[] { new NetherEffect(NetherEffectKind.NetherGoldGain, 1) },
+        };
+
+        Assert.True(machine.TryBegin(parent, before));
+        Assert.True(machine.TryReplacePendingFloorTransaction(parent, composed));
+        Assert.Equal(before, machine.PreActionFingerprint);
+        Assert.Equal(NetherRuntimePopupKind.Event, machine.PendingAction!.Value.OwnedPopupKind);
+        Assert.False(machine.TryReplacePendingFloorTransaction(
+            parent with { FloorId = 23 },
+            composed
+        ));
+    }
+
+    [Fact]
     public void Changed_fingerprint_confirms_action_and_returns_stable()
     {
         var machine = StableMachine();

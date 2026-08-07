@@ -90,16 +90,17 @@ internal sealed class NetherRouteSafetyProductionCoordinator
                         floor,
                         settings,
                         interactivePreEntry,
-                        out NetherFloorSafetyInput interactiveInput
+                        out NetherFloorSafetyInput interactiveInput,
+                        out NetherInteractiveWorstCaseProjection interactiveProjection
                     ))
                 {
                     floorInputs.Add(new NetherRouteSafetyFloorInput(
                         floor,
                         interactiveInput,
-                        // The pre-entry proof establishes a safe native exit, but does not
-                        // invent a future heal or code offer.  The popup dispatcher validates
-                        // the exact option again under its owned parent task.
-                        ProjectedHpDelta: 0,
+                        // Every server-possible row contributes to the pre-click worst case.
+                        // The owned popup flow still validates the exact row/option before it
+                        // mutates state, so this aggregate never replaces identity evidence.
+                        ProjectedHpDelta: interactiveProjection.HpDelta,
                         SafeCodeOpportunity: 0
                     ));
                     safeExitKnown[floor.FloorId] = true;
@@ -222,10 +223,12 @@ internal sealed class NetherRouteSafetyProductionCoordinator
         NetherFloorNode floor,
         NetherAutoClimbSettings settings,
         NetherRuntimeInteractivePreEntryInputsResult? interactivePreEntry,
-        out NetherFloorSafetyInput safetyInput
+        out NetherFloorSafetyInput safetyInput,
+        out NetherInteractiveWorstCaseProjection worstCaseProjection
     )
     {
         safetyInput = default;
+        worstCaseProjection = default;
         if (!IsInteractive(floor.NodeType)
             || interactivePreEntry == null
             || !interactivePreEntry.IsSuccess
@@ -233,7 +236,8 @@ internal sealed class NetherRouteSafetyProductionCoordinator
             || !interactivePreEntry.ByFloorMasterId.TryGetValue(floor.FloorId, out NetherRuntimeInteractivePreEntryCaptureResult? capture)
             || !capture.IsCaptured
             || capture.Input == null
-            || !capture.Safety.IsSafe)
+            || !capture.Safety.IsSafe
+            || !TryGetInteractiveWorstCaseProjection(capture.Input.FloorKind, capture.Safety, out worstCaseProjection))
         {
             return false;
         }
@@ -281,7 +285,7 @@ internal sealed class NetherRouteSafetyProductionCoordinator
             CurrentErosion: snapshot.ErosionPoint,
             FloorMinimumErosion: bounds.MinimumErosionPoint.Value,
             FloorMaximumErosion: bounds.MaximumErosionPoint.Value,
-            KnownModifierDelta: 0,
+            KnownModifierDelta: worstCaseProjection.ErosionDelta,
             Kind: NetherFloorSafetyKind.Optional,
             NodeType: floor.NodeType,
             CurrentHpPermille: expectedActiveHp,
@@ -293,6 +297,46 @@ internal sealed class NetherRouteSafetyProductionCoordinator
         {
             ErosionModifiers = Array.Empty<NetherErosionModifier>(),
         };
+        return true;
+    }
+
+    private static bool TryGetInteractiveWorstCaseProjection(
+        NetherFloorNodeType floorKind,
+        NetherInteractiveFloorPreEntrySafetyResult safety,
+        out NetherInteractiveWorstCaseProjection projection
+    )
+    {
+        projection = default;
+        if (safety.WorstCaseProjection is not NetherInteractiveWorstCaseProjection captured)
+            return false;
+
+        if (floorKind is NetherFloorNodeType.Event or NetherFloorNodeType.Recovery)
+        {
+            if (safety.SafeOptionNumberByEventId == null
+                || safety.SafeOptionProjectionByEventId == null
+                || safety.SafeOptionNumberByEventId.Count == 0
+                || safety.SafeOptionNumberByEventId.Count != safety.SafeOptionProjectionByEventId.Count)
+            {
+                return false;
+            }
+            foreach ((long eventId, int optionNumber) in safety.SafeOptionNumberByEventId)
+            {
+                if (!safety.SafeOptionProjectionByEventId.TryGetValue(eventId, out NetherInteractiveOptionProjection? option)
+                    || option.OptionNumber != optionNumber
+                    || option.ExpectedEffects == null
+                    || option.ExpectedEffects.Count == 0
+                    || option.ExpectedEffects.Any(effect => !effect.Known || !effect.ContentKnown))
+                {
+                    return false;
+                }
+            }
+        }
+        else if (floorKind is not NetherFloorNodeType.Shop and not NetherFloorNodeType.Treasure)
+        {
+            return false;
+        }
+
+        projection = captured;
         return true;
     }
 

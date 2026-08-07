@@ -158,6 +158,50 @@ public class NetherInteractiveRouteSafetyWiringTests
         Assert.False(decision.Context.KnownNodeByFloorId[2]);
     }
 
+    [Theory]
+    [InlineData(20, false)]
+    [InlineData(19, true)]
+    public void ControllerRouteWiring_BudgetsWorstPossibleEventProjectionBeforeTerminalSelection(
+        int bossErosion,
+        bool expectedSelection
+    )
+    {
+        NetherRuntimeInteractivePreEntryCaptureResult capture = Capture(
+            NetherFloorNodeType.Event,
+            mapRows: [new MapFloorFixture { id = 2, min_erosion_point = 0, max_erosion_point = 0 }],
+            events: [Event(42, 2, 1, 1001)],
+            parts: [Part(1001, (int)NetherEffectKind.Erosion, 60)]
+        );
+
+        NetherAutoClimbRouteSafetyDecision decision = DecideWorstEventBudget(capture, bossErosion);
+
+        Assert.True(capture.Safety.IsSafe);
+        Assert.Equal(expectedSelection, decision.Route.HasSelection);
+        if (expectedSelection)
+            Assert.Equal(2, Assert.IsType<NetherFloorNode>(decision.Route.SelectedNode).FloorId);
+        else
+            Assert.Contains(decision.Route.Audit, item => item.FloorId == 2 && item.Reason == "terminal-erosion-100");
+    }
+
+    [Fact]
+    public void ControllerRouteWiring_SelectsProvedRecoveryBeforeTheHpIneligibleNecessaryBoss()
+    {
+        NetherRuntimeInteractivePreEntryCaptureResult capture = Capture(
+            NetherFloorNodeType.Recovery,
+            events: [Event(42, 2, 1, 1001)],
+            parts: [Part(1001, (int)NetherEffectKind.Heal, 1)],
+            hp: 299
+        );
+
+        NetherAutoClimbRouteSafetyDecision decision = DecideRecoveryBeforeBoss(capture);
+
+        Assert.True(capture.Safety.IsSafe);
+        Assert.Equal(1, capture.Safety.WorstCaseProjection!.Value.HpDelta);
+        Assert.Equal(2, Assert.IsType<NetherFloorNode>(decision.Route.SelectedNode).FloorId);
+        Assert.True(decision.Context.HpSafeByFloorId[2]);
+        Assert.False(decision.Context.HpSafeByFloorId[3]);
+    }
+
     private static NetherAutoClimbRouteSafetyDecision Decide(
         NetherFloorNodeType interactiveKind,
         NetherRuntimeInteractivePreEntryCaptureResult capture
@@ -199,13 +243,95 @@ public class NetherInteractiveRouteSafetyWiringTests
         )
     );
 
+    private static NetherAutoClimbRouteSafetyDecision DecideWorstEventBudget(
+        NetherRuntimeInteractivePreEntryCaptureResult capture,
+        int bossErosion
+    ) => new NetherAutoClimbRouteSafetyWiring().Plan(
+        new NetherSnapshot
+        {
+            Status = NetherSessionStatus.Play,
+            MapId = 1,
+            CurrentFloorId = 1,
+            ErosionPoint = 20,
+            NetherGold = 100,
+            TreasureKeyCount = 1,
+            Characters = [new NetherCharacterState(1, 500) { IsActive = true }],
+            Floors =
+            [
+                Floor(1, 1, NetherFloorNodeType.Recovery),
+                Floor(2, 2, NetherFloorNodeType.Event, previous: [1]),
+                Floor(3, 3, NetherFloorNodeType.Boss, previous: [2]),
+            ],
+        },
+        Settings(),
+        effectiveMaximumDepth: 130,
+        runtime: new NetherRuntimeRouteSafetyData
+        {
+            FloorBoundsByFloorId = new Dictionary<long, NetherFloorMasterBounds>
+            {
+                [3] = new NetherFloorMasterBounds(3, bossErosion, bossErosion, IsKnown: true, Detail: string.Empty),
+            },
+            ActivePartyHp = new NetherActivePartyHpSafety(true, 500, string.Empty),
+            ActiveCodeErosion = new NetherActiveCodeErosionProjection
+            {
+                ErosionProjectionKnown = true,
+                CodeHash = "nether-codes:none",
+                ErosionEffects = Array.Empty<NetherCodeEffect>(),
+            },
+        },
+        interactivePreEntry: NetherRuntimeInteractivePreEntryInputsResult.Success(
+            new Dictionary<long, NetherRuntimeInteractivePreEntryCaptureResult> { [2] = capture }
+        )
+    );
+
+    private static NetherAutoClimbRouteSafetyDecision DecideRecoveryBeforeBoss(
+        NetherRuntimeInteractivePreEntryCaptureResult capture
+    ) => new NetherAutoClimbRouteSafetyWiring().Plan(
+        new NetherSnapshot
+        {
+            Status = NetherSessionStatus.Play,
+            MapId = 1,
+            CurrentFloorId = 1,
+            ErosionPoint = 20,
+            NetherGold = 100,
+            TreasureKeyCount = 1,
+            Characters = [new NetherCharacterState(1, 299) { IsActive = true }],
+            Floors =
+            [
+                Floor(1, 1, NetherFloorNodeType.Recovery),
+                Floor(2, 2, NetherFloorNodeType.Recovery, previous: [1]),
+                Floor(3, 3, NetherFloorNodeType.Boss, previous: [2]),
+            ],
+        },
+        Settings(),
+        effectiveMaximumDepth: 130,
+        runtime: new NetherRuntimeRouteSafetyData
+        {
+            FloorBoundsByFloorId = new Dictionary<long, NetherFloorMasterBounds>
+            {
+                [3] = new NetherFloorMasterBounds(3, 0, 0, IsKnown: true, Detail: string.Empty),
+            },
+            ActivePartyHp = new NetherActivePartyHpSafety(true, 299, string.Empty),
+            ActiveCodeErosion = new NetherActiveCodeErosionProjection
+            {
+                ErosionProjectionKnown = true,
+                CodeHash = "nether-codes:none",
+                ErosionEffects = Array.Empty<NetherCodeEffect>(),
+            },
+        },
+        interactivePreEntry: NetherRuntimeInteractivePreEntryInputsResult.Success(
+            new Dictionary<long, NetherRuntimeInteractivePreEntryCaptureResult> { [2] = capture }
+        )
+    );
+
     private static NetherRuntimeInteractivePreEntryCaptureResult Capture(
         NetherFloorNodeType kind,
         object[]? mapRows = null,
         object[]? events = null,
         object[]? parts = null,
         int keys = 1,
-        bool canCloseShop = false
+        bool canCloseShop = false,
+        int hp = 500
     ) => new NetherRuntimeInteractivePreEntryInputCapture().Capture(new NetherRuntimeInteractivePreEntryCaptureRequest(
         FloorModel: new FloorFixture
         {
@@ -217,7 +343,7 @@ public class NetherInteractiveRouteSafetyWiringTests
         EventRows: events ?? [Event(42, 2, 1, 1001)],
         EventPartRows: parts ?? [Part(1001, (int)NetherEffectKind.Heal, 1)],
         CurrentErosion: 20,
-        ActiveHpPermille: [500],
+        ActiveHpPermille: [hp],
         CurrentNetherGold: 100,
         CurrentTreasureKeys: keys,
         Settings: Settings(),

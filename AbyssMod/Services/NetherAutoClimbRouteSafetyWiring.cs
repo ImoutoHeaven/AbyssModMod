@@ -70,7 +70,11 @@ internal sealed class NetherAutoClimbRouteSafetyWiring
                 FloorLevel = selected.FloorLevel,
                 FloorIndex = selected.FloorIndex,
                 ExpectedBeforeStatus = NetherSessionStatus.Play,
-                ExpectedAfterStatus = isCombat ? NetherSessionStatus.Battle : NetherSessionStatus.Unknown,
+                // An interactive SelectFloor parent has no terminal server state until its
+                // owned popup supplies an exact option/content transaction.  Keep a concrete
+                // provisional value for a direct non-modal terminal, then let the composer
+                // replace it before reconciliation when a modal is observed.
+                ExpectedAfterStatus = isCombat ? NetherSessionStatus.Battle : NetherSessionStatus.Play,
                 BattleProjection = projection,
             };
 

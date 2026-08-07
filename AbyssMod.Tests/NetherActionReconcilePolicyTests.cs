@@ -129,6 +129,107 @@ public class NetherActionReconcilePolicyTests
         );
     }
 
+    [Fact]
+    public void Composed_event_parent_requires_the_exact_floor_status_and_resource_effects()
+    {
+        NetherSnapshot before = Snapshot(floorId: 10, gold: 20);
+        NetherSnapshot exact = Snapshot(floorId: 11, floorLevel: 11, gold: 23);
+        NetherSnapshot wrongGold = Snapshot(floorId: 11, floorLevel: 11, gold: 22);
+        NetherPlannedAction action = ComposedFloor(
+            NetherRuntimePopupKind.Event,
+            NetherActionKind.SelectEventOption
+        ) with
+        {
+            OptionNumber = 2,
+            ExpectedEffects = new[] { new NetherEffect(NetherEffectKind.NetherGoldGain, 3) },
+        };
+
+        Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(action, before, exact));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(action, before, wrongGold));
+    }
+
+    [Fact]
+    public void Composed_recovery_treasure_and_event_effects_do_not_accept_wrong_hp_item_or_code()
+    {
+        NetherSnapshot before = Snapshot(floorId: 10, gold: 20) with
+        {
+            Characters = new[] { new NetherCharacterState(1, 900) },
+            CharacterHpHash = "1:900:1",
+            AcquiredItems = Array.Empty<NetherRewardItem>(),
+            Codes = Array.Empty<NetherCodeState>(),
+            CodeHash = "codes:none",
+        };
+        NetherSnapshot exact = Snapshot(floorId: 11, floorLevel: 11, gold: 20, codeHash: "codes:30024") with
+        {
+            Characters = new[] { new NetherCharacterState(1, 920) },
+            CharacterHpHash = "1:920:1",
+            AcquiredItems = new[] { new NetherRewardItem(7001, 1) },
+            Codes = new[] { new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1) },
+        };
+        NetherSnapshot wrongItem = exact with { AcquiredItems = new[] { new NetherRewardItem(7002, 1) } };
+        NetherPlannedAction action = ComposedFloor(
+            NetherRuntimePopupKind.Recovery,
+            NetherActionKind.SelectEventOption
+        ) with
+        {
+            OptionNumber = 1,
+            ExpectedEffects = new[]
+            {
+                new NetherEffect(NetherEffectKind.Heal, 20),
+                new NetherEffect(NetherEffectKind.Item, 1) { ContentId = 7001 },
+                new NetherEffect(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
+            },
+        };
+
+        Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(action, before, exact));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(action, before, wrongItem));
+    }
+
+    [Fact]
+    public void Composed_shop_buy_and_battle_option_require_their_own_terminal_contract()
+    {
+        NetherSnapshot before = Snapshot(floorId: 10, gold: 100);
+        NetherSnapshot bought = Snapshot(floorId: 11, floorLevel: 11, gold: 80) with
+        {
+            AcquiredItems = new[] { new NetherRewardItem(42, 1) },
+        };
+        NetherPlannedAction buy = ComposedFloor(NetherRuntimePopupKind.Shop, NetherActionKind.BuyShopItem) with
+        {
+            ContentId = 42,
+            ContentAmount = 1,
+            GoldCost = 20,
+        };
+        NetherPlannedAction battle = ComposedFloor(NetherRuntimePopupKind.Treasure, NetherActionKind.SelectEventOption) with
+        {
+            ExpectedAfterStatus = NetherSessionStatus.Battle,
+            OptionNumber = 1,
+            ExpectedEffects = new[] { new NetherEffect(NetherEffectKind.Battle, 0) },
+        };
+        NetherSnapshot battleAfter = Snapshot(floorId: 11, floorLevel: 11, status: NetherSessionStatus.Battle, gold: 100);
+
+        Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(buy, before, bought));
+        Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(battle, before, battleAfter));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(
+            battle,
+            before,
+            battleAfter with { Status = NetherSessionStatus.Play }
+        ));
+    }
+
+    private static NetherPlannedAction ComposedFloor(
+        NetherRuntimePopupKind popup,
+        NetherActionKind child
+    ) => new(NetherActionKind.SelectFloor)
+    {
+        FloorId = 11,
+        FloorLevel = 11,
+        FloorIndex = 0,
+        ExpectedBeforeStatus = NetherSessionStatus.Play,
+        ExpectedAfterStatus = NetherSessionStatus.Play,
+        OwnedPopupKind = popup,
+        OwnedPopupActionKind = child,
+    };
+
     private static NetherSnapshot Snapshot(
         long floorId = 10,
         int floorLevel = 10,

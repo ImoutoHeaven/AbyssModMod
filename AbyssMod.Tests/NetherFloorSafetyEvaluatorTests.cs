@@ -112,6 +112,28 @@ public class NetherFloorSafetyEvaluatorTests
         Assert.Equal(expectedSafe ? NetherPauseReason.None : NetherPauseReason.UnsafeHp, evaluation.PauseReason);
     }
 
+    [Theory]
+    [InlineData(299, false)]
+    [InlineData(300, true)]
+    public void NecessaryBoss_UsesConfiguredHpFloorWithoutRelaxingItsErosionException(
+        int hpPermille,
+        bool expectedSafe
+    )
+    {
+        NetherFloorSafetyEvaluation evaluation = Evaluate(
+            currentErosion: 95,
+            floorMinimum: 0,
+            floorMaximum: 1,
+            kind: NetherFloorSafetyKind.NecessaryTerminal,
+            nodeType: NetherFloorNodeType.Boss,
+            currentHpPermille: new[] { hpPermille }
+        );
+
+        Assert.Equal(expectedSafe, evaluation.IsSafe);
+        Assert.Equal(expectedSafe ? NetherPauseReason.None : NetherPauseReason.UnsafeHp, evaluation.PauseReason);
+        Assert.Equal(96, evaluation.ProjectedMaximumErosion);
+    }
+
     [Fact]
     public void UnknownAuthoritativeInput_NeverDefaultsToSafeOrZeroProjection()
     {

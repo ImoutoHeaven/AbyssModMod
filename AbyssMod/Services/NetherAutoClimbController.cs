@@ -292,7 +292,11 @@ internal static class NetherAutoClimbController
         if (!_initialized)
             return;
         BattleSettingsLifecycle.OnExactAccessorUnregistered();
-        if (State.IsEnabled)
+        // A normal battle view can disappear after a successful restore.  That clean state
+        // has no persisted setting to recover, so map navigation may continue and the next
+        // battle will wait for its own exact accessor.  An active/unrestored lease remains a
+        // hard boundary and deliberately pauses with the evidence retained.
+        if (State.IsEnabled && BattleSettingsLifecycle.BlocksRoute)
         {
             PauseForBattleSettingsLease(
                 NetherNativeActionResult.BindingUnavailable("native-battle-settings-accessor-owner-destroyed"),
@@ -350,14 +354,18 @@ internal static class NetherAutoClimbController
     private static void PollFloorParentNativeAction()
     {
         NetherPlannedAction? pending = State.PendingAction;
-        if (pending is not NetherPlannedAction parent || parent.Kind != NetherActionKind.SelectFloor)
+        NetherPlannedAction? owner = RuntimeFlow.ParentAction;
+        if (pending is not NetherPlannedAction settlement
+            || settlement.Kind != NetherActionKind.SelectFloor
+            || owner is not NetherPlannedAction parent
+            || parent.Kind != NetherActionKind.SelectFloor)
         {
             FailClosed(NetherPauseReason.BindingUnavailable, "missing-floor-parent-state");
             return;
         }
 
         NetherRuntimeParentPollResult result = RuntimeFlow.Poll(
-            popup => DispatchOwnedFloorPopup(parent, popup)
+            popup => DispatchOwnedFloorPopup(parent, settlement, popup)
         );
         Audit(
             NetherDetailedAuditKind.Task,
@@ -388,7 +396,8 @@ internal static class NetherAutoClimbController
     }
 
     private static NetherNativeActionResult DispatchOwnedFloorPopup(
-        NetherPlannedAction parent,
+        NetherPlannedAction ownerParent,
+        NetherPlannedAction settlement,
         NetherRuntimePopupContext popup
     )
     {
@@ -411,7 +420,7 @@ internal static class NetherAutoClimbController
         NetherSnapshot snapshot = captured.Snapshot!;
         NetherPopupDispatchDecision decision = NetherPopupDispatchPolicy.Decide(snapshot, popup, settings);
         if (decision.Kind == NetherPopupDispatchKind.Code)
-            return DispatchOwnedCodePopup(parent, popup, snapshot, settings);
+            return DispatchOwnedCodePopup(ownerParent, settlement, popup, snapshot, settings);
         if (decision.Kind == NetherPopupDispatchKind.AwaitNativeFlow)
             return NetherNativeActionResult.Started("owned-popup-await-native-flow");
         if (decision.Kind != NetherPopupDispatchKind.NativeAction)
@@ -419,7 +428,23 @@ internal static class NetherAutoClimbController
                 "owned-popup-policy:" + decision.PauseReason + ":" + decision.Detail
             );
 
-        NetherNativeActionResult native = _bridge.InvokeOwnedPopup(parent, popup, decision.Action);
+        if (!NetherFloorActionTransactionComposer.TryCompose(
+                ownerParent,
+                popup,
+                decision.Action,
+                out NetherPlannedAction composed
+            )
+            || !State.TryReplacePendingFloorTransaction(ownerParent, composed))
+        {
+            return NetherNativeActionResult.BindingUnavailable(
+                "owned-popup-transaction-compose:"
+                    + popup.Kind + ":"
+                    + decision.Action.Kind + ":"
+                    + settlement.FloorId
+            );
+        }
+
+        NetherNativeActionResult native = _bridge.InvokeOwnedPopup(ownerParent, popup, decision.Action);
         if (native.Kind is NetherNativeActionResultKind.Started or NetherNativeActionResultKind.Completed)
         {
             if (decision.HasEffectProjection)
@@ -436,12 +461,24 @@ internal static class NetherAutoClimbController
                 snapshot,
                 "owner=" + popup.OwnerAction + ":" + popup.OwnerGeneration + ":" + popup.Sequence
             );
+            Audit(
+                NetherDetailedAuditKind.Interactive,
+                "transaction:" + ownerParent.FloorId + ":" + popup.Kind + ":" + decision.Action.Kind,
+                new NetherDetailedAuditField("floorId", ownerParent.FloorId.ToString()),
+                new NetherDetailedAuditField("popup", popup.Kind.ToString()),
+                new NetherDetailedAuditField("action", decision.Action.Kind.ToString()),
+                new NetherDetailedAuditField("option", decision.Action.OptionNumber.ToString()),
+                new NetherDetailedAuditField("content", decision.Action.ContentId.ToString()),
+                new NetherDetailedAuditField("goldCost", decision.Action.GoldCost.ToString()),
+                new NetherDetailedAuditField("afterStatus", composed.ExpectedAfterStatus.ToString())
+            );
         }
         return native;
     }
 
     private static NetherNativeActionResult DispatchOwnedCodePopup(
-        NetherPlannedAction parent,
+        NetherPlannedAction ownerParent,
+        NetherPlannedAction settlement,
         NetherRuntimePopupContext popup,
         NetherSnapshot snapshot,
         NetherAutoClimbSettings settings
@@ -476,7 +513,36 @@ internal static class NetherAutoClimbController
                 CodeId = decision.SelectedCodeId,
                 ReplaceCodeId = decision.RemoveCodeId,
             };
-        return _bridge.InvokeOwnedPopup(parent, popup, action);
+        if (!NetherFloorActionTransactionComposer.TryCompose(
+                ownerParent,
+                popup,
+                action,
+                out NetherPlannedAction composed
+            )
+            || !State.TryReplacePendingFloorTransaction(ownerParent, composed))
+        {
+            return NetherNativeActionResult.BindingUnavailable(
+                "owned-code-transaction-compose:"
+                    + action.Kind + ":"
+                    + settlement.FloorId
+            );
+        }
+
+        NetherNativeActionResult native = _bridge.InvokeOwnedPopup(ownerParent, popup, action);
+        if (native.Kind is NetherNativeActionResultKind.Started or NetherNativeActionResultKind.Completed)
+        {
+            Audit(
+                NetherDetailedAuditKind.Interactive,
+                "transaction:" + ownerParent.FloorId + ":" + popup.Kind + ":" + action.Kind,
+                new NetherDetailedAuditField("floorId", ownerParent.FloorId.ToString()),
+                new NetherDetailedAuditField("popup", popup.Kind.ToString()),
+                new NetherDetailedAuditField("action", action.Kind.ToString()),
+                new NetherDetailedAuditField("codeId", action.CodeId.ToString()),
+                new NetherDetailedAuditField("replaceCodeId", action.ReplaceCodeId.ToString()),
+                new NetherDetailedAuditField("afterStatus", composed.ExpectedAfterStatus.ToString())
+            );
+        }
+        return native;
     }
 
     private static void Reconcile()
@@ -798,6 +864,18 @@ internal static class NetherAutoClimbController
             new NetherDetailedAuditField("sequence", popup.Sequence.ToString()),
             new NetherDetailedAuditField("floorId", snapshot.CurrentFloorId.ToString())
         );
+
+        // Event/Recovery/Treasure confirmation is a packaged UniTask.Void callback.  Only a
+        // SelectFloor parent registered by this controller supplies an exact task to wait for.
+        // Never automate a recovered direct Wait popup and then turn its visual callback into
+        // a premature GET-only reconciliation; preserve user control instead.
+        if (popup.Kind is NetherRuntimePopupKind.Event or NetherRuntimePopupKind.Recovery or NetherRuntimePopupKind.Treasure
+            && popup.OwnerAction != NetherActionKind.SelectFloor)
+        {
+            FailClosed(NetherPauseReason.BindingUnavailable, "direct-wait-event-parent-task-unavailable");
+            return;
+        }
+
         NetherPopupDispatchDecision decision = NetherPopupDispatchPolicy.Decide(snapshot, popup, settings);
         switch (decision.Kind)
         {
@@ -1270,7 +1348,7 @@ internal static class NetherAutoClimbController
 
     private static bool EnsureBattleSettingsLifecycleReady(string boundary)
     {
-        if (!BattleSettingsLifecycle.BlocksRouteOrBattle)
+        if (!BattleSettingsLifecycle.BlocksRoute)
             return true;
 
         PauseForBattleSettingsLease(

@@ -38,12 +38,25 @@ internal sealed class NetherBattleSettingsLeaseControllerLifecycle
     public bool IsExactAccessorRegistered => _exactAccessorRegistered;
 
     /// <summary>
-    /// No startup restore is allowed before the exact BottomRight native accessor is registered.
-    /// Until that point F12 must not enter a route or force battle settings.
+    /// Route selection is safe without an Ingame-only settings owner when there is no active
+    /// persisted lease.  A live/failed lease is different: it remains an authority boundary and
+    /// blocks every new mutation until an exact accessor restores it.
     /// </summary>
-    public bool BlocksRouteOrBattle => !_exactAccessorRegistered
+    public bool BlocksRoute => _runtime.BlocksBattleEntry;
+
+    /// <summary>
+    /// Entering an actual battle additionally requires the exact BottomRight accessor and a
+    /// completed startup/rebind recovery.  The controller calls this only after the native
+    /// battle view has registered, never to gate a clean NetherTop map route.
+    /// </summary>
+    public bool BlocksBattleEntry => !_exactAccessorRegistered
         || !_startupRecoveryComplete
         || _runtime.BlocksBattleEntry;
+
+    // Compatibility surface for the existing lifecycle characterization tests.  New map-route
+    // code must use BlocksRoute; this property intentionally keeps the stricter battle-entry
+    // meaning so it cannot accidentally reopen a battle before an exact accessor exists.
+    public bool BlocksRouteOrBattle => BlocksBattleEntry;
 
     public void OnControllerInitialized()
     {
@@ -80,7 +93,7 @@ internal sealed class NetherBattleSettingsLeaseControllerLifecycle
 
     public NetherNativeActionResult OnBattleEnter()
     {
-        if (BlocksRouteOrBattle)
+        if (BlocksBattleEntry)
         {
             return NetherNativeActionResult.Rejected(
                 "battle-settings-lifecycle-entry-blocked:"

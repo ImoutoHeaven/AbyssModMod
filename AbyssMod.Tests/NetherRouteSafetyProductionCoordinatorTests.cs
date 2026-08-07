@@ -81,6 +81,31 @@ public class NetherRouteSafetyProductionCoordinatorTests
         Assert.False(plan.Route.HasSelection);
     }
 
+    [Theory]
+    [InlineData(299, false)]
+    [InlineData(300, true)]
+    public void NecessaryBoss_UsesHpBoundaryThroughTheProductionCoordinator(int hpPermille, bool expectedSelection)
+    {
+        NetherSnapshot snapshot = Snapshot(
+            erosion: 20,
+            Floor(1, 1, NetherFloorNodeType.Recovery),
+            Floor(2, 2, NetherFloorNodeType.Boss, 1)
+        );
+        NetherProductionRouteSafetyPlan plan = new NetherRouteSafetyProductionCoordinator().Plan(
+            snapshot,
+            130,
+            Settings(),
+            Runtime(
+                hpPermille: hpPermille,
+                bounds: new Dictionary<long, NetherFloorMasterBounds> { [2] = Bounds(2, 0, 1) }
+            )
+        );
+
+        Assert.Equal(expectedSelection, plan.Route.HasSelection);
+        if (expectedSelection)
+            Assert.Equal(2, Assert.IsType<NetherFloorNode>(plan.Route.SelectedNode).FloorId);
+    }
+
     [Fact]
     public void UnknownMasterCodeOrHp_IsNeverPromotedToTheOldPermissiveSafetyMaps()
     {

@@ -135,8 +135,10 @@ internal static class NetherPopupDispatchPolicy
             Action = new NetherPlannedAction(NetherActionKind.BuyShopItem)
             {
                 ContentId = decision.ContentId,
+                ContentAmount = decision.Amount,
+                GoldCost = decision.GoldCost,
             },
-            Detail = "popup-shop-buy:" + decision.ContentId,
+            Detail = "popup-shop-buy:" + decision.ContentId + ":" + decision.Amount + ":" + decision.GoldCost,
         },
         _ => Pause(decision.PauseReason, decision.Detail),
     };

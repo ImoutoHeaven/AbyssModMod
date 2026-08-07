@@ -66,6 +66,8 @@ internal sealed record NetherShopDecision
     public NetherShopDecisionKind Kind { get; init; }
     public long ContentId { get; init; }
     public int Amount { get; init; }
+    /// <summary>Exact server-visible NetherGold debit for a buy transaction.</summary>
+    public int GoldCost { get; init; }
     public NetherPauseReason PauseReason { get; init; }
     public string Detail { get; init; } = string.Empty;
 }
@@ -155,6 +157,7 @@ internal sealed class NetherEventPolicy
             Kind = NetherShopDecisionKind.Buy,
             ContentId = selected.Value.ContentId,
             Amount = selected.Value.Amount,
+            GoldCost = selected.Value.Price,
         };
     }
 

@@ -67,7 +67,7 @@ public class NetherCodeCategorySemanticsTests
     }
 
     [Fact]
-    public void Ordinary_category_candidates_remain_selectable_with_stable_tie_breaking()
+    public void Ordinary_category_candidates_pause_until_lane_coverage_and_research_semantics_are_proven()
     {
         NetherCodeDecision decision = new NetherCodePolicy().Decide(
             new NetherCodePortfolio { Capacity = 3, ReloadCount = 1, IsMasterComplete = true },
@@ -79,12 +79,12 @@ public class NetherCodeCategorySemanticsTests
             new NetherAutoClimbSettings { CombatLane = NetherCombatLane.Auto, CodeReloadReserve = 1 }
         );
 
-        Assert.Equal(NetherCodeDecisionKind.Select, decision.Kind);
-        Assert.Equal(51001, decision.SelectedCodeId);
+        Assert.Equal(NetherCodeDecisionKind.Pause, decision.Kind);
+        Assert.Equal(NetherPauseReason.UnknownMasterData, decision.PauseReason);
     }
 
     [Fact]
-    public void Exclusive_category_offer_is_not_selected_over_an_active_paired_category()
+    public void Unresolved_ordinary_offer_pauses_even_when_its_category_conflicts_with_the_current_pair()
     {
         NetherCodeDecision decision = new NetherCodePolicy().Decide(
             new NetherCodePortfolio
@@ -98,8 +98,8 @@ public class NetherCodeCategorySemanticsTests
             new NetherAutoClimbSettings { CombatLane = NetherCombatLane.Auto, CodeReloadReserve = 1 }
         );
 
-        Assert.Equal(NetherCodeDecisionKind.Keep, decision.Kind);
-        Assert.Equal("no-safe-code-candidate", decision.Detail);
+        Assert.Equal(NetherCodeDecisionKind.Pause, decision.Kind);
+        Assert.Equal(NetherPauseReason.UnknownMasterData, decision.PauseReason);
     }
 
     [Fact]
@@ -145,5 +145,7 @@ public class NetherCodeCategorySemanticsTests
         {
             IsKnown = true,
             Category = category,
+            PartyCoverageKnown = true,
+            IsResearchOnlyKnown = true,
         };
 }
