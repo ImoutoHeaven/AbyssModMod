@@ -53,6 +53,14 @@ namespace AbyssMod
         public static ConfigEntry<bool> BattleSessionAutoSLNetherEquipmentOnly;
         public static ConfigEntry<NetherPreserveMode> BattleSessionAutoSLNetherPreserveMode;
         public static ConfigEntry<string> BattleSessionAutoSLNetherPreserveItemIds;
+        internal static ConfigEntry<int> NetherAutoClimbMaxDepth;
+        internal static ConfigEntry<int> NetherAutoClimbSoftErosionLimit;
+        internal static ConfigEntry<int> NetherAutoClimbMinimumCharacterHpPermille;
+        internal static ConfigEntry<NetherCombatLane> NetherAutoClimbCombatLane;
+        internal static ConfigEntry<int> NetherAutoClimbCodeReloadReserve;
+        internal static ConfigEntry<NetherTreasureMode> NetherAutoClimbTreasureMode;
+        internal static ConfigEntry<NetherShopMode> NetherAutoClimbShopMode;
+        internal static ConfigEntry<bool> NetherAutoClimbDetailedLogging;
         #endregion
 
         #region Translation
@@ -273,6 +281,62 @@ namespace AbyssMod
                     + "示例（保留全部深部调查素材）：200003,200004,200005,200006\n"
                     + "无效 ID、非 type=90 ID 或主数据缺失会 accept-error 并放行，避免卡死。"
             );
+
+            #region NetherAutoClimb
+            NetherAutoClimbMaxDepth = Plugin.ConfigFile.Bind(
+                "NetherAutoClimb",
+                "MaxDepth",
+                130,
+                "F12 深渊自动爬塔最大目标层，默认 130；实际目标始终取配置、服务器与主数据上限的最小值。"
+                    + "只会在 Sleep 十层结算点继续或正常结束，非 Sleep 达到目标会暂停，绝不取消或提交 Result。"
+            );
+            NetherAutoClimbSoftErosionLimit = Plugin.ConfigFile.Bind(
+                "NetherAutoClimb",
+                "SoftErosionLimit",
+                90,
+                "侵蚀软上限（1–99），默认 90；任何预测达到软上限的非强制路径暂停，100 是绝对硬停止。"
+                    + "事件/战斗效果、顺序或主数据无法证明时也会暂停，不会猜测。"
+            );
+            NetherAutoClimbMinimumCharacterHpPermille = Plugin.ConfigFile.Bind(
+                "NetherAutoClimb",
+                "MinimumCharacterHpPermille",
+                300,
+                "最小活动角色 HP 千分比（1–1000），默认 300；预判会致死或低于安全条件的选项不会自动选择。"
+            );
+            NetherAutoClimbCombatLane = Plugin.ConfigFile.Bind(
+                "NetherAutoClimb",
+                "CombatLane",
+                NetherCombatLane.Auto,
+                "深渊 Code 战斗流派：Auto、Rush 或 Impact。默认 Auto 只在已证明覆盖时锁定单一流派。"
+                    + "优先 30024 与 effective Safe>=5；40024/Risk 被硬拒绝，Safe/Risk、Rush/Impact 按游戏效果相互抵消。"
+            );
+            NetherAutoClimbCodeReloadReserve = Plugin.ConfigFile.Bind(
+                "NetherAutoClimb",
+                "CodeReloadReserve",
+                1,
+                "Code 重抽保留次数，默认 1；Safe 尚不足且剩余次数严格大于该值时才走原生 Reroll 控制器流程。"
+            );
+            NetherAutoClimbTreasureMode = Plugin.ConfigFile.Bind(
+                "NetherAutoClimb",
+                "TreasureMode",
+                NetherTreasureMode.KeyOnly,
+                "宝箱策略：KeyOnly（默认）仅接受已验证恰好消耗一把钥匙的安全选项；Off 会暂停而非猜测关闭弹窗。"
+            );
+            NetherAutoClimbShopMode = Plugin.ConfigFile.Bind(
+                "NetherAutoClimb",
+                "ShopMode",
+                NetherShopMode.Off,
+                "商店策略：Off（默认）只可走已验证原生关闭回调；EquipmentBags 仅在已知 type=91、Gold 以上且深渊金币充足时购买。"
+            );
+            NetherAutoClimbDetailedLogging = Plugin.ConfigFile.Bind(
+                "NetherAutoClimb",
+                "DetailedLogging",
+                true,
+                "记录 [F12][NetherClimb] 的状态转换、服务器快照、候选审计、选项与预测；不记录每帧轮询。"
+                    + "F12 只在 Nether 内有效，临时强制原生 Auto+最高速度并在关闭/失败/卸载恢复；F11 自动刷本设置独立，F12 仅在其实际 Nether 操作期间等待。"
+                    + "Gate Key=200002 仅由原生 Continue 消耗一张；Lost Signal=200001 不会由 F12 自动消耗。"
+            );
+            #endregion
             #endregion
 
             #region Translation

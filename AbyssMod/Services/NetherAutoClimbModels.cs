@@ -56,6 +56,7 @@ internal enum NetherActionKind
     ReloadCode,
     Continue,
     FinishAtCheckpoint,
+    SelectReturnItems,
     AwaitNativeFlow,
     RestoreBattleSettings,
 }

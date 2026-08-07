@@ -74,6 +74,20 @@ public class NetherCheckpointPolicyTests
         Assert.Equal(0, decision.TicketCount);
     }
 
+    [Fact]
+    public void Max_depth_lowered_below_current_floor_pauses_at_the_next_stable_boundary()
+    {
+        var gate = new NetherAutoClimbSettingsSnapshotGate();
+        var snapshot = Snapshot(NetherSessionStatus.Play, floor: 80, max: 130, masterMax: 130);
+
+        Assert.True(gate.TryCapture(new NetherAutoClimbSettings { MaxDepth = 130 }, NetherAutoClimbPhase.Stable, out _, out _, out _));
+        Assert.True(gate.TryCapture(new NetherAutoClimbSettings { MaxDepth = 70 }, NetherAutoClimbPhase.Stable, out NetherAutoClimbSettings reloaded, out _, out _));
+        NetherCheckpointDecision decision = Decide(snapshot, reloaded);
+
+        Assert.Equal(NetherCheckpointDecisionKind.PauseAtNonCheckpointTarget, decision.Kind);
+        Assert.Equal(NetherPauseReason.TargetReachedOutsideCheckpoint, decision.PauseReason);
+    }
+
     private static NetherCheckpointDecision Decide(NetherSnapshot snapshot, NetherAutoClimbSettings settings) => new NetherCheckpointPolicy().Decide(snapshot, settings);
 
     private static NetherAutoClimbSettings Settings(int maxDepth = 130) => new() { MaxDepth = maxDepth };

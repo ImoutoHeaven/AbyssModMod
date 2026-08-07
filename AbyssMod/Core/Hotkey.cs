@@ -24,6 +24,7 @@ public class Hotkey : MonoBehaviour
     {
         ConfigAutoReload.Update(Time.unscaledTime);
         BattleSessionAutoSL.Update();
+        NetherAutoClimbController.Update();
 
         if (Input.GetKeyDown(KeyCode.F8) && CanTrigger(KeyCode.F8))
         {
@@ -70,6 +71,9 @@ public class Hotkey : MonoBehaviour
                 );
             }
         }
+
+        if (Input.GetKeyDown(KeyCode.F12) && CanTrigger(KeyCode.F12))
+            NetherAutoClimbController.Toggle();
 
         if (Config.Translation.Value && Time.unscaledTime - _lastRefreshTime >= RefreshInterval)
         {

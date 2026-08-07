@@ -118,6 +118,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     private PopupRegistration? _continuePopup;
     private PopupRegistration? _boostPopup;
     private object? _returnScrollController;
+    private object? _nativeActionTask;
     private bool _battleActive;
     private bool _battleClearObserved;
     private bool _battleCloseObserved;
@@ -410,6 +411,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
 
             if (_resultTask != null)
                 return PollResultTask(_resultTask);
+
+            if (_nativeActionTask != null)
+            {
+                NetherNativeActionResult result = PollResultTask(_nativeActionTask);
+                if (result.Kind != NetherNativeActionResultKind.Started)
+                    _nativeActionTask = null;
+                return result;
+            }
         }
 
         return NetherNativeActionResult.Completed("no-pending-native-flow");
@@ -452,7 +461,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         {
             foreach (int index in indexes!)
                 select!.Invoke(scroll, new object[] { index });
-            confirm!.Invoke(registration.Value.Controller, new[] { registration.Value.Popup });
+            object? result = confirm!.Invoke(registration.Value.Controller, new[] { registration.Value.Popup });
+            RegisterNativeActionTask(result);
             return NetherNativeActionResult.Started("native-return-item-confirm");
         }
         catch (TargetInvocationException ex)
@@ -515,6 +525,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             _continuePopup = null;
             _boostPopup = null;
             _returnScrollController = null;
+            _nativeActionTask = null;
             _awaitingBoostConfirmation = false;
             _resultTask = null;
             _resultObserved = false;
@@ -892,7 +903,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         return NetherNativeActionResult.UnknownOutcome("unknown-native-result-status:" + status);
     }
 
-    private static NetherNativeActionResult TryInvokeExact(
+    private NetherNativeActionResult TryInvokeExact(
         object target,
         NetherNativeMethodDescriptor descriptor,
         object[] arguments,
@@ -903,7 +914,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             return NetherNativeActionResult.BindingUnavailable(error);
         try
         {
-            method!.Invoke(target, arguments);
+            object? result = method!.Invoke(target, arguments);
+            RegisterNativeActionTask(result);
             return NetherNativeActionResult.Started("native-" + action);
         }
         catch (TargetInvocationException ex)
@@ -916,6 +928,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 "native-" + action + "-exception:" + ex.GetType().Name + ":" + ex.Message
             );
         }
+    }
+
+    private void RegisterNativeActionTask(object? task)
+    {
+        if (task == null)
+            return;
+        lock (_gate)
+            _nativeActionTask = task;
     }
 
     private static NetherNativeActionResult TryInvokeNoArgumentDelegate(object callback, string action)

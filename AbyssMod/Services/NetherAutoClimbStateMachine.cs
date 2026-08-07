@@ -2,6 +2,91 @@
 
 namespace AbyssMod.Services;
 
+/// <summary>
+/// Captures a validated immutable configuration only at a stable decision boundary.  A reload
+/// during a native action is deliberately invisible until reconciliation reaches Stable, so a
+/// request can never be started with one half of an old/new settings set.
+/// </summary>
+internal sealed class NetherAutoClimbSettingsSnapshotGate
+{
+    private NetherAutoClimbSettings? _lastStableSettings;
+
+    public bool TryCapture(
+        NetherAutoClimbSettings candidate,
+        NetherAutoClimbPhase phase,
+        out NetherAutoClimbSettings settings,
+        out NetherPauseReason pauseReason,
+        out string detail
+    )
+    {
+        settings = _lastStableSettings ?? candidate;
+        pauseReason = NetherPauseReason.None;
+        detail = string.Empty;
+
+        if (phase != NetherAutoClimbPhase.Stable)
+        {
+            if (_lastStableSettings != null)
+            {
+                settings = _lastStableSettings;
+                return true;
+            }
+
+            pauseReason = NetherPauseReason.InvalidConfiguration;
+            detail = "settings-capture-before-stable";
+            return false;
+        }
+
+        if (!TryValidate(candidate, out detail))
+        {
+            pauseReason = NetherPauseReason.InvalidConfiguration;
+            return false;
+        }
+
+        _lastStableSettings = candidate;
+        settings = candidate;
+        return true;
+    }
+
+    private static bool TryValidate(NetherAutoClimbSettings? candidate, out string detail)
+    {
+        if (candidate == null)
+        {
+            detail = "missing-settings";
+            return false;
+        }
+        if (candidate.MaxDepth < 1)
+        {
+            detail = "invalid-max-depth";
+            return false;
+        }
+        if (candidate.SoftErosionLimit is < 1 or >= 100)
+        {
+            detail = "invalid-soft-erosion-limit";
+            return false;
+        }
+        if (candidate.MinimumCharacterHpPermille is < 1 or > 1000)
+        {
+            detail = "invalid-minimum-character-hp-permille";
+            return false;
+        }
+        if (candidate.CodeReloadReserve < 0)
+        {
+            detail = "invalid-code-reload-reserve";
+            return false;
+        }
+        if (!System.Enum.IsDefined(typeof(NetherCombatLane), candidate.CombatLane)
+            || !System.Enum.IsDefined(typeof(NetherTreasureMode), candidate.TreasureMode)
+            || !System.Enum.IsDefined(typeof(NetherShopMode), candidate.ShopMode))
+        {
+            detail = "invalid-nether-policy-enum";
+            return false;
+        }
+
+        detail = string.Empty;
+        return true;
+    }
+}
+
 internal sealed class NetherAutoClimbStateMachine
 {
     private NetherPlannedAction? _pendingAction;

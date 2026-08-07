@@ -71,6 +71,14 @@ internal static class NetherAutoClimbResultPatch
     [HarmonyPostfix]
     private static void Postfix(ref UniTask __result)
     {
-        NetherRuntimeBridge.ObserveResult(__result);
+        try
+        {
+            // Observation only: the coordinator polls this task later from Hotkey.Update.
+            NetherRuntimeBridge.ObserveResult(__result);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[F12][NetherClimb] native result observation failed: " + ex);
+        }
     }
 }

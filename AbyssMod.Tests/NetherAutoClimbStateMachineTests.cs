@@ -165,6 +165,88 @@ public class NetherAutoClimbStateMachineTests
         Assert.Null(many.Method);
     }
 
+    [Fact]
+    public void Invalid_live_config_pauses_instead_of_clamping_to_a_dangerous_default()
+    {
+        var gate = new NetherAutoClimbSettingsSnapshotGate();
+
+        bool accepted = gate.TryCapture(
+            new NetherAutoClimbSettings { MaxDepth = 0, SoftErosionLimit = 90 },
+            NetherAutoClimbPhase.Stable,
+            out _,
+            out NetherPauseReason reason,
+            out string detail);
+
+        Assert.False(accepted);
+        Assert.Equal(NetherPauseReason.InvalidConfiguration, reason);
+        Assert.Equal("invalid-max-depth", detail);
+    }
+
+    [Fact]
+    public void Zero_soft_erosion_limit_is_invalid_instead_of_disabling_the_safety_boundary()
+    {
+        var gate = new NetherAutoClimbSettingsSnapshotGate();
+
+        bool accepted = gate.TryCapture(
+            new NetherAutoClimbSettings { SoftErosionLimit = 0 },
+            NetherAutoClimbPhase.Stable,
+            out _,
+            out NetherPauseReason reason,
+            out string detail);
+
+        Assert.False(accepted);
+        Assert.Equal(NetherPauseReason.InvalidConfiguration, reason);
+        Assert.Equal("invalid-soft-erosion-limit", detail);
+    }
+
+    [Fact]
+    public void Positive_max_depth_above_the_default_is_valid_and_later_clamped_by_server_limits()
+    {
+        var gate = new NetherAutoClimbSettingsSnapshotGate();
+
+        bool accepted = gate.TryCapture(
+            new NetherAutoClimbSettings { MaxDepth = 500 },
+            NetherAutoClimbPhase.Stable,
+            out NetherAutoClimbSettings settings,
+            out _,
+            out _);
+
+        Assert.True(accepted);
+        Assert.Equal(500, settings.MaxDepth);
+    }
+
+    [Fact]
+    public void Reloaded_settings_apply_only_after_the_current_action_reconciles()
+    {
+        var gate = new NetherAutoClimbSettingsSnapshotGate();
+        var original = new NetherAutoClimbSettings { MaxDepth = 130, SoftErosionLimit = 90 };
+        var reloaded = new NetherAutoClimbSettings { MaxDepth = 70, SoftErosionLimit = 80 };
+
+        Assert.True(gate.TryCapture(original, NetherAutoClimbPhase.Stable, out NetherAutoClimbSettings active, out _, out _));
+        Assert.True(gate.TryCapture(reloaded, NetherAutoClimbPhase.ExecutingNativeAction, out NetherAutoClimbSettings duringAction, out _, out _));
+        Assert.True(gate.TryCapture(reloaded, NetherAutoClimbPhase.Stable, out NetherAutoClimbSettings afterReconcile, out _, out _));
+
+        Assert.Same(original, active);
+        Assert.Same(original, duringAction);
+        Assert.Same(reloaded, afterReconcile);
+    }
+
+    [Fact]
+    public void F12_disable_stops_new_actions_but_preserves_unknown_outcome_reconciliation()
+    {
+        var machine = StableMachine();
+        NetherSnapshotFingerprint fingerprint = Fingerprint(NetherSessionStatus.Play, 10);
+
+        Assert.True(machine.TryBegin(new NetherPlannedAction(NetherActionKind.SelectFloor), fingerprint));
+        machine.ObserveUnknownOutcome();
+        machine.Toggle(isInNether: true);
+
+        Assert.False(machine.IsEnabled);
+        Assert.Equal(NetherAutoClimbPhase.Reconciling, machine.Phase);
+        Assert.Equal(NetherActionKind.SelectFloor, machine.PendingAction!.Value.Kind);
+        Assert.False(machine.TryBegin(new NetherPlannedAction(NetherActionKind.SelectFloor), fingerprint));
+    }
+
     private static NetherAutoClimbStateMachine StableMachine()
     {
         var machine = new NetherAutoClimbStateMachine();

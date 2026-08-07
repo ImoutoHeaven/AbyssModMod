@@ -47,6 +47,7 @@ public class Plugin : BasePlugin
 
         AddComponent<ToastUI>();
         AbyssMod.Config.Initialize();
+        NetherAutoClimbController.Initialize();
             Logger.Info(
                 $"[F11] Battle session auto-SL initial state: "
                 + $"{(AbyssMod.Config.BattleSessionAutoSL.Value ? "ON" : "OFF")}"
@@ -107,6 +108,7 @@ public class Plugin : BasePlugin
 
     public override bool Unload()
     {
+        NetherAutoClimbController.OnPluginUnload();
         Toast.Clear();
         MachineTranslator.Save();
         return base.Unload();
