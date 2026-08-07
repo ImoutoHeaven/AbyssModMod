@@ -53,7 +53,7 @@ internal readonly record struct NetherRuntimeCodeCandidatesResult(
 /// directly.  Mutating operations invoke an already registered game controller callback,
 /// and report an exact binding failure when that callback is not available.
 /// </summary>
-internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherReadOnlyReconcileDriver, INetherBattleSettlementDriver, INetherContinueSceneDriver
+internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherReadOnlyReconcileDriver, INetherBattleSettlementDriver, INetherBattleProjectionSnapshotDriver, INetherContinueSceneDriver
 {
     bool HasRegisteredFloorSelection { get; }
 
@@ -62,6 +62,18 @@ internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherRea
     bool IsResultObserved { get; }
 
     NetherRuntimeSnapshotResult TryCaptureSnapshot();
+
+    /// <summary>Read-only master/HP/code inputs for the production combat route gate.</summary>
+    NetherRuntimeRouteSafetyData TryCaptureRouteSafety(IReadOnlyList<NetherFloorNode> floors);
+
+    /// <summary>
+    /// Copies every current interactive FloorSelection model into a complete fail-closed
+    /// pre-entry proof.  This is read-only and must never cause a controller callback/API call.
+    /// </summary>
+    NetherRuntimeInteractivePreEntryInputsResult TryCaptureInteractivePreEntryInputs(
+        NetherSnapshot snapshot,
+        NetherAutoClimbSettings settings
+    );
 
     NetherRuntimeCodeCandidatesResult TryGetCodeCandidates();
 
@@ -133,6 +145,10 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
     private const string BoostPopupControllerTypeName = "Project.Nether.NetherBoostConfirmPopup.NetherBoostConfirmPopupController";
     private static readonly NetherReturnItemPolicy ReturnItemPolicy = new();
     private static readonly NetherCheckpointReturnPreflight CheckpointReturnPreflight = new();
+    private static readonly NetherFloorMasterBoundsMapper FloorMasterBoundsMapper = new();
+    private static readonly NetherRuntimeActivePartyHpExtractor ActivePartyHpExtractor = new();
+    private static readonly NetherRuntimeActiveCodeErosionExtractor ActiveCodeErosionExtractor = new();
+    private static readonly NetherRuntimeInteractivePreEntryInputCapture InteractivePreEntryInputCapture = new();
     private readonly NetherResultSceneCoordinator _resultScene = new();
     private readonly NetherNativeWaitGate _codeSelectionTaskWait = new(maximumMissingPolls: 600);
     private readonly NetherNativeWaitGate _codeReplacementPopupWait = new(maximumMissingPolls: 600);
@@ -477,6 +493,280 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
             );
         }
     }
+
+    /// <summary>
+    /// Exposes only the exact raw fields needed by route safety: the server map node's
+    /// MNetherMapFloorId is matched against MNetherMapFloors.id, then its min/max erosion rows
+    /// are passed to the fail-closed mapper.  No floor order or neighboring-master inference is
+    /// permitted here.
+    /// </summary>
+    internal static NetherFloorMasterBounds TryMapRuntimeFloorMasterBounds(
+        long runtimeFloorMasterId,
+        MNetherMapFloors[]? masterRows
+    )
+    {
+        if (masterRows == null)
+            return FloorMasterBoundsMapper.Map(runtimeFloorMasterId, null);
+
+        var rawRows = new List<NetherFloorMasterBoundsRow>(masterRows.Length);
+        foreach (MNetherMapFloors row in masterRows)
+        {
+            if (row == null)
+            {
+                rawRows.Add(new NetherFloorMasterBoundsRow(0, 0, 0) { HasRequiredFields = false });
+                continue;
+            }
+            rawRows.Add(new NetherFloorMasterBoundsRow(
+                row.id,
+                row.min_erosion_point,
+                row.max_erosion_point
+            ));
+        }
+        return FloorMasterBoundsMapper.Map(runtimeFloorMasterId, rawRows);
+    }
+
+    /// <summary>
+    /// Reads the current live FloorSelection NetherModel's PartyModel/CharacterModels health
+    /// surface.  RO evidence establishes that each <c>HpRatio</c> is supplied from the
+    /// authoritative <c>NetherCharacterEntity.current_hp_ratio</c> (default 1000), and that
+    /// <c>IsAlive</c> is available on the same native model.  No guessed current/max field is
+    /// used; missing, invalid, duplicate, or non-finite runtime values remain fail-closed.
+    /// </summary>
+    internal static NetherActivePartyHpSafety TryMapRuntimeActivePartyHpSafety(object? netherModel)
+    {
+        return ActivePartyHpExtractor.Extract(netherModel);
+    }
+
+    /// <summary>
+    /// Captures exactly the runtime values consumed by the production combat route coordinator:
+    /// every server-rendered floor ID is joined to MNetherMapFloors, party HP is read from the
+    /// live FloorSelection NetherModel, and possession code effects are read from live store
+    /// plus MNetherCodes.  No endpoint or floor action is issued here.
+    /// </summary>
+    public NetherRuntimeRouteSafetyData TryCaptureRouteSafety(IReadOnlyList<NetherFloorNode> floors)
+    {
+        if (floors == null)
+            return UnknownRouteSafety("missing-server-floor-graph");
+
+        object? floorSelection;
+        lock (_gate)
+            floorSelection = _floorSelectionController;
+        if (floorSelection == null
+            || !TryReadMember(floorSelection, "_netherModel", out object? netherModel)
+            || netherModel == null)
+        {
+            return UnknownRouteSafety("missing-floor-selection-nether-model");
+        }
+
+        try
+        {
+            MasterDataStore? masterDataStore = Engine.Get<MasterDataStore>();
+            MNetherMapFloors[]? floorMasters = masterDataStore?.GetCache<MNetherMapFloors>();
+            var bounds = new Dictionary<long, NetherFloorMasterBounds>();
+            foreach (NetherFloorNode floor in floors)
+            {
+                if (floor == null || floor.FloorId <= 0 || !bounds.TryAdd(
+                        floor.FloorId,
+                        TryMapRuntimeFloorMasterBounds(floor.FloorId, floorMasters)
+                    ))
+                {
+                    return UnknownRouteSafety("invalid-or-duplicate-runtime-floor-id");
+                }
+            }
+
+            return new NetherRuntimeRouteSafetyData
+            {
+                FloorBoundsByFloorId = bounds,
+                ActivePartyHp = TryMapRuntimeActivePartyHpSafety(netherModel),
+                ActiveCodeErosion = TryCaptureActiveCodeErosionProjection(),
+                Detail = string.Empty,
+            };
+        }
+        catch (Exception ex)
+        {
+            return UnknownRouteSafety("route-safety-runtime-exception:" + ex.GetType().Name);
+        }
+    }
+
+    /// <summary>
+    /// Copies every live interactive FloorSelection model and its exact master rows into the
+    /// fail-closed pre-entry evaluator.  Route selection consumes only an all-or-nothing
+    /// result; partial or stale capture therefore remains unavailable rather than changing F12
+    /// behaviour permissively.
+    /// </summary>
+    public NetherRuntimeInteractivePreEntryInputsResult TryCaptureInteractivePreEntryInputs(
+        NetherSnapshot snapshot,
+        NetherAutoClimbSettings settings
+    )
+    {
+        if (snapshot == null || settings == null)
+            return NetherRuntimeInteractivePreEntryInputsResult.Failure("missing-interactive-preentry-snapshot-or-settings");
+
+        object? floorSelection;
+        lock (_gate)
+            floorSelection = _floorSelectionController;
+        if (floorSelection == null
+            || !TryReadMember(floorSelection, "_netherModel", out object? netherModel)
+            || netherModel == null
+            || !TryReadMember(netherModel, "MapModel", out object? mapModel)
+            || mapModel == null
+            || !TryReadMember(mapModel, "FloorModelListPerFloorLevel", out object? perLevel)
+            || perLevel == null)
+        {
+            return NetherRuntimeInteractivePreEntryInputsResult.Failure("missing-runtime-interactive-floor-model-list");
+        }
+
+        var expected = new Dictionary<long, NetherFloorNode>();
+        foreach (NetherFloorNode node in snapshot.Floors ?? Array.Empty<NetherFloorNode>())
+        {
+            if (node == null || !IsInteractiveFloorKind(node.NodeType))
+                continue;
+            if (node.FloorId <= 0 || !expected.TryAdd(node.FloorId, node))
+                return NetherRuntimeInteractivePreEntryInputsResult.Failure("invalid-or-duplicate-snapshot-interactive-floor");
+        }
+        if (expected.Count == 0)
+            return NetherRuntimeInteractivePreEntryInputsResult.Success(new Dictionary<long, NetherRuntimeInteractivePreEntryCaptureResult>());
+
+        MasterDataStore? masterDataStore = Engine.Get<MasterDataStore>();
+        MNetherMapFloors[]? mapRows = masterDataStore?.GetCache<MNetherMapFloors>();
+        MNetherFloorEvents[]? eventRows = masterDataStore?.GetCache<MNetherFloorEvents>();
+        MNetherFloorEventParts[]? eventPartRows = masterDataStore?.GetCache<MNetherFloorEventParts>();
+        IReadOnlyList<int>? activeHp = snapshot.Characters == null
+            ? null
+            : snapshot.Characters.Where(character => character.IsActive).Select(character => character.HpPermille).ToArray();
+        bool canCloseShop = HasExactShopCloseBinding();
+        var captured = new Dictionary<long, NetherRuntimeInteractivePreEntryCaptureResult>();
+
+        foreach (object floor in EnumerateDictionaryValues(perLevel))
+        {
+            if (!TryReadInt32(floor, "FloorType", out int rawFloorType))
+                return NetherRuntimeInteractivePreEntryInputsResult.Failure("missing-runtime-interactive-floor-type");
+            if (!IsInteractiveFloorKind(ToFloorNodeType(rawFloorType)))
+                continue;
+
+            NetherRuntimeInteractivePreEntryCaptureResult result = InteractivePreEntryInputCapture.Capture(
+                new NetherRuntimeInteractivePreEntryCaptureRequest(
+                    FloorModel: floor,
+                    MapFloorRows: mapRows,
+                    EventRows: eventRows,
+                    EventPartRows: eventPartRows,
+                    CurrentErosion: snapshot.ErosionPoint,
+                    ActiveHpPermille: activeHp,
+                    CurrentNetherGold: snapshot.NetherGold,
+                    CurrentTreasureKeys: snapshot.TreasureKeyCount,
+                    Settings: settings,
+                    CanCloseShop: canCloseShop
+                )
+            );
+            if (!result.IsCaptured || result.Input == null)
+            {
+                return NetherRuntimeInteractivePreEntryInputsResult.Failure(
+                    "interactive-preentry-capture:" + result.Detail
+                );
+            }
+            long floorMasterId = result.Input.FloorMasterId;
+            if (!expected.TryGetValue(floorMasterId, out NetherFloorNode? snapshotNode)
+                || snapshotNode.NodeType != result.Input.FloorKind)
+            {
+                return NetherRuntimeInteractivePreEntryInputsResult.Failure(
+                    "runtime-snapshot-interactive-floor-mismatch:" + floorMasterId
+                );
+            }
+            if (!captured.TryAdd(floorMasterId, result))
+            {
+                return NetherRuntimeInteractivePreEntryInputsResult.Failure(
+                    "duplicate-runtime-interactive-floor:" + floorMasterId
+                );
+            }
+        }
+
+        if (captured.Count != expected.Count)
+            return NetherRuntimeInteractivePreEntryInputsResult.Failure("missing-runtime-interactive-floor-capture");
+        return NetherRuntimeInteractivePreEntryInputsResult.Success(captured);
+    }
+
+    /// <summary>
+    /// Reads the live possession store and complete MNetherCodes cache for battle erosion only.
+    /// This path never uses the Safe/Risk code-ID policy mapping: IDs 30024/40024 are projected
+    /// solely from their exact master effect type and parameters.  It is read-only and not yet
+    /// a Controller action; a failed extraction deliberately leaves the future route gate
+    /// unknown rather than producing a zero modifier.
+    /// </summary>
+    public NetherActiveCodeErosionProjection TryCaptureActiveCodeErosionProjection()
+    {
+        try
+        {
+            UserData? userData = Engine.Get<UserData>();
+            MasterDataStore? masterDataStore = Engine.Get<MasterDataStore>();
+            NetherDataStore? dataStore = userData?.NetherDataStore;
+            MNetherCodes[]? masterRows = masterDataStore?.GetCache<MNetherCodes>();
+            if (dataStore == null)
+                return NetherActiveCodeErosionProjectionMapper.Unknown("missing-nether-code-data-store");
+
+            return ActiveCodeErosionExtractor.Extract(
+                dataStore.GetPossessionNetherCodeDataEnumerable(),
+                masterRows
+            );
+        }
+        catch (Exception ex)
+        {
+            return NetherActiveCodeErosionProjectionMapper.Unknown(
+                "active-code-erosion-extraction-exception:" + ex.GetType().Name
+            );
+        }
+    }
+
+    private static NetherRuntimeRouteSafetyData UnknownRouteSafety(string detail) => new()
+    {
+        FloorBoundsByFloorId = new Dictionary<long, NetherFloorMasterBounds>(),
+        ActivePartyHp = NetherActivePartyHpSafetyMapper.Unknown(detail),
+        ActiveCodeErosion = NetherActiveCodeErosionProjectionMapper.Unknown(detail),
+        Detail = detail,
+    };
+
+    /// <summary>
+    /// The packaged Shop controller exposes <c>SetupPopupEvent(NetherShopPopup, Action)</c>
+    /// and its generated <c>b__16_0(Unit, Action)</c> invokes that Action.  We require both
+    /// exact signatures before a future pre-entry ShopOff proof can claim a close capability;
+    /// the later popup action still requires the actual registered Action instance.
+    /// </summary>
+    private static bool HasExactShopCloseBinding()
+    {
+        Type? controllerType = AccessTools.TypeByName(ShopPopupControllerTypeName);
+        Type? popupType = AccessTools.TypeByName("Project.Nether.NetherShopPopup.NetherShopPopup");
+        if (controllerType == null || popupType == null)
+            return false;
+        if (!TryResolveExactMethod(
+                controllerType,
+                new NetherNativeMethodDescriptor(
+                    "SetupPopupEvent",
+                    new[] { TypeName(popupType), "System.Action" },
+                    "System.Void"
+                ),
+                InstanceFlags,
+                out _,
+                out _
+            ))
+        {
+            return false;
+        }
+
+        Type? closureType = controllerType.GetNestedType("<>c", BindingFlags.NonPublic);
+        return closureType != null && TryResolveExactMethod(
+            closureType,
+            new NetherNativeMethodDescriptor(
+                "<SetupPopupEvent>b__16_0",
+                new[] { UnitTypeName, "System.Action" },
+                "System.Void"
+            ),
+            InstanceFlags,
+            out _,
+            out _
+        );
+    }
+
+    private static bool IsInteractiveFloorKind(NetherFloorNodeType type) => type is
+        NetherFloorNodeType.Event or NetherFloorNodeType.Recovery or NetherFloorNodeType.Shop or NetherFloorNodeType.Treasure;
 
     /// <summary>
     /// Captures the carry-out contract from the same live store that native

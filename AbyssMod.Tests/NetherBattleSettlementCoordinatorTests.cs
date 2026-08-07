@@ -16,7 +16,7 @@ public class NetherBattleSettlementCoordinatorTests
             closeObserved: false,
             appliedSnapshot: after
         );
-        var coordinator = new NetherBattleSettlementCoordinator(driver, driver);
+        var coordinator = new NetherBattleSettlementCoordinator(driver, driver, driver);
 
         Assert.True(coordinator.Begin(Action(), before));
         Assert.Equal(NetherBattleSettlementStepKind.AwaitingSettlement, coordinator.Pump().Kind);
@@ -41,7 +41,7 @@ public class NetherBattleSettlementCoordinatorTests
             closeObserved: true,
             appliedSnapshot: before
         );
-        var coordinator = new NetherBattleSettlementCoordinator(driver, driver);
+        var coordinator = new NetherBattleSettlementCoordinator(driver, driver, driver);
 
         Assert.True(coordinator.Begin(Action(), before));
         coordinator.Pump();
@@ -64,7 +64,7 @@ public class NetherBattleSettlementCoordinatorTests
             closeObserved: false,
             appliedSnapshot: wrong
         );
-        var coordinator = new NetherBattleSettlementCoordinator(driver, driver);
+        var coordinator = new NetherBattleSettlementCoordinator(driver, driver, driver);
 
         Assert.True(coordinator.Begin(Action(), before));
         coordinator.Pump();
@@ -91,8 +91,8 @@ public class NetherBattleSettlementCoordinatorTests
             closeObserved: false,
             appliedSnapshot: BattleSnapshot()
         );
-        var fault = new NetherBattleSettlementCoordinator(faultDriver, faultDriver);
-        var cancel = new NetherBattleSettlementCoordinator(cancelDriver, cancelDriver);
+        var fault = new NetherBattleSettlementCoordinator(faultDriver, faultDriver, faultDriver);
+        var cancel = new NetherBattleSettlementCoordinator(cancelDriver, cancelDriver, cancelDriver);
 
         Assert.True(fault.Begin(Action(), BattleSnapshot()));
         Assert.True(cancel.Begin(Action(), BattleSnapshot()));
@@ -110,7 +110,7 @@ public class NetherBattleSettlementCoordinatorTests
             closeObserved: false,
             appliedSnapshot: BattleSnapshot()
         ) { IsF11Busy = true };
-        var coordinator = new NetherBattleSettlementCoordinator(driver, driver);
+        var coordinator = new NetherBattleSettlementCoordinator(driver, driver, driver);
 
         Assert.True(coordinator.Begin(Action(), BattleSnapshot()));
         Assert.Equal(NetherBattleSettlementStepKind.AwaitingF11, coordinator.Pump().Kind);
@@ -130,13 +130,65 @@ public class NetherBattleSettlementCoordinatorTests
             closeObserved: false,
             appliedSnapshot: BattleSnapshot()
         );
-        var coordinator = new NetherBattleSettlementCoordinator(driver, driver);
+        var coordinator = new NetherBattleSettlementCoordinator(driver, driver, driver);
 
         Assert.True(coordinator.Begin(Action(), BattleSnapshot()));
         NetherBattleSettlementStep result = coordinator.TerminateForSceneLoss();
 
         Assert.Equal(NetherBattleSettlementStepKind.SceneLost, result.Kind);
         Assert.False(coordinator.IsActive);
+    }
+
+    [Fact]
+    public void Authoritative_settlement_outside_pending_projection_is_named_drift_not_settled()
+    {
+        NetherSnapshot before = BattleSnapshot();
+        NetherSnapshot outside = Snapshot(NetherSessionStatus.Play, mapId: 2, floorId: 10) with { ErosionPoint = 31 };
+        var driver = new FakeDriver(
+            lifecycle: new[] { NetherNativeActionResult.Completed("battle-clear-parent-terminal") },
+            clearObserved: true,
+            closeObserved: false,
+            appliedSnapshot: outside
+        );
+        var coordinator = new NetherBattleSettlementCoordinator(driver, driver, driver);
+
+        Assert.True(coordinator.Begin(Action(), before));
+        coordinator.Pump();
+        coordinator.Pump();
+
+        NetherBattleSettlementStep result = coordinator.Pump();
+
+        Assert.Equal(NetherBattleSettlementStepKind.ProjectionDrift, result.Kind);
+        Assert.Equal(NetherPauseReason.BattleProjectionDrift, result.PauseReason);
+        Assert.Equal(1, driver.GetOnlyBeginCalls);
+        Assert.Equal(0, driver.StartOrMutationCalls);
+    }
+
+    [Fact]
+    public void Changed_authoritative_code_hash_is_named_drift_after_get_only_settlement()
+    {
+        NetherSnapshot before = BattleSnapshot();
+        NetherSnapshot after = Snapshot(NetherSessionStatus.Play, mapId: 2, floorId: 10);
+        var driver = new FakeDriver(
+            lifecycle: new[] { NetherNativeActionResult.Completed("battle-clear-parent-terminal") },
+            clearObserved: true,
+            closeObserved: false,
+            appliedSnapshot: after
+        )
+        {
+            ActiveCodes = new NetherActiveCodeErosionProjection { ErosionProjectionKnown = true, CodeHash = "changed-code-hash" },
+        };
+        var coordinator = new NetherBattleSettlementCoordinator(driver, driver, driver);
+
+        Assert.True(coordinator.Begin(Action(), before));
+        coordinator.Pump();
+        coordinator.Pump();
+
+        NetherBattleSettlementStep result = coordinator.Pump();
+
+        Assert.Equal(NetherBattleSettlementStepKind.ProjectionDrift, result.Kind);
+        Assert.Equal(NetherPauseReason.BattleProjectionDrift, result.PauseReason);
+        Assert.Contains("code-hash", result.Detail);
     }
 
     private static NetherPlannedAction Action() => new(NetherActionKind.BattleSettlement)
@@ -149,7 +201,20 @@ public class NetherBattleSettlementCoordinatorTests
             ExpectedFloorId: 10,
             ExpectedStatus: NetherSessionStatus.Play,
             ProjectionIdentity: "battle-2-10"
-        ),
+        )
+        {
+            EntryProjection = new NetherBattleProjectionPayload(
+                MapId: 2,
+                FloorId: 10,
+                PreBattleErosion: 20,
+                FloorMinimumErosion: 0,
+                FloorMaximumErosion: 10,
+                ProjectedMinimumErosion: 20,
+                ProjectedMaximumErosion: 30,
+                CodeHash: "active-code-hash",
+                ProjectionIdentity: "battle-2-10"
+            ),
+        },
     };
 
     private static NetherSnapshot BattleSnapshot() => Snapshot(NetherSessionStatus.Battle, mapId: 2, floorId: 10);
@@ -173,7 +238,7 @@ public class NetherBattleSettlementCoordinatorTests
         MapHash = "map-a",
     };
 
-    private sealed class FakeDriver : INetherBattleSettlementDriver, INetherReadOnlyReconcileDriver
+    private sealed class FakeDriver : INetherBattleSettlementDriver, INetherReadOnlyReconcileDriver, INetherBattleProjectionSnapshotDriver
     {
         private readonly Queue<NetherNativeActionResult> _lifecycle;
         private readonly NetherSnapshot _appliedSnapshot;
@@ -197,6 +262,11 @@ public class NetherBattleSettlementCoordinatorTests
         public int GetOnlyBeginCalls { get; private set; }
         public int GetOnlyPollCalls { get; private set; }
         public int StartOrMutationCalls { get; private set; }
+        public NetherActiveCodeErosionProjection ActiveCodes { get; set; } = new()
+        {
+            ErosionProjectionKnown = true,
+            CodeHash = "active-code-hash",
+        };
 
         public NetherNativeActionResult PollBattleLifecycle() => _lifecycle.Dequeue();
 
@@ -227,5 +297,7 @@ public class NetherBattleSettlementCoordinatorTests
         }
 
         public NetherReadOnlySnapshotResult TryCaptureAppliedSnapshot() => NetherReadOnlySnapshotResult.Success(_appliedSnapshot);
+
+        public NetherActiveCodeErosionProjection TryCaptureActiveCodeErosionProjection() => ActiveCodes;
     }
 }

@@ -37,7 +37,20 @@
     <Compile Include="..\AbyssMod\Services\NetherAutoClimbStateMachine.cs" Link="NetherAutoClimbStateMachine.cs" Condition="Exists('..\AbyssMod\Services\NetherAutoClimbStateMachine.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherRoutePlanner.cs" Link="NetherRoutePlanner.cs" Condition="Exists('..\AbyssMod\Services\NetherRoutePlanner.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherErosionPolicy.cs" Link="NetherErosionPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherErosionPolicy.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherFloorSafetyEvaluator.cs" Link="NetherFloorSafetyEvaluator.cs" Condition="Exists('..\AbyssMod\Services\NetherFloorSafetyEvaluator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherRouteSafetyContextBuilder.cs" Link="NetherRouteSafetyContextBuilder.cs" Condition="Exists('..\AbyssMod\Services\NetherRouteSafetyContextBuilder.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleRouteProjectionBuilder.cs" Link="NetherBattleRouteProjectionBuilder.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleRouteProjectionBuilder.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherFloorMasterBoundsMapper.cs" Link="NetherFloorMasterBoundsMapper.cs" Condition="Exists('..\AbyssMod\Services\NetherFloorMasterBoundsMapper.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherActivePartyHpSafetyMapper.cs" Link="NetherActivePartyHpSafetyMapper.cs" Condition="Exists('..\AbyssMod\Services\NetherActivePartyHpSafetyMapper.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherRuntimeActivePartyHpExtractor.cs" Link="NetherRuntimeActivePartyHpExtractor.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeActivePartyHpExtractor.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherActiveCodeErosionProjectionMapper.cs" Link="NetherActiveCodeErosionProjectionMapper.cs" Condition="Exists('..\AbyssMod\Services\NetherActiveCodeErosionProjectionMapper.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherRuntimeActiveCodeErosionExtractor.cs" Link="NetherRuntimeActiveCodeErosionExtractor.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeActiveCodeErosionExtractor.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherRouteSafetyProductionCoordinator.cs" Link="NetherRouteSafetyProductionCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherRouteSafetyProductionCoordinator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherAutoClimbRouteSafetyWiring.cs" Link="NetherAutoClimbRouteSafetyWiring.cs" Condition="Exists('..\AbyssMod\Services\NetherAutoClimbRouteSafetyWiring.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherActionProjectionCalibration.cs" Link="NetherActionProjectionCalibration.cs" Condition="Exists('..\AbyssMod\Services\NetherActionProjectionCalibration.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleProjectionCalibration.cs" Link="NetherBattleProjectionCalibration.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleProjectionCalibration.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherInteractiveFloorPreEntrySafety.cs" Link="NetherInteractiveFloorPreEntrySafety.cs" Condition="Exists('..\AbyssMod\Services\NetherInteractiveFloorPreEntrySafety.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherRuntimeInteractivePreEntryInputCapture.cs" Link="NetherRuntimeInteractivePreEntryInputCapture.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeInteractivePreEntryInputCapture.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherNativeWaitGate.cs" Link="NetherNativeWaitGate.cs" Condition="Exists('..\AbyssMod\Services\NetherNativeWaitGate.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCheckpointNativeFlow.cs" Link="NetherCheckpointNativeFlow.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointNativeFlow.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCheckpointReturnPreflight.cs" Link="NetherCheckpointReturnPreflight.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointReturnPreflight.cs')" />

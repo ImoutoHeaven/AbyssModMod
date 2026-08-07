@@ -86,6 +86,10 @@ internal enum NetherPauseReason
     BattleLifecycleCanceled,
     BattleSettlementUnchanged,
     BattleSettlementWrongTarget,
+    /// <summary>The authoritative post-battle snapshot cannot prove the immutable safety projection.</summary>
+    BattleProjectionUnknown,
+    /// <summary>The authoritative post-battle state drifted outside the immutable battle projection.</summary>
+    BattleProjectionDrift,
     BattleSceneLost,
     ContinueLifecycleFault,
     ContinueLifecycleCanceled,
@@ -444,6 +448,26 @@ internal sealed record NetherBattleSettlementContract(
     long ExpectedFloorId,
     NetherSessionStatus ExpectedStatus,
     string ProjectionIdentity
+)
+{
+    public NetherBattleProjectionPayload? EntryProjection { get; init; }
+}
+
+/// <summary>
+/// Immutable combat safety evidence captured immediately before the native floor click.  The
+/// battle-settlement action keeps this payload rather than recomputing against a changed code
+/// portfolio or erosion value after the server has accepted the node.
+/// </summary>
+internal sealed record NetherBattleProjectionPayload(
+    long MapId,
+    long FloorId,
+    int PreBattleErosion,
+    int FloorMinimumErosion,
+    int FloorMaximumErosion,
+    int ProjectedMinimumErosion,
+    int ProjectedMaximumErosion,
+    string CodeHash,
+    string ProjectionIdentity
 );
 
 internal readonly record struct NetherPlannedAction(NetherActionKind Kind)
@@ -470,6 +494,8 @@ internal readonly record struct NetherPlannedAction(NetherActionKind Kind)
     public long ExpectedFloorId { get; init; }
     public int ExpectedSegmentFloorLevel { get; init; }
     public NetherBattleSettlementContract? BattleSettlement { get; init; }
+    /// <summary>Set only for a safety-approved combat floor before its native selection parent begins.</summary>
+    public NetherBattleProjectionPayload? BattleProjection { get; init; }
     /// <summary>
     /// A checkpoint continuation carries only its lock count and explicit user preserve IDs.
     /// The live datastore preflight is captured before starting the native Continue parent and

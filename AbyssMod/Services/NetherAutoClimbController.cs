@@ -18,7 +18,7 @@ internal static class NetherAutoClimbController
     private static readonly NetherAutoClimbSettingsSnapshotGate SettingsGate = new();
     private static readonly NetherCheckpointPolicy CheckpointPolicy = new();
     private static readonly NetherCodePolicy CodePolicy = new();
-    private static readonly NetherRoutePlanner RoutePlanner = new();
+    private static readonly NetherAutoClimbRouteSafetyWiring RouteSafetyWiring = new();
     private static readonly NetherReturnItemPolicy ReturnItemPolicy = new();
     private static readonly NetherCheckpointReturnPreflight CheckpointReturnPreflight = new();
     private static readonly NetherActionProjectionCalibration ProjectionCalibration = new();
@@ -28,12 +28,13 @@ internal static class NetherAutoClimbController
     // owner/generation/parent-terminal transitions used below.
     private static readonly NetherRuntimeFlowCoordinator RuntimeFlow = new(_bridge);
     private static readonly NetherReadOnlyReconcileCoordinator ReadOnlyReconcileFlow = new(_bridge);
-    private static readonly NetherBattleSettlementCoordinator BattleSettlementFlow = new(_bridge, _bridge);
+    private static readonly NetherBattleSettlementCoordinator BattleSettlementFlow = new(_bridge, _bridge, _bridge);
     private static readonly NetherContinueSceneRuntimeCoordinator ContinueSceneFlow = new(State, _bridge);
 
     private static bool _initialized;
     private static bool _leaseRestoreCompleted;
     private static NetherCombatLane? _lockedCombatLane;
+    private static NetherBattleProjectionPayload? _pendingBattleProjection;
     private static string _lastTransition = string.Empty;
 
     public static bool IsEnabled => State.IsEnabled;
@@ -100,6 +101,7 @@ internal static class NetherAutoClimbController
 
         _leaseRestoreCompleted = false;
         _lockedCombatLane = null;
+        _pendingBattleProjection = null;
         LogTransition("ON maxDepth=" + BuildSettings().MaxDepth + " softErosion=" + BuildSettings().SoftErosionLimit + " lease=deferred-until-battle");
     }
 
@@ -203,6 +205,7 @@ internal static class NetherAutoClimbController
         ContinueSceneFlow.Reset();
         _initialized = false;
         _lockedCombatLane = null;
+        _pendingBattleProjection = null;
         ProjectionCalibration.Clear();
         _lastTransition = string.Empty;
     }
@@ -442,6 +445,18 @@ internal static class NetherAutoClimbController
             case NetherBattleSettlementStepKind.WrongTarget:
                 FailClosedTerminal(NetherPauseReason.BattleSettlementWrongTarget, "battle-settlement-wrong-target:" + step.Detail);
                 return;
+            case NetherBattleSettlementStepKind.ProjectionUnknown:
+                FailClosedTerminal(
+                    step.PauseReason == NetherPauseReason.None ? NetherPauseReason.BattleProjectionUnknown : step.PauseReason,
+                    "battle-projection-unknown:" + step.Detail
+                );
+                return;
+            case NetherBattleSettlementStepKind.ProjectionDrift:
+                FailClosedTerminal(
+                    step.PauseReason == NetherPauseReason.None ? NetherPauseReason.BattleProjectionDrift : step.PauseReason,
+                    "battle-projection-drift:" + step.Detail
+                );
+                return;
             case NetherBattleSettlementStepKind.Canceled:
                 FailClosedTerminal(NetherPauseReason.BattleLifecycleCanceled, "battle-lifecycle-canceled:" + step.Detail);
                 return;
@@ -576,7 +591,7 @@ internal static class NetherAutoClimbController
 
         if (snapshot.Status == NetherSessionStatus.Play)
         {
-            PlanRoute(snapshot, checkpoint.EffectiveMaxDepth);
+            PlanRoute(snapshot, settings, checkpoint.EffectiveMaxDepth);
             return;
         }
 
@@ -719,35 +734,23 @@ internal static class NetherAutoClimbController
         ExecuteNativeAction(snapshot, action, "code");
     }
 
-    private static void PlanRoute(NetherSnapshot snapshot, int effectiveMaxDepth)
+    private static void PlanRoute(
+        NetherSnapshot snapshot,
+        NetherAutoClimbSettings settings,
+        int effectiveMaxDepth
+    )
     {
-        // The map model is an exact native rendering of the server segment: floor id, edge,
-        // type, hidden state and unlock state are all mapped by the bridge.  Dynamic popup
-        // effects are still gated later by their own policy; this graph gate must not erase
-        // that confirmed topology by treating every node as unknown.
-        var known = new Dictionary<long, bool>();
-        var hardSafe = new Dictionary<long, bool>();
-        var hpSafe = new Dictionary<long, bool>();
-        foreach (NetherFloorNode floor in snapshot.Floors)
-        {
-            bool mapped = floor.NodeType is not NetherFloorNodeType.Unknown and not NetherFloorNodeType.Default;
-            known[floor.FloorId] = mapped;
-            // Every dynamic effect is checked again after its native popup is generated.  At
-            // graph choice time only unmapped node kinds are unsafe; do not invent a numeric
-            // erosion/HP delta for a future server event.
-            hardSafe[floor.FloorId] = mapped && snapshot.ErosionPoint < 100;
-            hpSafe[floor.FloorId] = snapshot.Characters.All(character =>
-                !character.IsActive || character.HpPermille > 0
-            );
-        }
-
-        NetherRoutePlan route = RoutePlanner.Plan(snapshot, new NetherRouteSafetyContext
-        {
-            MaximumFloorLevel = effectiveMaxDepth,
-            KnownNodeByFloorId = known,
-            HardSafeByFloorId = hardSafe,
-            HpSafeByFloorId = hpSafe,
-        });
+        NetherRuntimeRouteSafetyData runtimeSafety = _bridge.TryCaptureRouteSafety(snapshot.Floors);
+        NetherRuntimeInteractivePreEntryInputsResult interactivePreEntry =
+            _bridge.TryCaptureInteractivePreEntryInputs(snapshot, settings);
+        NetherAutoClimbRouteSafetyDecision routeDecision = RouteSafetyWiring.Plan(
+            snapshot,
+            settings,
+            effectiveMaxDepth,
+            runtimeSafety,
+            interactivePreEntry
+        );
+        NetherRoutePlan route = routeDecision.Route;
         if (!route.HasSelection)
         {
             LogAction(
@@ -760,25 +763,40 @@ internal static class NetherAutoClimbController
         }
 
         NetherFloorNode node = route.SelectedNode!;
+        bool combatNode = node.NodeType is NetherFloorNodeType.Battle
+            or NetherFloorNodeType.MiniBoss or NetherFloorNodeType.Boss;
+        if (combatNode && routeDecision.IsCombatSelectionMissingProjection)
+        {
+            FailClosed(NetherPauseReason.UnknownMasterData, "route-selected-combat-without-projection-payload");
+            return;
+        }
+        if (routeDecision.SelectFloorAction is not NetherPlannedAction action)
+        {
+            FailClosed(NetherPauseReason.UnknownMasterData, "route-selected-without-production-floor-action");
+            return;
+        }
         LogAction(
             "route-selected",
             snapshot,
             string.Join(",", route.Audit.Take(16).Select(item => item.FloorId + ":" + item.Reason))
         );
-        ExecuteNativeAction(
-            snapshot,
-            new NetherPlannedAction(NetherActionKind.SelectFloor)
-            {
-                FloorId = node.FloorId,
-                FloorLevel = node.FloorLevel,
-                FloorIndex = node.FloorIndex,
-            },
-            "route"
-        );
+        ExecuteNativeAction(snapshot, action, "route");
     }
 
     private static void BeginBattleWait(NetherSnapshot snapshot)
     {
+        NetherBattleProjectionPayload? entryProjection = _pendingBattleProjection;
+        if (entryProjection == null
+            || entryProjection.MapId != snapshot.MapId
+            || entryProjection.FloorId != snapshot.CurrentFloorId
+            || entryProjection.PreBattleErosion is < 0 or >= 100
+            || string.IsNullOrEmpty(entryProjection.CodeHash)
+            || string.IsNullOrEmpty(entryProjection.ProjectionIdentity))
+        {
+            FailClosedTerminal(NetherPauseReason.UnknownMasterData, "battle-entry-projection-unavailable-or-wrong-target");
+            return;
+        }
+
         // The native battle tasks prove only that clear/close has ended.  The contract is
         // settled exclusively by the exact GET-only refresh in BattleSettlementFlow; do not
         // infer success from the task completing or issue a second battle request.
@@ -791,18 +809,18 @@ internal static class NetherAutoClimbController
                 ExpectedMapId: snapshot.MapId,
                 ExpectedFloorId: snapshot.CurrentFloorId,
                 ExpectedStatus: NetherSessionStatus.Play,
-                ProjectionIdentity: "battle:"
-                    + snapshot.MapId + ":"
-                    + snapshot.CurrentFloorId + ":"
-                    + snapshot.FloorLevel + ":"
-                    + snapshot.CodeHash
-            ),
+                ProjectionIdentity: entryProjection.ProjectionIdentity
+            )
+            {
+                EntryProjection = entryProjection,
+            },
         };
         if (!State.TryBegin(action, snapshot) || !BattleSettlementFlow.Begin(action, snapshot))
         {
             FailClosedTerminal(NetherPauseReason.BattleLifecycleFault, "could-not-begin-battle-settlement");
             return;
         }
+        _pendingBattleProjection = null;
         if (!_bridge.IsF11Busy && !EnsureBattleLease())
             return;
         LogAction("await-battle-settlement", snapshot, action.BattleSettlement.ProjectionIdentity);
@@ -863,10 +881,12 @@ internal static class NetherAutoClimbController
 
         if (action.Kind == NetherActionKind.SelectFloor)
         {
+            _pendingBattleProjection = action.BattleProjection;
             if (!RuntimeFlow.BeginFloorParent(action)
                 || !_bridge.BeginFloorParent(action, RuntimeFlow.Generation))
             {
                 RuntimeFlow.TerminateParent();
+                _pendingBattleProjection = null;
                 State.ObserveActionResult(snapshot.Fingerprint, NetherActionOutcome.NotApplied);
                 FailClosed(NetherPauseReason.BindingUnavailable, "floor-parent-owner-registration-unavailable");
                 return;
@@ -878,6 +898,7 @@ internal static class NetherAutoClimbController
         {
             _bridge.TerminateFloorParent();
             RuntimeFlow.TerminateParent();
+            _pendingBattleProjection = null;
         }
         afterInvoke?.Invoke(native);
         HandleInvocationResult(snapshot, action, native, boundary);

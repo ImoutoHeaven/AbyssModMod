@@ -20,6 +20,16 @@ internal interface INetherBattleSettlementDriver
     bool TryConsumeBattleClose();
 }
 
+/// <summary>
+/// Reads the exact live possession/master projection after the GET-only settlement refresh.
+/// It has no mutation capability; unknown code semantics are therefore evidence to pause, not
+/// a reason to reuse the pre-battle fingerprint.
+/// </summary>
+internal interface INetherBattleProjectionSnapshotDriver
+{
+    NetherActiveCodeErosionProjection TryCaptureActiveCodeErosionProjection();
+}
+
 internal enum NetherBattleSettlementStepKind
 {
     AwaitingF11,
@@ -28,6 +38,8 @@ internal enum NetherBattleSettlementStepKind
     Settled,
     Unchanged,
     WrongTarget,
+    ProjectionUnknown,
+    ProjectionDrift,
     BindingUnavailable,
     Faulted,
     Canceled,
@@ -38,32 +50,38 @@ internal readonly record struct NetherBattleSettlementStep(
     NetherBattleSettlementStepKind Kind,
     NetherActionOutcome Outcome,
     NetherSnapshot? Snapshot,
-    string Detail
+    string Detail,
+    NetherPauseReason PauseReason = NetherPauseReason.None
 )
 {
     public static NetherBattleSettlementStep Create(
         NetherBattleSettlementStepKind kind,
         NetherActionOutcome outcome = NetherActionOutcome.Ambiguous,
         NetherSnapshot? snapshot = null,
-        string detail = ""
-    ) => new(kind, outcome, snapshot, detail);
+        string detail = "",
+        NetherPauseReason pauseReason = NetherPauseReason.None
+    ) => new(kind, outcome, snapshot, detail, pauseReason);
 }
 
 internal sealed class NetherBattleSettlementCoordinator
 {
     private readonly INetherBattleSettlementDriver _battle;
     private readonly NetherReadOnlyReconcileCoordinator _reconcile;
+    private readonly INetherBattleProjectionSnapshotDriver _projectionSnapshot;
+    private readonly NetherBattleProjectionCalibration _projectionCalibration = new();
     private NetherPlannedAction? _action;
     private NetherSnapshot? _before;
     private bool _settlementObserved;
 
     public NetherBattleSettlementCoordinator(
         INetherBattleSettlementDriver battle,
-        INetherReadOnlyReconcileDriver readOnly
+        INetherReadOnlyReconcileDriver readOnly,
+        INetherBattleProjectionSnapshotDriver projectionSnapshot
     )
     {
         _battle = battle ?? throw new ArgumentNullException(nameof(battle));
         _reconcile = new NetherReadOnlyReconcileCoordinator(readOnly ?? throw new ArgumentNullException(nameof(readOnly)));
+        _projectionSnapshot = projectionSnapshot ?? throw new ArgumentNullException(nameof(projectionSnapshot));
     }
 
     public bool IsActive => _action != null;
@@ -80,7 +98,8 @@ internal sealed class NetherBattleSettlementCoordinator
             || before.CurrentFloorId != contract.EntryFloorId
             || contract.ExpectedStatus == NetherSessionStatus.Unknown
             || contract.ExpectedMapId <= 0
-            || contract.ExpectedFloorId <= 0)
+            || contract.ExpectedFloorId <= 0
+            || contract.EntryProjection == null)
         {
             return false;
         }
@@ -140,23 +159,53 @@ internal sealed class NetherBattleSettlementCoordinator
         NetherActionOutcome outcome = NetherActionReconcilePolicy.Evaluate(action, before, refresh.Snapshot);
         return outcome switch
         {
-            NetherActionOutcome.Applied => Terminate(NetherBattleSettlementStepKind.Settled, outcome, refresh.Snapshot),
+            NetherActionOutcome.Applied => SettleAuthoritativeProjection(action, before, refresh.Snapshot, outcome),
             NetherActionOutcome.NotApplied => Terminate(NetherBattleSettlementStepKind.Unchanged, outcome, refresh.Snapshot),
             _ => Terminate(NetherBattleSettlementStepKind.WrongTarget, outcome, refresh.Snapshot),
         };
+    }
+
+    private NetherBattleSettlementStep SettleAuthoritativeProjection(
+        NetherPlannedAction action,
+        NetherSnapshot before,
+        NetherSnapshot after,
+        NetherActionOutcome outcome
+    )
+    {
+        NetherBattleProjectionCalibrationObservation calibration = _projectionCalibration.Observe(
+            action.BattleSettlement,
+            before,
+            after,
+            _projectionSnapshot.TryCaptureActiveCodeErosionProjection()
+        );
+        if (calibration.IsAccepted)
+        {
+            return Terminate(
+                NetherBattleSettlementStepKind.Settled,
+                outcome,
+                after,
+                calibration.Detail
+            );
+        }
+
+        NetherBattleSettlementStepKind kind = calibration.PauseReason == NetherPauseReason.BattleProjectionDrift
+            ? NetherBattleSettlementStepKind.ProjectionDrift
+            : NetherBattleSettlementStepKind.ProjectionUnknown;
+        return Terminate(kind, outcome, after, calibration.Detail, calibration.PauseReason);
     }
 
     private NetherBattleSettlementStep Terminate(
         NetherBattleSettlementStepKind kind,
         NetherActionOutcome outcome = NetherActionOutcome.Ambiguous,
         NetherSnapshot? snapshot = null,
-        string detail = ""
+        string detail = "",
+        NetherPauseReason pauseReason = NetherPauseReason.None
     )
     {
         _action = null;
         _before = null;
         _settlementObserved = false;
         _reconcile.Reset();
-        return NetherBattleSettlementStep.Create(kind, outcome, snapshot, detail);
+        return NetherBattleSettlementStep.Create(kind, outcome, snapshot, detail, pauseReason);
     }
 }
