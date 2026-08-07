@@ -33,6 +33,8 @@
     <Compile Include="..\AbyssMod\Services\BattleSessionAutoSLPolicy.cs" Link="BattleSessionAutoSLPolicy.cs" />
     <Compile Include="..\AbyssMod\Services\BattleSessionAutoSLStateMachine.cs" Link="BattleSessionAutoSLStateMachine.cs" />
     <Compile Include="..\AbyssMod\Services\ConfigAutoReloadState.cs" Link="ConfigAutoReloadState.cs" />
+    <Compile Include="..\AbyssMod\Services\NetherAutoClimbModels.cs" Link="NetherAutoClimbModels.cs" Condition="Exists('..\AbyssMod\Services\NetherAutoClimbModels.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherAutoClimbStateMachine.cs" Link="NetherAutoClimbStateMachine.cs" Condition="Exists('..\AbyssMod\Services\NetherAutoClimbStateMachine.cs')" />
     <Compile Include="..\AbyssMod\Core\UpstreamTranslationPolicy.cs" Link="UpstreamTranslationPolicy.cs" />
     <Compile Include="..\AbyssMod\Models\Manifest.cs" Link="Manifest.cs" />
   </ItemGroup>
