@@ -44,6 +44,13 @@ public static class BattleSessionAutoSLPatch
             return;
         }
 
+        if (
+            !BattleSessionAutoSLRoutingPolicy.ShouldInterceptExploration(
+                __instance._apiService.TryCast<EncounterQuestAPIService>() != null
+            )
+        )
+            return;
+
         Logger.Info(
             "[F11][BattleAutoSL] pre-model response intercepted; "
                 + "mode=exploration, source=preserved"
@@ -68,6 +75,13 @@ public static class BattleSessionAutoSLPatch
     )
     {
         if (!Config.BattleSessionAutoSL.Value || __instance?._apiService == null)
+            return;
+
+        if (
+            !BattleSessionAutoSLRoutingPolicy.ShouldInterceptExploration(
+                __instance._apiService.TryCast<EncounterQuestAPIService>() != null
+            )
+        )
             return;
 
         Logger.Info(

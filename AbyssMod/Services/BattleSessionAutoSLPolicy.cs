@@ -47,6 +47,12 @@ public sealed class BattleSessionDropEvaluation
     }
 }
 
+public static class BattleSessionAutoSLRoutingPolicy
+{
+    public static bool ShouldInterceptExploration(bool isIdleExplorationEncounter) =>
+        !isIdleExplorationEncounter;
+}
+
 public static class BattleSessionAutoSLPolicy
 {
     public const int WeaponContentType = 70;
