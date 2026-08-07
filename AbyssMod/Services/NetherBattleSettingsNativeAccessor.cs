@@ -206,12 +206,17 @@ internal static class NetherBattleSettingsNativeRegistry
             _accessor = next;
             NetherBattleSettingsLease.RegisterNativeAccessor(next!);
         }
+        // Recovery belongs to the controller lifecycle, not accessor registration itself.  The
+        // callback runs after the exact native object is stored and can therefore defer/retry
+        // with the persisted lease phase as its authority.
+        NetherAutoClimbController.OnBattleSettingsAccessorRegistered();
     }
 
     public static void Unregister(object owner)
     {
         if (owner == null)
             return;
+        bool unregistered = false;
         lock (Gate)
         {
             if (!ReferenceEquals(_owner, owner) || _accessor == null)
@@ -219,6 +224,9 @@ internal static class NetherBattleSettingsNativeRegistry
             NetherBattleSettingsLease.UnregisterNativeAccessor(_accessor);
             _accessor = null;
             _owner = null;
+            unregistered = true;
         }
+        if (unregistered)
+            NetherAutoClimbController.OnBattleSettingsAccessorUnregistered();
     }
 }

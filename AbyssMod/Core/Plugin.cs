@@ -56,9 +56,8 @@ public class Plugin : BasePlugin
         MasterMapping.Load();
         Initialize();
         PatchManager.Initialize();
-        // Native BottomRightView settings instrumentation must exist before the persisted F12
-        // lease attempts recovery; the exact accessor registers when the game supplies its
-        // IIngameUserSettings instance.
+        // Persisted F12 battle-settings recovery is deliberately deferred until the exact
+        // BottomRightView accessor registers with the controller lifecycle.
         NetherAutoClimbController.Initialize();
         Trans.Initialize();
 

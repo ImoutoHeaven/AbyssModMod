@@ -63,6 +63,9 @@
     <Compile Include="..\AbyssMod\Services\NetherCheckpointPolicy.cs" Link="NetherCheckpointPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherReturnItemPolicy.cs" Link="NetherReturnItemPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherReturnItemPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherBattleSettingsLeaseState.cs" Link="NetherBattleSettingsLeaseState.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleSettingsLeaseState.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleSettingsLease.cs" Link="NetherBattleSettingsLease.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleSettingsLease.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleSettingsLeaseRuntimeCoordinator.cs" Link="NetherBattleSettingsLeaseRuntimeCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleSettingsLeaseRuntimeCoordinator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleSettingsLeaseControllerLifecycle.cs" Link="NetherBattleSettingsLeaseControllerLifecycle.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleSettingsLeaseControllerLifecycle.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherActionReconcilePolicy.cs" Link="NetherActionReconcilePolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherActionReconcilePolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherPopupDispatchPolicy.cs" Link="NetherPopupDispatchPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherPopupDispatchPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherPopupOwnershipRegistry.cs" Link="NetherPopupOwnershipRegistry.cs" Condition="Exists('..\AbyssMod\Services\NetherPopupOwnershipRegistry.cs')" />

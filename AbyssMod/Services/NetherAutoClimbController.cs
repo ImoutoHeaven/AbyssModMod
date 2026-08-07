@@ -30,9 +30,11 @@ internal static class NetherAutoClimbController
     private static readonly NetherReadOnlyReconcileCoordinator ReadOnlyReconcileFlow = new(_bridge);
     private static readonly NetherBattleSettlementCoordinator BattleSettlementFlow = new(_bridge, _bridge, _bridge);
     private static readonly NetherContinueSceneRuntimeCoordinator ContinueSceneFlow = new(State, _bridge);
+    private static readonly NetherBattleSettingsLeaseControllerLifecycle BattleSettingsLifecycle = new(
+        NetherBattleSettingsLease.Instance
+    );
 
     private static bool _initialized;
-    private static bool _leaseRestoreCompleted;
     private static NetherCombatLane? _lockedCombatLane;
     private static NetherBattleProjectionPayload? _pendingBattleProjection;
     private static string _lastTransition = string.Empty;
@@ -52,15 +54,10 @@ internal static class NetherAutoClimbController
 
         _initialized = true;
         NetherBattleSettingsLease.Initialize();
-        NetherNativeActionResult recovery = NetherBattleSettingsLease.Instance.RecoverOnLoad();
-        if (recovery.Kind is NetherNativeActionResultKind.BindingUnavailable or NetherNativeActionResultKind.UnknownOutcome)
-        {
-            Logger.Info("[F12][NetherClimb] persisted battle-settings lease is awaiting exact native accessor: " + recovery.Detail);
-        }
-        else if (recovery.Kind == NetherNativeActionResultKind.Rejected)
-        {
-            Logger.Error("[F12][NetherClimb] persisted battle-settings lease was rejected: " + recovery.Detail);
-        }
+        // Persisted Auto/speed recovery intentionally waits for the exact BottomRight accessor
+        // registration.  Calling RecoverOnLoad here would attempt the lease before the native
+        // object exists and used to hide a later restore behind a session-wide completion bit.
+        BattleSettingsLifecycle.OnControllerInitialized();
     }
 
     public static void Toggle()
@@ -69,7 +66,11 @@ internal static class NetherAutoClimbController
         if (State.IsEnabled)
         {
             State.Toggle(isInNether: true);
-            RestoreLease("f12-disabled");
+            ObserveBattleSettingsLeaseBoundary(
+                BattleSettingsLifecycle.OnF12Off(),
+                "f12-disabled",
+                pauseEnabledState: false
+            );
             LogTransition("OFF user-disabled");
             return;
         }
@@ -99,7 +100,6 @@ internal static class NetherAutoClimbController
             return;
         }
 
-        _leaseRestoreCompleted = false;
         _lockedCombatLane = null;
         _pendingBattleProjection = null;
         LogTransition("ON maxDepth=" + BuildSettings().MaxDepth + " softErosion=" + BuildSettings().SoftErosionLimit + " lease=deferred-until-battle");
@@ -110,16 +110,12 @@ internal static class NetherAutoClimbController
         if (!_initialized)
             return;
 
+        PumpBattleSettingsLeaseRetry();
+
         if (State.Phase == NetherAutoClimbPhase.Completed)
-        {
-            RestoreLease("nether-result-complete");
             return;
-        }
         if (State.Phase == NetherAutoClimbPhase.Paused)
-        {
-            RestoreLease("fail-closed:" + State.PauseReason);
             return;
-        }
 
         // Finish naturally tears FloorSelection down before the separate Result scene
         // registers CreateNetherResultModelAsync.  Result is a global owner: observe its
@@ -197,7 +193,11 @@ internal static class NetherAutoClimbController
     {
         if (State.IsEnabled)
             State.Toggle(isInNether: true);
-        RestoreLease("plugin-unload");
+        ObserveBattleSettingsLeaseBoundary(
+            BattleSettingsLifecycle.OnPluginUnload(),
+            "plugin-unload",
+            pauseEnabledState: false
+        );
         _bridge.ClearRegistrations();
         RuntimeFlow.TerminateParent();
         ReadOnlyReconcileFlow.Reset();
@@ -208,6 +208,54 @@ internal static class NetherAutoClimbController
         _pendingBattleProjection = null;
         ProjectionCalibration.Clear();
         _lastTransition = string.Empty;
+    }
+
+    /// <summary>
+    /// Called only after the exact BottomRightView.ApplyUserSettings patch has constructed an
+    /// accessor.  This is the first safe point for persisted lease recovery.
+    /// </summary>
+    internal static void OnBattleSettingsAccessorRegistered()
+    {
+        if (!_initialized)
+            return;
+        ObserveBattleSettingsLeaseBoundary(
+            BattleSettingsLifecycle.OnExactAccessorRegistered(),
+            "native-accessor-registered",
+            pauseEnabledState: State.IsEnabled
+        );
+    }
+
+    /// <summary>
+    /// The owner has been destroyed.  Keep any persisted original values on disk, but block a
+    /// later route/battle until an exact replacement accessor can read them back.
+    /// </summary>
+    internal static void OnBattleSettingsAccessorUnregistered()
+    {
+        if (!_initialized)
+            return;
+        BattleSettingsLifecycle.OnExactAccessorUnregistered();
+        if (State.IsEnabled)
+        {
+            PauseForBattleSettingsLease(
+                NetherNativeActionResult.BindingUnavailable("native-battle-settings-accessor-owner-destroyed"),
+                "native-accessor-unregistered"
+            );
+        }
+    }
+
+    /// <summary>
+    /// FloorSelection is the native Nether scene owner.  An exact owner termination is a
+    /// settings-restore boundary even when Result or Continue retains separate task evidence.
+    /// </summary>
+    internal static void OnNetherFloorSelectionTerminated()
+    {
+        if (!_initialized)
+            return;
+        ObserveBattleSettingsLeaseBoundary(
+            BattleSettingsLifecycle.OnLeaveNether(),
+            "floor-selection-terminated",
+            pauseEnabledState: State.IsEnabled
+        );
     }
 
     private static void PollPendingNativeAction()
@@ -400,7 +448,13 @@ internal static class NetherAutoClimbController
         );
         State.ObserveActionResult(snapshot.Fingerprint, outcome);
         if (State.Phase == NetherAutoClimbPhase.Paused)
-            RestoreLease("ambiguous-reconcile");
+        {
+            ObserveBattleSettingsLeaseBoundary(
+                BattleSettingsLifecycle.OnAutomationPause(),
+                "ambiguous-reconcile",
+                pauseEnabledState: false
+            );
+        }
     }
 
     private static void ObserveBattle()
@@ -429,7 +483,14 @@ internal static class NetherAutoClimbController
                     FailClosedTerminal(NetherPauseReason.BattleLifecycleFault, "could-not-enter-battle-settlement");
                     return;
                 }
-                RestoreLease("battle-native-parent-terminal");
+                if (!ObserveBattleSettingsLeaseBoundary(
+                        BattleSettingsLifecycle.OnBattleClearOrClose(),
+                        "battle-clear-or-close",
+                        pauseEnabledState: State.IsEnabled
+                    ))
+                {
+                    return;
+                }
                 return;
             case NetherBattleSettlementStepKind.Settled:
                 if (step.Snapshot == null)
@@ -480,7 +541,14 @@ internal static class NetherAutoClimbController
         if (result.Kind == NetherNativeActionResultKind.Completed)
         {
             if (State.Complete())
+            {
+                ObserveBattleSettingsLeaseBoundary(
+                    BattleSettingsLifecycle.OnLeaveNether(),
+                    "nether-result-complete",
+                    pauseEnabledState: false
+                );
                 LogTransition("COMPLETED native-result-succeeded");
+            }
             return;
         }
 
@@ -539,6 +607,9 @@ internal static class NetherAutoClimbController
         NetherSnapshot snapshot = captured.Snapshot!;
         State.ObserveStable(snapshot.Fingerprint);
         if (State.Phase != NetherAutoClimbPhase.Stable)
+            return;
+
+        if (!EnsureBattleSettingsLifecycleReady("stable-route-boundary"))
             return;
 
         if (!SettingsGate.TryCapture(
@@ -828,18 +899,13 @@ internal static class NetherAutoClimbController
 
     private static bool EnsureBattleLease()
     {
-        if (NetherBattleSettingsLease.Instance.Phase == NetherBattleSettingsLeasePhase.Forced)
+        if (BattleSettingsLifecycle.LeasePhase == NetherBattleSettingsLeasePhase.Forced)
             return true;
-        NetherNativeActionResult lease = NetherBattleSettingsLease.Instance.AcquireAndForce();
+        NetherNativeActionResult lease = BattleSettingsLifecycle.OnBattleEnter();
         if (lease.Kind == NetherNativeActionResultKind.Completed)
             return true;
 
-        FailClosed(
-            lease.Kind == NetherNativeActionResultKind.BindingUnavailable
-                ? NetherPauseReason.BindingUnavailable
-                : NetherPauseReason.BattleSettingsLeaseFault,
-            "battle-settings-lease-at-battle-entry:" + lease.Detail
-        );
+        PauseForBattleSettingsLease(lease, "battle-entry");
         return false;
     }
 
@@ -1008,7 +1074,11 @@ internal static class NetherAutoClimbController
         if (State.Phase != NetherAutoClimbPhase.Paused)
             State.Pause(reason, detail);
         ProjectionCalibration.Clear();
-        RestoreLease("pause:" + reason);
+        ObserveBattleSettingsLeaseBoundary(
+            BattleSettingsLifecycle.OnAutomationPause(),
+            "pause:" + reason,
+            pauseEnabledState: false
+        );
         LogTransition("PAUSED " + reason + ":" + detail);
     }
 
@@ -1020,23 +1090,70 @@ internal static class NetherAutoClimbController
         BattleSettlementFlow.TerminateForSceneLoss();
         State.TerminatePendingAndPause(reason, detail);
         ProjectionCalibration.Clear();
-        RestoreLease("terminal-pause:" + reason);
+        ObserveBattleSettingsLeaseBoundary(
+            BattleSettingsLifecycle.OnAutomationPause(),
+            "terminal-pause:" + reason,
+            pauseEnabledState: false
+        );
         LogTransition("PAUSED terminal " + reason + ":" + detail);
     }
 
-    private static void RestoreLease(string reason)
+    private static void PumpBattleSettingsLeaseRetry()
     {
-        if (_leaseRestoreCompleted)
+        NetherBattleSettingsLeaseRetryPumpResult retry = BattleSettingsLifecycle.PumpUpdate();
+        if (!retry.Attempted || retry.Result is not NetherNativeActionResult result)
             return;
 
-        NetherNativeActionResult restore = NetherBattleSettingsLease.Instance.Restore(reason);
-        if (restore.Kind == NetherNativeActionResultKind.Completed)
+        ObserveBattleSettingsLeaseBoundary(result, "scheduled-restore-retry", pauseEnabledState: State.IsEnabled);
+    }
+
+    private static bool EnsureBattleSettingsLifecycleReady(string boundary)
+    {
+        if (!BattleSettingsLifecycle.BlocksRouteOrBattle)
+            return true;
+
+        PauseForBattleSettingsLease(
+            BattleSettingsLifecycle.IsExactAccessorRegistered
+                ? NetherNativeActionResult.UnknownOutcome(
+                    "battle-settings-lease-recovery-pending:"
+                    + BattleSettingsLifecycle.RuntimeState
+                    + ":"
+                    + BattleSettingsLifecycle.LeasePhase
+                )
+                : NetherNativeActionResult.BindingUnavailable("native-battle-settings-accessor-unregistered"),
+            boundary
+        );
+        return false;
+    }
+
+    private static bool ObserveBattleSettingsLeaseBoundary(
+        NetherNativeActionResult result,
+        string boundary,
+        bool pauseEnabledState
+    )
+    {
+        if (result.Kind == NetherNativeActionResultKind.Completed)
         {
-            _leaseRestoreCompleted = true;
-            return;
+            LogTransition("LEASE " + boundary + " completed:" + result.Detail);
+            return true;
         }
-        if (restore.Kind is NetherNativeActionResultKind.BindingUnavailable or NetherNativeActionResultKind.UnknownOutcome)
-            Logger.Error("[F12][NetherClimb] battle settings restore requires recovery: " + restore.Detail);
+
+        LogTransition("LEASE " + boundary + " " + result.Kind + ":" + result.Detail);
+        if (pauseEnabledState && State.IsEnabled)
+            PauseForBattleSettingsLease(result, boundary);
+        return false;
+    }
+
+    private static void PauseForBattleSettingsLease(NetherNativeActionResult result, string boundary)
+    {
+        NetherPauseReason reason = result.Kind == NetherNativeActionResultKind.BindingUnavailable
+            ? NetherPauseReason.BindingUnavailable
+            : NetherPauseReason.BattleSettingsLeaseFault;
+        string detail = "battle-settings-lease:" + boundary + ":" + result.Detail;
+        if (State.Phase != NetherAutoClimbPhase.Paused)
+            State.Pause(reason, detail);
+        ProjectionCalibration.Clear();
+        LogTransition("PAUSED " + reason + ":" + detail);
     }
 
     private static NetherSnapshot BuildSnapshotFromFingerprint(NetherSnapshotFingerprint fingerprint) => new()

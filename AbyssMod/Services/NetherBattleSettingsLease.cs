@@ -26,7 +26,7 @@ internal interface INetherBattleSettingsNative
 /// is small, atomic and free of server data; deleting it is deferred until both values have
 /// been read back as restored.
 /// </summary>
-internal sealed class NetherBattleSettingsLease : IDisposable
+internal sealed class NetherBattleSettingsLease : IDisposable, INetherBattleSettingsLeaseDriver
 {
     private const int SchemaVersion = 1;
     private readonly NetherBattleSettingsLeaseState _state = new();
@@ -44,6 +44,9 @@ internal sealed class NetherBattleSettingsLease : IDisposable
 
     public bool IsFaulted => _state.Phase == NetherBattleSettingsLeasePhase.Faulted;
 
+    /// <summary>True while the persisted original values still require a verified native restore.</summary>
+    public bool NeedsRecovery => _state.NeedsRecovery;
+
     private NetherBattleSettingsLease() { }
 
     public static void Initialize() => Instance.InitializeCore();
@@ -53,11 +56,6 @@ internal sealed class NetherBattleSettingsLease : IDisposable
         if (accessor == null)
             throw new ArgumentNullException(nameof(accessor));
         Instance._native = accessor;
-        NetherNativeActionResult recovery = Instance.RetryRestoreAfterNativeAccessorRegistered();
-        if (recovery.Kind is NetherNativeActionResultKind.UnknownOutcome or NetherNativeActionResultKind.BindingUnavailable)
-        {
-            Logger.Error("[F12][NetherClimb] battle settings lease retry requires recovery: " + recovery.Detail);
-        }
     }
 
     public static void UnregisterNativeAccessor(INetherBattleSettingsNative accessor)

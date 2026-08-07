@@ -1476,6 +1476,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
     {
         if (controller == null)
             return;
+        bool terminatedCurrentOwner = false;
         lock (_gate)
         {
             if (ReferenceEquals(_floorSelectionController, controller))
@@ -1510,8 +1511,14 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge, INetherCheckpo
                     _nativeActionTask = null;
                 }
                 _resultScene.ObserveFloorSelectionTerminated();
+                terminatedCurrentOwner = true;
             }
         }
+        // Do not hold the bridge lock while the controller performs an exact persisted-settings
+        // restore.  Continue/Result own their separate task evidence; this notification merely
+        // marks the native scene boundary for the Auto/speed lease.
+        if (terminatedCurrentOwner)
+            NetherAutoClimbController.OnNetherFloorSelectionTerminated();
     }
 
     private void RegisterPopupCore(object controller, object popup, object? close)
