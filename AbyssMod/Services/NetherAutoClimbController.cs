@@ -22,6 +22,10 @@ internal static class NetherAutoClimbController
     private static readonly NetherReturnItemPolicy ReturnItemPolicy = new();
     private static readonly NetherActionProjectionCalibration ProjectionCalibration = new();
     private static INetherRuntimeBridge _bridge = NetherRuntimeBridge.Instance;
+    // This production coordinator is deliberately free of Unity/reflection dependencies.
+    // The bridge remains the thin native adapter; characterization tests exercise the exact
+    // owner/generation/parent-terminal transitions used below.
+    private static readonly NetherRuntimeFlowCoordinator RuntimeFlow = new(_bridge);
 
     private static bool _initialized;
     private static bool _reconcileRequested;
@@ -128,7 +132,10 @@ internal static class NetherAutoClimbController
         switch (State.Phase)
         {
             case NetherAutoClimbPhase.ExecutingNativeAction:
-                PollPendingNativeAction();
+                if (State.PendingAction?.Kind == NetherActionKind.SelectFloor && RuntimeFlow.HasPendingParent)
+                    PollFloorParentNativeAction();
+                else
+                    PollPendingNativeAction();
                 return;
             case NetherAutoClimbPhase.Reconciling:
                 Reconcile();
@@ -154,6 +161,7 @@ internal static class NetherAutoClimbController
             State.Toggle(isInNether: true);
         RestoreLease("plugin-unload");
         _bridge.ClearRegistrations();
+        RuntimeFlow.TerminateParent();
         _initialized = false;
         _reconcileRequested = false;
         _lockedCombatLane = null;
@@ -185,6 +193,132 @@ internal static class NetherAutoClimbController
                 FailClosed(NetherPauseReason.AmbiguousServerOutcome, native.Detail);
                 return;
         }
+    }
+
+    private static void PollFloorParentNativeAction()
+    {
+        NetherPlannedAction? pending = State.PendingAction;
+        if (pending is not NetherPlannedAction parent || parent.Kind != NetherActionKind.SelectFloor)
+        {
+            FailClosed(NetherPauseReason.BindingUnavailable, "missing-floor-parent-state");
+            return;
+        }
+
+        NetherRuntimeParentPollResult result = RuntimeFlow.Poll(
+            popup => DispatchOwnedFloorPopup(parent, popup)
+        );
+        switch (result.Kind)
+        {
+            case NetherRuntimeParentPollKind.Pending:
+                return;
+            case NetherRuntimeParentPollKind.Completed:
+                _bridge.TerminateFloorParent();
+                // The parent task is the only proof that Event/Treasure's internal void flow
+                // has reached its native terminal.  Reconcile before making another decision.
+                State.ObserveUnknownOutcome();
+                _reconcileRequested = false;
+                return;
+            case NetherRuntimeParentPollKind.Faulted:
+                _bridge.TerminateFloorParent();
+                State.ObserveUnknownOutcome();
+                _reconcileRequested = false;
+                return;
+            default:
+                FailClosed(NetherPauseReason.BindingUnavailable, "floor-parent-poll:" + result.Detail);
+                return;
+        }
+    }
+
+    private static NetherNativeActionResult DispatchOwnedFloorPopup(
+        NetherPlannedAction parent,
+        NetherRuntimePopupContext popup
+    )
+    {
+        NetherRuntimeSnapshotResult captured = _bridge.TryCaptureSnapshot();
+        if (!captured.IsSuccess)
+            return NetherNativeActionResult.BindingUnavailable("owned-popup-snapshot:" + captured.Detail);
+        if (!SettingsGate.TryCapture(
+                BuildSettings(),
+                State.Phase,
+                out NetherAutoClimbSettings settings,
+                out NetherPauseReason settingsReason,
+                out string settingsDetail
+            ))
+        {
+            return NetherNativeActionResult.BindingUnavailable(
+                "owned-popup-settings:" + settingsReason + ":" + settingsDetail
+            );
+        }
+
+        NetherSnapshot snapshot = captured.Snapshot!;
+        NetherPopupDispatchDecision decision = NetherPopupDispatchPolicy.Decide(snapshot, popup, settings);
+        if (decision.Kind == NetherPopupDispatchKind.Code)
+            return DispatchOwnedCodePopup(parent, popup, snapshot, settings);
+        if (decision.Kind == NetherPopupDispatchKind.AwaitNativeFlow)
+            return NetherNativeActionResult.Started("owned-popup-await-native-flow");
+        if (decision.Kind != NetherPopupDispatchKind.NativeAction)
+            return NetherNativeActionResult.BindingUnavailable(
+                "owned-popup-policy:" + decision.PauseReason + ":" + decision.Detail
+            );
+
+        NetherNativeActionResult native = _bridge.InvokeOwnedPopup(parent, popup, decision.Action);
+        if (native.Kind is NetherNativeActionResultKind.Started or NetherNativeActionResultKind.Completed)
+        {
+            if (decision.HasEffectProjection)
+            {
+                ProjectionCalibration.Expect(new NetherEventDecision
+                {
+                    Kind = NetherEventDecisionKind.Select,
+                    ProjectedErosion = decision.ProjectedErosion,
+                    HpDelta = decision.HpDelta,
+                }, snapshot);
+            }
+            LogAction(
+                "owned-popup:" + popup.Kind + ":" + decision.Action.Kind,
+                snapshot,
+                "owner=" + popup.OwnerAction + ":" + popup.OwnerGeneration + ":" + popup.Sequence
+            );
+        }
+        return native;
+    }
+
+    private static NetherNativeActionResult DispatchOwnedCodePopup(
+        NetherPlannedAction parent,
+        NetherRuntimePopupContext popup,
+        NetherSnapshot snapshot,
+        NetherAutoClimbSettings settings
+    )
+    {
+        NetherRuntimeCodeCandidatesResult candidates = _bridge.TryGetCodeCandidates();
+        if (!candidates.IsSuccess)
+            return NetherNativeActionResult.BindingUnavailable("owned-code-candidates:" + candidates.Detail);
+
+        NetherCodeDecision decision = CodePolicy.Decide(
+            new NetherCodePortfolio
+            {
+                CurrentCodes = snapshot.Codes,
+                Capacity = snapshot.CodeCapacity,
+                ReloadCount = snapshot.CodeReloadCount,
+                IsMasterComplete = candidates.IsMasterComplete,
+                LockedLane = _lockedCombatLane,
+            },
+            candidates.Candidates,
+            settings
+        );
+        if (decision.Kind == NetherCodeDecisionKind.Pause)
+            return NetherNativeActionResult.BindingUnavailable("owned-code-policy:" + decision.PauseReason + ":" + decision.Detail);
+        if (decision.Kind == NetherCodeDecisionKind.Keep)
+            return NetherNativeActionResult.BindingUnavailable("owned-code-policy-keep:" + decision.Detail);
+
+        _lockedCombatLane = decision.LockedLane;
+        NetherPlannedAction action = decision.Kind == NetherCodeDecisionKind.Reload
+            ? new NetherPlannedAction(NetherActionKind.ReloadCode)
+            : new NetherPlannedAction(NetherActionKind.SelectCode)
+            {
+                CodeId = decision.SelectedCodeId,
+                ReplaceCodeId = decision.RemoveCodeId,
+            };
+        return _bridge.InvokeOwnedPopup(parent, popup, action);
     }
 
     private static void Reconcile()
@@ -366,17 +500,16 @@ internal static class NetherAutoClimbController
             return;
         }
 
-        NetherRuntimePopupResult popup = _bridge.TryGetActivePopup();
-        if (popup.IsSuccess)
-        {
-            PlanNativePopup(snapshot, settings, popup.Popup!);
-            return;
-        }
-
         // Wait is the server's modal state.  Choosing code from a stale owned-code list or
         // guessing a close action before its controller has registered would be unsafe.
         if (snapshot.Status == NetherSessionStatus.Wait)
         {
+            NetherRuntimePopupResult popup = _bridge.TryGetActivePopup();
+            if (popup.IsSuccess)
+            {
+                PlanNativePopup(snapshot, settings, popup.Popup!);
+                return;
+            }
             FailClosed(NetherPauseReason.UnsupportedPopup, "wait-popup:" + popup.Detail);
             return;
         }
@@ -623,7 +756,25 @@ internal static class NetherAutoClimbController
             FailClosed(NetherPauseReason.AmbiguousServerOutcome, "could-not-begin:" + action.Kind);
             return;
         }
+
+        if (action.Kind == NetherActionKind.SelectFloor)
+        {
+            if (!RuntimeFlow.BeginFloorParent(action)
+                || !_bridge.BeginFloorParent(action, RuntimeFlow.Generation))
+            {
+                RuntimeFlow.TerminateParent();
+                State.ObserveActionResult(snapshot.Fingerprint, NetherActionOutcome.NotApplied);
+                FailClosed(NetherPauseReason.BindingUnavailable, "floor-parent-owner-registration-unavailable");
+                return;
+            }
+        }
         NetherNativeActionResult native = _bridge.Invoke(action);
+        if (action.Kind == NetherActionKind.SelectFloor
+            && native.Kind is not (NetherNativeActionResultKind.Started or NetherNativeActionResultKind.Completed))
+        {
+            _bridge.TerminateFloorParent();
+            RuntimeFlow.TerminateParent();
+        }
         afterInvoke?.Invoke(native);
         HandleInvocationResult(snapshot, action, native, boundary);
     }

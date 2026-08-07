@@ -48,21 +48,12 @@ internal readonly record struct NetherRuntimeCodeCandidatesResult(
     );
 }
 
-internal readonly record struct NetherRuntimePopupResult(NetherRuntimePopupContext? Popup, string Detail)
-{
-    public bool IsSuccess => Popup != null && Detail.Length == 0;
-
-    public static NetherRuntimePopupResult Success(NetherRuntimePopupContext popup) => new(popup, string.Empty);
-
-    public static NetherRuntimePopupResult Failure(string detail) => new(null, detail);
-}
-
 /// <summary>
 /// The runtime boundary for F12.  No member in this interface issues a Nether endpoint
 /// directly.  Mutating operations invoke an already registered game controller callback,
 /// and report an exact binding failure when that callback is not available.
 /// </summary>
-internal interface INetherRuntimeBridge
+internal interface INetherRuntimeBridge : INetherRuntimeParentDriver
 {
     bool HasRegisteredFloorSelection { get; }
 
@@ -75,6 +66,18 @@ internal interface INetherRuntimeBridge
     NetherRuntimeCodeCandidatesResult TryGetCodeCandidates();
 
     NetherRuntimePopupResult TryGetActivePopup();
+
+    /// <summary>Begins the owner identity before the reflected floor-click parent task starts.</summary>
+    bool BeginFloorParent(NetherPlannedAction action, long generation);
+
+    /// <summary>Drives exactly one popup registered by the current floor-click parent.</summary>
+    NetherNativeActionResult InvokeOwnedPopup(
+        NetherPlannedAction parent,
+        NetherRuntimePopupContext popup,
+        NetherPlannedAction action
+    );
+
+    void TerminateFloorParent();
 
     NetherNativeActionResult Reconcile();
 
@@ -128,9 +131,16 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     private const string NetherApiServiceTypeName = "Project.Ingame.Exploration.NetherAPIService";
     private const string ResultControllerTypeName = "Project.NetherTop.Result.SubViewController";
     private const string BottomRightViewTypeName = "Project.Ingame.BottomRightView";
+    private const string PopupBaseTypeName = "Project.PopupBase";
+    private const string MonoBehaviourWithUniTaskTypeName = "Absf.MonoBehaviourWithUniTask";
 
     private readonly object _gate = new();
+    private readonly NetherPopupOwnershipRegistry _popupOwnership = new();
+    private readonly NetherNativeWaitGate _floorParentTaskWait = new(maximumMissingPolls: 600);
     private object? _floorSelectionController;
+    private NetherPlannedAction? _floorParentAction;
+    private long _floorParentGeneration;
+    private object? _floorParentTask;
     private PopupRegistration? _eventPopup;
     private PopupRegistration? _recoverPopup;
     private PopupRegistration? _treasurePopup;
@@ -293,6 +303,21 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 NetherBattleSettingsNativeRegistry.Register(instance, arguments[0]);
             else if (methodName == "OnDestroy")
                 NetherBattleSettingsNativeRegistry.Unregister(instance);
+            return;
+        }
+
+        // Project.PopupBase declares these exact lifecycle methods in the packaged client.
+        // They are the only common close boundary for all Nether popup subclasses, so an old
+        // close animation can invalidate only its own registered instance.
+        if (typeName == PopupBaseTypeName && methodName is "Close" or "ImmediatelyClose")
+        {
+            Instance.InvalidatePopupCore(instance);
+            return;
+        }
+
+        if (typeName == MonoBehaviourWithUniTaskTypeName && methodName == "OnDestroy")
+        {
+            Instance.InvalidatePopupCore(instance);
             return;
         }
 
@@ -485,39 +510,156 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                     _continuePopup,
                 })
             {
-                if (candidate != null && (registration == null || candidate.Value.Sequence > registration.Value.Sequence))
+                if (candidate is { IsLive: true }
+                    && (registration == null || candidate.Value.Sequence > registration.Value.Sequence))
                     registration = candidate;
             }
         }
         if (registration == null)
             return NetherRuntimePopupResult.Failure("missing-active-native-popup");
 
-        string controllerType = registration.Value.Controller.GetType().FullName ?? string.Empty;
+        return TryMapPopupRegistration(registration.Value);
+    }
+
+    public bool BeginFloorParent(NetherPlannedAction action, long generation)
+    {
+        if (action.Kind != NetherActionKind.SelectFloor || generation < 1)
+            return false;
+        lock (_gate)
+        {
+            if (_floorParentAction != null)
+                return false;
+            _floorParentAction = action;
+            _floorParentGeneration = generation;
+            _floorParentTask = null;
+            _floorParentTaskWait.Clear();
+            _popupOwnership.BeginOwner(NetherActionKind.SelectFloor, generation);
+            return true;
+        }
+    }
+
+    public void TerminateFloorParent()
+    {
+        lock (_gate)
+        {
+            if (_floorParentAction == null)
+                return;
+            ClearFloorParentCore();
+        }
+    }
+
+    public NetherRuntimePopupResult TryGetOwnedPopup(NetherPlannedAction parent)
+    {
+        PopupRegistration? registration;
+        lock (_gate)
+        {
+            if (parent.Kind != NetherActionKind.SelectFloor
+                || _floorParentAction != parent
+                || _floorParentGeneration < 1
+                || !_popupOwnership.TryGetOwned(NetherActionKind.SelectFloor, _floorParentGeneration, out NetherPopupOwnership ownership))
+            {
+                return NetherRuntimePopupResult.Failure("missing-owned-floor-popup");
+            }
+            registration = FindPopupRegistration(ownership);
+        }
+        return registration == null
+            ? NetherRuntimePopupResult.Failure("owned-floor-popup-registration-lost")
+            : TryMapPopupRegistration(registration.Value);
+    }
+
+    public NetherNativeActionResult InvokeOwnedPopup(
+        NetherPlannedAction parent,
+        NetherRuntimePopupContext popup,
+        NetherPlannedAction action
+    )
+    {
+        if (parent.Kind != NetherActionKind.SelectFloor || popup == null)
+            return NetherNativeActionResult.BindingUnavailable("invalid-owned-popup-parent");
+        lock (_gate)
+        {
+            if (_floorParentAction != parent || _floorParentGeneration < 1
+                || popup.OwnerAction != NetherActionKind.SelectFloor
+                || popup.OwnerGeneration != _floorParentGeneration
+                || !_popupOwnership.TryGetOwned(NetherActionKind.SelectFloor, _floorParentGeneration, out NetherPopupOwnership ownership)
+                || ownership.Sequence != popup.Sequence
+                || FindPopupRegistration(ownership) == null)
+            {
+                return NetherNativeActionResult.BindingUnavailable("missing-matching-owned-popup");
+            }
+        }
+
+        return action.Kind switch
+        {
+            NetherActionKind.SelectEventOption => SelectEventOption(action),
+            NetherActionKind.LeaveShop => LeaveShop(),
+            NetherActionKind.BuyShopItem => BuyShopItem(action),
+            NetherActionKind.SelectCode => SelectCode(action),
+            NetherActionKind.ReloadCode => ReloadCode(),
+            _ => NetherNativeActionResult.Rejected("unsupported-owned-popup-action:" + action.Kind),
+        };
+    }
+
+    public NetherNativeActionResult PollFloorParent()
+    {
+        lock (_gate)
+            return PollFloorParentNativeFlow();
+    }
+
+    private NetherNativeActionResult PollFloorParentTask()
+    {
+        object? task;
+        lock (_gate)
+        {
+            if (_floorParentAction == null)
+                return NetherNativeActionResult.Completed("no-floor-parent");
+            task = _floorParentTask;
+            if (task == null)
+                return _floorParentTaskWait.AwaitRegistration("floor-parent");
+        }
+
+        NetherNativeActionResult result = PollResultTask(task);
+        if (result.Kind != NetherNativeActionResultKind.Completed)
+            return result;
+
+        lock (_gate)
+        {
+            // `OnFloorClickedEventAsync` is the parent proof for Event/Treasure's inner
+            // UniTask.Void callbacks.  A completed child click alone never reaches here.
+            ClearFloorParentCore();
+        }
+        return result;
+    }
+
+    private NetherRuntimePopupResult TryMapPopupRegistration(PopupRegistration registration)
+    {
+        string controllerType = registration.Controller.GetType().FullName ?? string.Empty;
         try
         {
-            if (controllerType == CodeSelectPopupControllerTypeName)
-                return NetherRuntimePopupResult.Success(new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.CodeOffer });
-            if (controllerType == CodeListPopupControllerTypeName)
-                return NetherRuntimePopupResult.Failure("owned-code-list-is-not-code-offer");
-            if (controllerType == ContinuePopupControllerTypeName)
-                return NetherRuntimePopupResult.Success(new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.Continue });
-            if (controllerType == ReturnPopupControllerTypeName)
-                return NetherRuntimePopupResult.Success(new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.ReturnItems });
-            if (controllerType == EventPopupControllerTypeName)
-                return TryMapEventPopup(registration.Value, NetherRuntimePopupKind.Event, (int)NetherFloorNodeType.Event);
-            if (controllerType == RecoverPopupControllerTypeName)
-                return TryMapEventPopup(registration.Value, NetherRuntimePopupKind.Recovery, (int)NetherFloorNodeType.Recovery);
-            if (controllerType == TreasurePopupControllerTypeName)
-                return TryMapEventPopup(registration.Value, NetherRuntimePopupKind.Treasure, (int)NetherFloorNodeType.Treasure);
-            if (controllerType == ShopPopupControllerTypeName)
-                return TryMapShopPopup(registration.Value);
+            NetherRuntimePopupResult mapped = controllerType switch
+            {
+                CodeSelectPopupControllerTypeName => NetherRuntimePopupResult.Success(new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.CodeOffer }),
+                CodeListPopupControllerTypeName => NetherRuntimePopupResult.Failure("owned-code-list-is-not-code-offer"),
+                ContinuePopupControllerTypeName => NetherRuntimePopupResult.Success(new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.Continue }),
+                ReturnPopupControllerTypeName => NetherRuntimePopupResult.Success(new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.ReturnItems }),
+                EventPopupControllerTypeName => TryMapEventPopup(registration, NetherRuntimePopupKind.Event, (int)NetherFloorNodeType.Event),
+                RecoverPopupControllerTypeName => TryMapEventPopup(registration, NetherRuntimePopupKind.Recovery, (int)NetherFloorNodeType.Recovery),
+                TreasurePopupControllerTypeName => TryMapEventPopup(registration, NetherRuntimePopupKind.Treasure, (int)NetherFloorNodeType.Treasure),
+                ShopPopupControllerTypeName => TryMapShopPopup(registration),
+                _ => NetherRuntimePopupResult.Failure("unsupported-native-popup-controller:" + controllerType),
+            };
+            return !mapped.IsSuccess
+                ? mapped
+                : NetherRuntimePopupResult.Success(mapped.Popup! with
+                {
+                    OwnerAction = registration.OwnerAction,
+                    OwnerGeneration = registration.OwnerGeneration,
+                    Sequence = registration.Sequence,
+                });
         }
         catch (Exception ex)
         {
             return NetherRuntimePopupResult.Failure("popup-map-exception:" + ex.GetType().Name + ":" + ex.Message);
         }
-
-        return NetherRuntimePopupResult.Failure("unsupported-native-popup-controller:" + controllerType);
     }
 
     public NetherNativeActionResult Reconcile()
@@ -561,6 +703,9 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     {
         lock (_gate)
         {
+            if (_floorParentAction != null)
+                return PollFloorParentNativeFlow();
+
             // A one-ticket continue can open a boost confirmation before it creates the return
             // popup.  Confirm its native UI first; selecting a stale/early return list would
             // otherwise race the server continuation response.
@@ -605,6 +750,33 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         }
 
         return NetherNativeActionResult.Completed("no-pending-native-flow");
+    }
+
+    private NetherNativeActionResult PollFloorParentNativeFlow()
+    {
+        // Code confirmation has its own native task because the Receive callback enters a
+        // replacement popup before the original OnFloorClickedEventAsync parent can finish.
+        if (_codeSelectionFlow.Stage is not (NetherCodeSelectionNativeStage.Idle or NetherCodeSelectionNativeStage.Completed)
+            || _codeSelectionTask != null)
+        {
+            NetherNativeActionResult code = PollCodeSelectionFlow();
+            if (code.Kind != NetherNativeActionResultKind.Completed)
+                return code;
+        }
+
+        // Event/Treasure callbacks can be UniTask.Void.  Do not treat their return as a
+        // settlement: wait for the owning floor parent task below.
+        if (_nativeActionTask != null)
+        {
+            NetherNativeActionResult child = PollResultTask(_nativeActionTask);
+            if (child.Kind == NetherNativeActionResultKind.Started)
+                return child;
+            _nativeActionTask = null;
+            if (child.Kind != NetherNativeActionResultKind.Completed)
+                return child;
+        }
+
+        return PollFloorParentTask();
     }
 
     public NetherNativeActionResult PollBattleLifecycle()
@@ -763,6 +935,11 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         lock (_gate)
         {
             _floorSelectionController = null;
+            _floorParentAction = null;
+            _floorParentGeneration = 0;
+            _floorParentTask = null;
+            _floorParentTaskWait.Clear();
+            _popupOwnership.Clear();
             _eventPopup = null;
             _recoverPopup = null;
             _treasurePopup = null;
@@ -822,10 +999,27 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         if (controller == null || popup == null)
             return;
 
-        PopupRegistration registration = new(controller, popup, close, ++_popupSequence);
         string typeName = controller.GetType().FullName ?? string.Empty;
         lock (_gate)
         {
+            NetherActionKind ownerAction = NetherActionKind.None;
+            long ownerGeneration = 0;
+            long sequence = checked(++_popupSequence);
+            if (_floorParentAction != null && _floorParentGeneration > 0)
+            {
+                NetherPopupOwnership ownership = _popupOwnership.Register(
+                    popup,
+                    NetherActionKind.SelectFloor,
+                    _floorParentGeneration
+                );
+                if (ownership.Sequence > 0)
+                {
+                    ownerAction = ownership.OwnerAction;
+                    ownerGeneration = ownership.Generation;
+                    sequence = ownership.Sequence;
+                }
+            }
+            PopupRegistration registration = new(controller, popup, close, sequence, ownerAction, ownerGeneration, IsLive: true);
             switch (typeName)
             {
                 case EventPopupControllerTypeName:
@@ -856,6 +1050,95 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                     _boostPopup = registration;
                     break;
             }
+        }
+    }
+
+    private void InvalidatePopupCore(object popup)
+    {
+        if (popup == null)
+            return;
+        lock (_gate)
+        {
+            InvalidatePopup(ref _eventPopup, popup);
+            InvalidatePopup(ref _recoverPopup, popup);
+            InvalidatePopup(ref _treasurePopup, popup);
+            InvalidatePopup(ref _shopPopup, popup);
+            InvalidatePopup(ref _codeSelectPopup, popup);
+            InvalidatePopup(ref _codeListPopup, popup);
+            InvalidatePopup(ref _returnPopup, popup);
+            InvalidatePopup(ref _continuePopup, popup);
+            InvalidatePopup(ref _boostPopup, popup);
+        }
+    }
+
+    private void InvalidatePopup(ref PopupRegistration? registration, object popup)
+    {
+        if (registration is not PopupRegistration candidate || !ReferenceEquals(candidate.Popup, popup))
+            return;
+        _popupOwnership.Invalidate(candidate.Popup, candidate.Sequence);
+        registration = null;
+    }
+
+    private PopupRegistration? FindPopupRegistration(NetherPopupOwnership ownership)
+    {
+        foreach (PopupRegistration? candidate in new PopupRegistration?[]
+            {
+                _eventPopup,
+                _recoverPopup,
+                _treasurePopup,
+                _shopPopup,
+                _codeSelectPopup,
+                _codeListPopup,
+                _returnPopup,
+                _continuePopup,
+                _boostPopup,
+            })
+        {
+            if (candidate is { IsLive: true }
+                && candidate.Value.Sequence == ownership.Sequence
+                && candidate.Value.OwnerAction == ownership.OwnerAction
+                && candidate.Value.OwnerGeneration == ownership.Generation
+                && ReferenceEquals(candidate.Value.Popup, ownership.Popup))
+            {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private bool IsCurrentFloorOwnedPopup(PopupRegistration? registration)
+    {
+        if (registration is not PopupRegistration candidate || !candidate.IsLive)
+            return false;
+        if (_floorParentAction == null)
+            return true;
+        return candidate.OwnerAction == NetherActionKind.SelectFloor
+            && candidate.OwnerGeneration == _floorParentGeneration;
+    }
+
+    private void ClearFloorParentCore()
+    {
+        long generation = _floorParentGeneration;
+        _popupOwnership.InvalidateOwner(NetherActionKind.SelectFloor, generation);
+        ClearFloorPopup(ref _eventPopup, generation);
+        ClearFloorPopup(ref _recoverPopup, generation);
+        ClearFloorPopup(ref _treasurePopup, generation);
+        ClearFloorPopup(ref _shopPopup, generation);
+        ClearFloorPopup(ref _codeSelectPopup, generation);
+        ClearFloorPopup(ref _codeListPopup, generation);
+        _floorParentAction = null;
+        _floorParentGeneration = 0;
+        _floorParentTask = null;
+        _floorParentTaskWait.Clear();
+    }
+
+    private static void ClearFloorPopup(ref PopupRegistration? registration, long generation)
+    {
+        if (registration is PopupRegistration candidate
+            && candidate.OwnerAction == NetherActionKind.SelectFloor
+            && candidate.OwnerGeneration == generation)
+        {
+            registration = null;
         }
     }
 
@@ -956,7 +1239,11 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             return NetherNativeActionResult.Rejected("invalid-floor-selection");
         object? controller;
         lock (_gate)
+        {
             controller = _floorSelectionController;
+            if (_floorParentAction != action || _floorParentGeneration < 1)
+                return NetherNativeActionResult.BindingUnavailable("missing-floor-parent-ownership");
+        }
         if (controller == null)
             return NetherNativeActionResult.BindingUnavailable("missing-floor-selection-controller");
 
@@ -968,7 +1255,9 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
                 UniTaskTypeName
             ),
             new object[] { action.FloorLevel, action.FloorIndex },
-            "select-floor"
+            "select-floor",
+            registerNativeActionTask: false,
+            observeTask: RegisterFloorParentTask
         );
     }
 
@@ -980,12 +1269,12 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         List<(PopupRegistration Registration, EventFlowKind Kind)> active = new();
         lock (_gate)
         {
-            if (_eventPopup != null)
-                active.Add((_eventPopup.Value, EventFlowKind.Event));
-            if (_recoverPopup != null)
-                active.Add((_recoverPopup.Value, EventFlowKind.Recovery));
-            if (_treasurePopup != null)
-                active.Add((_treasurePopup.Value, EventFlowKind.Treasure));
+            if (_eventPopup is PopupRegistration eventPopup && IsCurrentFloorOwnedPopup(eventPopup))
+                active.Add((eventPopup, EventFlowKind.Event));
+            if (_recoverPopup is PopupRegistration recoveryPopup && IsCurrentFloorOwnedPopup(recoveryPopup))
+                active.Add((recoveryPopup, EventFlowKind.Recovery));
+            if (_treasurePopup is PopupRegistration treasurePopup && IsCurrentFloorOwnedPopup(treasurePopup))
+                active.Add((treasurePopup, EventFlowKind.Treasure));
         }
         if (active.Count == 0)
             return NetherNativeActionResult.BindingUnavailable("missing-native-event-popup");
@@ -1034,7 +1323,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         PopupRegistration? registration;
         lock (_gate)
             registration = _shopPopup;
-        if (registration == null || registration.Value.Close == null)
+        if (registration == null || !IsCurrentFloorOwnedPopup(registration) || registration.Value.Close == null)
             return NetherNativeActionResult.BindingUnavailable("missing-native-shop-close-callback");
 
         return TryInvokeNoArgumentDelegate(registration.Value.Close, "native-shop-close");
@@ -1047,7 +1336,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         PopupRegistration? registration;
         lock (_gate)
             registration = _shopPopup;
-        if (registration == null)
+        if (registration == null || !IsCurrentFloorOwnedPopup(registration))
             return NetherNativeActionResult.BindingUnavailable("missing-shop-popup");
         if (!TryFindContentIndex(registration.Value.Controller, "_mNetherFloorShopContentsArray", action.ContentId, out int index, out string indexError))
             return NetherNativeActionResult.BindingUnavailable(indexError);
@@ -1073,7 +1362,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         PopupRegistration? registration;
         lock (_gate)
             registration = _codeSelectPopup;
-        if (registration == null)
+        if (registration == null || !IsCurrentFloorOwnedPopup(registration))
             return NetherNativeActionResult.BindingUnavailable("missing-code-offer-popup");
         if (!TryReadMember(registration.Value.Controller, "_mIds", out object? rawOfferIds) || rawOfferIds == null)
         {
@@ -1094,7 +1383,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         // before the exact Receive callback below forwards controller._onConfirm(selectedId).
         NetherNativeActionResult selectDetail = TryInvokeGeneratedCallback(
             registration.Value.Controller,
-            "<SetupPopupEvent>b__12_3",
+            NetherCodePopupNativeBinding.DetailCallback,
             new[] { "System.Int32", CodeSelectPopupControllerTypeName, registration.Value.Popup.GetType().FullName ?? string.Empty },
             new object?[] { offerIndex, registration.Value.Controller, registration.Value.Popup },
             "select-code-offer-detail"
@@ -1104,21 +1393,19 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
 
         lock (_gate)
         {
-            if (!_codeSelectionFlow.Begin(action.CodeId, action.ReplaceCodeId, _popupSequence))
+            if (!_codeSelectionFlow.Begin(action.CodeId, action.ReplaceCodeId, registration.Value.Sequence))
                 return NetherNativeActionResult.BindingUnavailable("code-selection-flow-already-in-flight");
             _codeSelectionTask = null;
             _codeSelectionTaskWait.Clear();
             _codeReplacementPopupWait.Clear();
         }
 
-        // `AbyssCodeSelectPopupController.<>c.<SetupPopupEvent>b__12_0` is the native
-        // Receive click callback.  It invokes the controller's registered confirm action with
-        // the detail index chosen above; unlike AbyssCodeListPopup it belongs to the current
-        // server-generated offer flow.
+        // Packaged-game ISIL: b__12_0 invokes controller._onCancel; b__12_2 invokes
+        // controller._onConfirm(selectedId).  Detail selection above must therefore be
+        // followed by b__12_2, never the visually adjacent cancel callback.
         NetherNativeActionResult confirm = TryInvokeGeneratedCallback(
             registration.Value.Controller,
-            "<SetupPopupEvent>b__12_0",
-            new[] { UnitTypeName, CodeSelectPopupControllerTypeName },
+            NetherCodePopupNativeBinding.ConfirmDescriptor(CodeSelectPopupControllerTypeName),
             new object?[] { null, registration.Value.Controller },
             "select-code-offer"
         );
@@ -1184,6 +1471,8 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
 
     private NetherNativeActionResult SelectCodeReplacement(PopupRegistration registration)
     {
+        if (!IsCurrentFloorOwnedPopup(registration))
+            return NetherNativeActionResult.BindingUnavailable("stale-native-code-replacement-popup");
         if (!TryReadMember(registration.Controller, "_popupType", out object? rawPopupType)
             || rawPopupType == null
             || !TryConvertInt32(rawPopupType, out int popupType)
@@ -1250,7 +1539,7 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         PopupRegistration? registration;
         lock (_gate)
             registration = _codeSelectPopup;
-        if (registration == null)
+        if (registration == null || !IsCurrentFloorOwnedPopup(registration))
             return NetherNativeActionResult.BindingUnavailable("missing-code-select-popup");
 
         return TryInvokeExact(
@@ -1492,7 +1781,9 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         object target,
         NetherNativeMethodDescriptor descriptor,
         object[] arguments,
-        string action
+        string action,
+        bool registerNativeActionTask = true,
+        Action<object?>? observeTask = null
     )
     {
         if (!TryResolveExactMethod(target.GetType(), descriptor, InstanceFlags, out string error, out MethodInfo? method))
@@ -1500,7 +1791,9 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         try
         {
             object? result = method!.Invoke(target, arguments);
-            RegisterNativeActionTask(result);
+            observeTask?.Invoke(result);
+            if (registerNativeActionTask)
+                RegisterNativeActionTask(result);
             return NetherNativeActionResult.Started("native-" + action);
         }
         catch (TargetInvocationException ex)
@@ -1521,6 +1814,19 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             return;
         lock (_gate)
             _nativeActionTask = task;
+    }
+
+    private void RegisterFloorParentTask(object? task)
+    {
+        if (task == null)
+            return;
+        lock (_gate)
+        {
+            if (_floorParentAction == null)
+                return;
+            _floorParentTask = task;
+            _floorParentTaskWait.ObserveRegistration();
+        }
     }
 
     private static NetherNativeActionResult TryInvokeNoArgumentDelegate(object callback, string action)
@@ -1552,6 +1858,16 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
     )
     {
         NetherNativeMethodDescriptor descriptor = new(callbackName, parameterTypeNames, "System.Void");
+        return TryInvokeGeneratedCallback(controller, descriptor, arguments, action);
+    }
+
+    private static NetherNativeActionResult TryInvokeGeneratedCallback(
+        object controller,
+        NetherNativeMethodDescriptor descriptor,
+        object?[] arguments,
+        string action
+    )
+    {
         if (!TryResolveGeneratedCallback(controller.GetType(), descriptor, out string error, out object? singleton, out MethodInfo? method))
             return NetherNativeActionResult.BindingUnavailable(error);
         try
@@ -2669,6 +2985,21 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
             InstanceFlags
         ),
         new(
+            PopupBaseTypeName,
+            new NetherNativeMethodDescriptor("Close", Array.Empty<string>(), "System.Void"),
+            InstanceFlags
+        ),
+        new(
+            PopupBaseTypeName,
+            new NetherNativeMethodDescriptor("ImmediatelyClose", Array.Empty<string>(), "System.Void"),
+            InstanceFlags
+        ),
+        new(
+            MonoBehaviourWithUniTaskTypeName,
+            new NetherNativeMethodDescriptor("OnDestroy", Array.Empty<string>(), "System.Void"),
+            InstanceFlags
+        ),
+        new(
             EventPopupControllerTypeName,
             new NetherNativeMethodDescriptor(
                 "SetupPopupEvent",
@@ -2811,7 +3142,15 @@ internal sealed class NetherRuntimeBridge : INetherRuntimeBridge
         Close,
     }
 
-    private readonly record struct PopupRegistration(object Controller, object Popup, object? Close, long Sequence);
+    private readonly record struct PopupRegistration(
+        object Controller,
+        object Popup,
+        object? Close,
+        long Sequence,
+        NetherActionKind OwnerAction,
+        long OwnerGeneration,
+        bool IsLive
+    );
 
     private readonly record struct NativePatchBinding(
         string TypeName,

@@ -25,9 +25,26 @@ internal enum NetherRuntimePopupKind
 internal sealed record NetherRuntimePopupContext
 {
     public NetherRuntimePopupKind Kind { get; init; }
+    /// <summary>
+    /// A popup may be consumed only by the native parent action which created it.  The bridge
+    /// stamps this immutable ownership tuple at registration time; a later floor click or an
+    /// out-of-order close can therefore never replay a stale Wait popup.
+    /// </summary>
+    public NetherActionKind OwnerAction { get; init; }
+    public long OwnerGeneration { get; init; }
+    public long Sequence { get; init; }
     public int RawFloorType { get; init; }
     public IReadOnlyList<NetherEventOption> Options { get; init; } = Array.Empty<NetherEventOption>();
     public IReadOnlyList<NetherShopContent> ShopContents { get; init; } = Array.Empty<NetherShopContent>();
+}
+
+internal readonly record struct NetherRuntimePopupResult(NetherRuntimePopupContext? Popup, string Detail)
+{
+    public bool IsSuccess => Popup != null && Detail.Length == 0;
+
+    public static NetherRuntimePopupResult Success(NetherRuntimePopupContext popup) => new(popup, string.Empty);
+
+    public static NetherRuntimePopupResult Failure(string detail) => new(null, detail);
 }
 
 internal enum NetherPopupDispatchKind

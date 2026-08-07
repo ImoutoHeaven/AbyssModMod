@@ -50,6 +50,9 @@
     <Compile Include="..\AbyssMod\Services\NetherBattleSettingsLeaseState.cs" Link="NetherBattleSettingsLeaseState.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleSettingsLeaseState.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherActionReconcilePolicy.cs" Link="NetherActionReconcilePolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherActionReconcilePolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherPopupDispatchPolicy.cs" Link="NetherPopupDispatchPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherPopupDispatchPolicy.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherPopupOwnershipRegistry.cs" Link="NetherPopupOwnershipRegistry.cs" Condition="Exists('..\AbyssMod\Services\NetherPopupOwnershipRegistry.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherRuntimeFlowCoordinator.cs" Link="NetherRuntimeFlowCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeFlowCoordinator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCodePopupNativeBinding.cs" Link="NetherCodePopupNativeBinding.cs" Condition="Exists('..\AbyssMod\Services\NetherCodePopupNativeBinding.cs')" />
     <Compile Include="..\AbyssMod\Core\UpstreamTranslationPolicy.cs" Link="UpstreamTranslationPolicy.cs" />
     <Compile Include="..\AbyssMod\Models\Manifest.cs" Link="Manifest.cs" />
   </ItemGroup>
