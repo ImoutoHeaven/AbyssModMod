@@ -20,6 +20,8 @@ public static class PatchManager
         Harmony.CreateAndPatchAll(typeof(ItemPatch));
         Harmony.CreateAndPatchAll(typeof(BattleSessionAutoSLPatch));
         Harmony.CreateAndPatchAll(typeof(BattleSettlementPayloadProbePatch));
+        Harmony.CreateAndPatchAll(typeof(NetherAutoClimbPatch));
+        Harmony.CreateAndPatchAll(typeof(NetherAutoClimbResultPatch));
         Harmony.CreateAndPatchAll(typeof(GeneralTextPatch));
         Harmony.CreateAndPatchAll(typeof(MasterDataTranslationPatch));
 #if DEBUG

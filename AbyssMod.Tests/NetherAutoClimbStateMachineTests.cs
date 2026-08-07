@@ -123,6 +123,48 @@ public class NetherAutoClimbStateMachineTests
         Assert.Equal(NetherAutoClimbPhase.AwaitingBattle, machine.Phase);
     }
 
+    [Fact]
+    public void Native_binding_selector_requires_one_exact_full_signature_match()
+    {
+        NetherNativeMethodDescriptor expected = new(
+            "OnFloorClickedEventAsync",
+            new[] { "System.Int32", "System.Int32" },
+            "Cysharp.Threading.Tasks.UniTask");
+        NetherNativeMethodDescriptor selected = expected;
+        NetherNativeMethodDescriptor wrongReturn = new(
+            "OnFloorClickedEventAsync",
+            new[] { "System.Int32", "System.Int32" },
+            "System.Void");
+
+        NetherNativeBindingSelection selection = NetherNativeMethodBindingSelector.Select(
+            expected,
+            new[] { selected, wrongReturn });
+
+        Assert.Equal(NetherNativeActionResultKind.Started, selection.ResultKind);
+        Assert.Equal(selected, selection.Method);
+    }
+
+    [Fact]
+    public void Native_binding_selector_fails_closed_for_zero_or_ambiguous_matches()
+    {
+        NetherNativeMethodDescriptor expected = new(
+            "OnFloorClickedEventAsync",
+            new[] { "System.Int32", "System.Int32" },
+            "Cysharp.Threading.Tasks.UniTask");
+        NetherNativeMethodDescriptor wrongArity = new(
+            "OnFloorClickedEventAsync",
+            new[] { "System.Int32" },
+            "Cysharp.Threading.Tasks.UniTask");
+
+        NetherNativeBindingSelection none = NetherNativeMethodBindingSelector.Select(expected, new[] { wrongArity });
+        NetherNativeBindingSelection many = NetherNativeMethodBindingSelector.Select(expected, new[] { expected, expected });
+
+        Assert.Equal(NetherNativeActionResultKind.BindingUnavailable, none.ResultKind);
+        Assert.Null(none.Method);
+        Assert.Equal(NetherNativeActionResultKind.BindingUnavailable, many.ResultKind);
+        Assert.Null(many.Method);
+    }
+
     private static NetherAutoClimbStateMachine StableMachine()
     {
         var machine = new NetherAutoClimbStateMachine();

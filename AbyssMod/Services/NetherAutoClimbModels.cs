@@ -91,6 +91,119 @@ internal enum NetherActionOutcome
     Ambiguous,
 }
 
+/// <summary>
+/// The bridge never treats an unavailable native binding as a failed action: a failed
+/// binding means that no request was made and the coordinator must pause safely.
+/// </summary>
+internal enum NetherNativeActionResultKind
+{
+    Started,
+    Completed,
+    Rejected,
+    UnknownOutcome,
+    BindingUnavailable,
+}
+
+internal readonly record struct NetherNativeActionResult(
+    NetherNativeActionResultKind Kind,
+    string Detail
+)
+{
+    public static NetherNativeActionResult Started(string detail) => new(NetherNativeActionResultKind.Started, detail);
+
+    public static NetherNativeActionResult Completed(string detail) => new(NetherNativeActionResultKind.Completed, detail);
+
+    public static NetherNativeActionResult Rejected(string detail) => new(NetherNativeActionResultKind.Rejected, detail);
+
+    public static NetherNativeActionResult UnknownOutcome(string detail) => new(NetherNativeActionResultKind.UnknownOutcome, detail);
+
+    public static NetherNativeActionResult BindingUnavailable(string detail) => new(NetherNativeActionResultKind.BindingUnavailable, detail);
+}
+
+/// <summary>
+/// A versioned native signature, represented without a reflection dependency so its
+/// fail-closed matching rules can be characterized in the pure test project.
+/// </summary>
+internal sealed record NetherNativeMethodDescriptor(
+    string Name,
+    IReadOnlyList<string> ParameterTypeNames,
+    string ReturnTypeName
+)
+{
+    public int Arity => ParameterTypeNames.Count;
+}
+
+internal readonly record struct NetherNativeBindingSelection(
+    NetherNativeActionResultKind ResultKind,
+    NetherNativeMethodDescriptor? Method,
+    string Detail
+);
+
+internal static class NetherNativeMethodBindingSelector
+{
+    public static NetherNativeBindingSelection Select(
+        NetherNativeMethodDescriptor expected,
+        IEnumerable<NetherNativeMethodDescriptor> candidates
+    )
+    {
+        if (expected is null)
+            throw new ArgumentNullException(nameof(expected));
+        if (candidates is null)
+            throw new ArgumentNullException(nameof(candidates));
+
+        List<NetherNativeMethodDescriptor> exact = new();
+        foreach (NetherNativeMethodDescriptor candidate in candidates)
+        {
+            if (candidate is null || !Matches(expected, candidate))
+                continue;
+            exact.Add(candidate);
+        }
+
+        return exact.Count switch
+        {
+            1 => new NetherNativeBindingSelection(
+                NetherNativeActionResultKind.Started,
+                exact[0],
+                "exact-signature"
+            ),
+            0 => new NetherNativeBindingSelection(
+                NetherNativeActionResultKind.BindingUnavailable,
+                null,
+                "no-exact-signature"
+            ),
+            _ => new NetherNativeBindingSelection(
+                NetherNativeActionResultKind.BindingUnavailable,
+                null,
+                "ambiguous-exact-signature"
+            ),
+        };
+    }
+
+    private static bool Matches(NetherNativeMethodDescriptor expected, NetherNativeMethodDescriptor candidate)
+    {
+        if (
+            !string.Equals(expected.Name, candidate.Name, StringComparison.Ordinal)
+            || expected.Arity != candidate.Arity
+            || !string.Equals(expected.ReturnTypeName, candidate.ReturnTypeName, StringComparison.Ordinal)
+        )
+            return false;
+
+        for (int index = 0; index < expected.Arity; index++)
+        {
+            if (
+                !string.Equals(
+                    expected.ParameterTypeNames[index],
+                    candidate.ParameterTypeNames[index],
+                    StringComparison.Ordinal
+                )
+            )
+                return false;
+        }
+
+        return true;
+    }
+}
+
 internal enum NetherCombatLane
 {
     Auto,
