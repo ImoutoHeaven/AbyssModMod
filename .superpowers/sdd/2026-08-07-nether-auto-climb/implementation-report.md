@@ -476,3 +476,33 @@ Milestone B2 may extend `NetherReadOnlyReconcileCoordinator` and the immutable `
 - Fresh copied-repository focused coverage for BridgeEntry/core/controller/Keep/Shop/Reload/runtime-flow passed `49/49`, `0` failed/skipped. Fresh copied-repository full suite passed `601/601`, `0` failed/skipped. The usual nullable/reflection-fixture/analyzer warnings remain non-fatal.
 - Fresh RO-game Release verification used `ABYSS_GAME_DIR=/game` with `/game:ro` and `/reverse:ro`; it completed with `0` warnings / `0` errors. `git diff --check` passed before staging.
 - The only intentional live-only boundary remains the reviewer-accepted recovered direct-Wait Event/Recovery/Treasure popup with no original owner-correlated floor-parent task. It pauses as `direct-wait-event-parent-task-unavailable` and performs zero native mutation and zero GET; no speculative late state-machine observer is installed.
+
+## Round 6 — exact packaged Code-terminal interop binding
+
+### Packaged interop evidence and fail-closed resolver
+
+- A disposable Docker characterizer loaded the read-only `/game/BepInEx/interop/Project.dll` in an isolated `AssemblyLoadContext` (with dependencies resolved only from `/game/BepInEx/interop` and `/game/BepInEx/core`). It verified the current package exposes the public nested holder `Project.Nether.AbyssCodeSelectPopup.AbyssCodeSelectPopupController.__c`, its static singleton property `__9`, and the public instance callbacks `_SetupPopupEvent_b__12_3` (detail), `_SetupPopupEvent_b__12_2` (confirm), and `_SetupPopupEvent_b__12_0` (cancel).
+- The same characterization uniquely resolved the exact static `Project.Nether.NetherUtility` task factories:
+  - confirm: `Method_Internal_Static_UniTask_AbyssCodeSelectPopupController_Int64_NetherPartyModel_CancellationToken_0(controller, Int64, NetherPartyModel, Il2CppSystem.Threading.CancellationToken) -> UniTask`;
+  - cancel: `Method_Internal_Static_UniTask_AbyssCodeSelectPopupController_CancellationToken_0(controller, Il2CppSystem.Threading.CancellationToken) -> UniTask`.
+  No relevant `ObfuscatedNameAttribute` is present on this packaged version. The resolver still accepts a future exact attribute match, but never uses an arity-only, substring, raw cpp2il-name, `<>c`, `<>9`, or `System.Threading.CancellationToken` fallback. Zero or multiple exact candidates return `BindingUnavailable`.
+- `NetherRuntimeBridge.SelectCode` now sends detail and confirm through `NetherCodePopupInteropResolver`; Keep sends cancel through that same resolver. `GetCodeSelectionTaskPatchTarget()` and `GetCodeKeepCancelTaskPatchTarget()` resolve the two generated task factories through the matching bindings. The legacy generic generated-callback helper remains only for the unrelated checkpoint callbacks.
+- `PatchManager.Initialize()` registers `NetherAutoClimbCodeSelectionLifecyclePatch` and `NetherAutoClimbCodeKeepCancelLifecyclePatch` exactly once. Their `TargetMethod` implementations delegate to the corresponding bridge target methods, so the observer chain remains native callback → exact generated UniTask → owner-correlated parent gate → one GET-only reconciliation.
+
+### Reconcile hardening
+
+- `NetherActionReconcilePolicy` now requires exact checked aggregate reload arithmetic for every composed Code terminal (`SelectCode` or `KeepCode`), including the direct/no-reload case `after.CodeReloadCount == before.CodeReloadCount`. A direct SelectCode with a decrement, a composed Select/Keep with no Reload stage but a decrement, or an aggregate mismatch is `Ambiguous`; it cannot be reported Applied. Owned child Select stages prove the portfolio only, leaving the sole aggregate resource proof to the parent transaction's final authority snapshot.
+
+### TDD and mutation evidence
+
+- RED: a fresh copied-repo focused run first produced `3` failures out of `19`: Keep-cancel was absent from `PatchManager`, and both direct SelectCode and composed zero-Reload Select/Keep incorrectly accepted a reload-count decrement. The failures were fixed only after adding the registration and exact arithmetic above.
+- GREEN: `NetherCodePopupInteropResolverTests`, `NetherCodePopupNativeBindingTests`, lifecycle registration/target contract tests, reconcile tests, shared owned-popup runtime/entry tests, and the real controller E2E seam passed `65/65` in a fresh Docker copy. The package test is permanent and reads `/game` each run; it verifies holder/singleton, all three callbacks, and both task methods without attempting to initialize an IL2CPP singleton outside the game.
+- Disposable Docker-copy mutations were detected: replacing the sanitized confirm callback with the raw cpp2il name failed the packaged characterizer; replacing the IL2CPP token with `System.Threading.CancellationToken` failed it; deleting the Keep-cancel registration failed the registration regression. Thus the tests do not silently accept the old raw-name path.
+- Production ordering is covered jointly rather than by manually completing a bridge observer: package resolution proves the actual targets, the registration contract proves Harmony installs both observers, and `NetherOwnedPopupNativeStageRuntime`/`NetherOwnedPopupStageBridgeEntry` plus controller E2E prove the owner → child task → original parent → one GET gate. The native callback itself is not invoked in a non-game test process.
+
+### Fresh verification before commit
+
+- Fresh copied-repo focused Docker test command filtered `NetherCodePopupInteropResolverTests`, `NetherCodePopupNativeBindingTests`, `NetherCodeLifecyclePatchRegistrationTests`, `NetherActionReconcilePolicyTests`, `NetherOwnedPopupNativeStageRuntimeTests`, `NetherOwnedPopupStageBridgeEntryTests`, and `NetherAutoClimbControllerEndToEndTests`: `65/65` passed, `0` failed/skipped. Existing nullable/reflection-fixture/analyzer warnings remain non-fatal.
+- Fresh copied-repo complete suite: `dotnet test AbyssMod.Tests/AbyssMod.Tests.csproj --logger 'console;verbosity=minimal'` passed `612/612`, `0` failed/skipped.
+- Fresh read-only game Release build: `ABYSS_GAME_DIR=/game dotnet build AbyssMod/AbyssMod.csproj -c Release -p:BaseOutputPath=/tmp/abyss-round6-output/` succeeded with `0` warnings and `0` errors. `/game` and `/reverse` remained mounted read-only; no game DLL was changed.
+- The retained boundary is unchanged: a recovered direct `Wait` Event/Recovery/Treasure popup lacking the original owner-correlated parent task pauses as `direct-wait-event-parent-task-unavailable`, with zero native mutation and zero GET.

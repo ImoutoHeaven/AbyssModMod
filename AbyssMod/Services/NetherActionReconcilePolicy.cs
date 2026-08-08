@@ -74,6 +74,7 @@ internal static class NetherActionReconcilePolicy
         if (stages.Count != 0)
         {
             int reloadStageCount = 0;
+            bool hasCodeTerminal = false;
             foreach (NetherFloorPopupStage stage in stages)
             {
                 if (stage == null || stage.ExpectedAfterStatus != action.ExpectedAfterStatus)
@@ -91,13 +92,22 @@ internal static class NetherActionReconcilePolicy
                         return NetherActionOutcome.Ambiguous;
                     }
                 }
+
+                if (stage.PopupKind == NetherRuntimePopupKind.CodeOffer
+                    && (stage.ActionKind == NetherActionKind.SelectCode
+                        || stage.ActionKind == NetherActionKind.KeepCode))
+                {
+                    hasCodeTerminal = true;
+                }
             }
 
             // Every retained Reload was individually proven by the live epoch coordinator,
             // but the only authority snapshot is the final GET.  Verify their aggregate
             // resource delta once; applying before-1 to each stage would reject a valid
-            // [Reload, Reload, Select] chain against its one final snapshot.
-            if (reloadStageCount > 0)
+            // [Reload, Reload, Select] chain against its one final snapshot.  A terminal
+            // Select/Keep must prove the same arithmetic even when it retained zero Reload
+            // stages: otherwise a direct terminal could accept an unrelated ticket decrement.
+            if (hasCodeTerminal)
             {
                 try
                 {
@@ -175,7 +185,7 @@ internal static class NetherActionReconcilePolicy
             NetherRuntimePopupKind.Shop when stage.ActionKind == NetherActionKind.BuyShopItem =>
                 EvaluateShopBuy(child, before, after),
             NetherRuntimePopupKind.CodeOffer when stage.ActionKind == NetherActionKind.SelectCode =>
-                EvaluateCodeSelect(child, before, after),
+                EvaluateCodeSelectPortfolio(child, before, after),
             NetherRuntimePopupKind.CodeOffer when stage.ActionKind == NetherActionKind.ReloadCode =>
                 EvaluateCodeReload(before, after),
             // Reload consumption is aggregated by the parent transaction.  Keep itself proves
@@ -300,6 +310,18 @@ internal static class NetherActionReconcilePolicy
     }
 
     private static NetherActionOutcome EvaluateCodeSelect(
+        NetherPlannedAction action,
+        NetherSnapshot before,
+        NetherSnapshot after
+    )
+    {
+        if (after.CodeReloadCount != before.CodeReloadCount)
+            return UnchangedOrAmbiguous(before, after);
+
+        return EvaluateCodeSelectPortfolio(action, before, after);
+    }
+
+    private static NetherActionOutcome EvaluateCodeSelectPortfolio(
         NetherPlannedAction action,
         NetherSnapshot before,
         NetherSnapshot after

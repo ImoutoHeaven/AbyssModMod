@@ -56,6 +56,28 @@ public class NetherActionReconcilePolicyTests
     }
 
     [Fact]
+    public void Direct_code_select_requires_zero_reload_delta_when_no_reload_stage_was_retained()
+    {
+        NetherSnapshot before = Snapshot(codeReload: 2, codeHash: "codes:none") with
+        {
+            Codes = Array.Empty<NetherCodeState>(),
+        };
+        NetherSnapshot wrongReloadDelta = Snapshot(codeReload: 1, codeHash: "codes:30024") with
+        {
+            Codes = new[] { new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1) },
+        };
+
+        Assert.Equal(
+            NetherActionOutcome.Ambiguous,
+            NetherActionReconcilePolicy.Evaluate(
+                new NetherPlannedAction(NetherActionKind.SelectCode) { CodeId = 30024 },
+                before,
+                wrongReloadDelta
+            )
+        );
+    }
+
+    [Fact]
     public void Exact_shop_content_and_cost_is_applied_but_a_wrong_content_is_not()
     {
         NetherSnapshot before = Snapshot(items: Array.Empty<NetherRewardItem>(), gold: 100);
@@ -358,6 +380,40 @@ public class NetherActionReconcilePolicyTests
                 CodeHash = "codes:40024",
             }
         ));
+    }
+
+    [Fact]
+    public void Composed_code_terminals_require_an_exact_zero_reload_delta_when_there_are_no_reload_stages()
+    {
+        NetherSnapshot selectBefore = Snapshot(floorId: 10, codeReload: 2, codeHash: "codes:none") with
+        {
+            Codes = Array.Empty<NetherCodeState>(),
+        };
+        NetherSnapshot selectWrongReload = Snapshot(floorId: 11, floorLevel: 11, codeReload: 1, codeHash: "codes:30024") with
+        {
+            Codes = new[] { new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1) },
+        };
+        NetherPlannedAction select = ComposedFloor(NetherRuntimePopupKind.CodeOffer, NetherActionKind.SelectCode) with
+        {
+            CodeId = 30024,
+            OwnedPopupStages = new[] { CodeStage(NetherActionKind.SelectCode, epoch: 0, codeId: 30024) },
+        };
+
+        NetherSnapshot keepBefore = Snapshot(floorId: 10, codeReload: 2, codeHash: "codes:30024") with
+        {
+            Codes = new[] { new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1) },
+        };
+        NetherSnapshot keepWrongReload = Snapshot(floorId: 11, floorLevel: 11, codeReload: 1, codeHash: "codes:30024") with
+        {
+            Codes = new[] { new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1) },
+        };
+        NetherPlannedAction keep = ComposedFloor(NetherRuntimePopupKind.CodeOffer, NetherActionKind.KeepCode) with
+        {
+            OwnedPopupStages = new[] { CodeStage(NetherActionKind.KeepCode, epoch: 0) },
+        };
+
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(select, selectBefore, selectWrongReload));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(keep, keepBefore, keepWrongReload));
     }
 
     [Fact]

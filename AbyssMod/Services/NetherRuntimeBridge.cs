@@ -341,22 +341,12 @@ internal sealed class NetherRuntimeBridge : NetherOwnedPopupStageBridgeAdapter, 
         Type? type = AccessTools.TypeByName(NetherUtilityTypeName);
         if (type == null)
             return null;
-        return TryResolveExactMethod(
+        return NetherCodePopupInteropResolver.TryResolveStaticMethod(
             type,
-            new NetherNativeMethodDescriptor(
-                "<OpenAbyssCodeSelectPopupIfNeededAsync>g__HandleConfirmSequenceAsync|19_2",
-                new[]
-                {
-                    CodeSelectPopupControllerTypeName,
-                    "System.Int64",
-                    NetherPartyModelTypeName,
-                    "System.Threading.CancellationToken",
-                },
-                UniTaskTypeName
-            ),
-            StaticFlags,
-            out _
-        );
+            NetherCodePopupNativeBinding.ConfirmTaskBinding(CodeSelectPopupControllerTypeName),
+            out _,
+            out MethodInfo? method
+        ) ? method : null;
     }
 
     internal static MethodBase? GetCodeKeepCancelTaskPatchTarget()
@@ -364,12 +354,12 @@ internal sealed class NetherRuntimeBridge : NetherOwnedPopupStageBridgeAdapter, 
         Type? type = AccessTools.TypeByName(NetherUtilityTypeName);
         if (type == null)
             return null;
-        return TryResolveExactMethod(
+        return NetherCodePopupInteropResolver.TryResolveStaticMethod(
             type,
-            NetherCodePopupNativeBinding.CancelSequenceDescriptor(CodeSelectPopupControllerTypeName),
-            StaticFlags,
-            out _
-        );
+            NetherCodePopupNativeBinding.CancelTaskBinding(CodeSelectPopupControllerTypeName),
+            out _,
+            out MethodInfo? method
+        ) ? method : null;
     }
 
     internal static void ObservePatchedCall(MethodBase originalMethod, object instance, object[] arguments)
@@ -2189,10 +2179,9 @@ internal sealed class NetherRuntimeBridge : NetherOwnedPopupStageBridgeAdapter, 
 
         // `b__12_3` is OnDetailClick -> OnClickDetail.  It changes the popup's selected detail
         // before the exact Receive callback below forwards controller._onConfirm(selectedId).
-        NetherNativeActionResult selectDetail = TryInvokeGeneratedCallback(
+        NetherNativeActionResult selectDetail = TryInvokeVersionedCodePopupCallback(
             registration.Value.Controller,
-            NetherCodePopupNativeBinding.DetailCallback,
-            new[] { "System.Int32", CodeSelectPopupControllerTypeName, registration.Value.Popup.GetType().FullName ?? string.Empty },
+            NetherCodePopupNativeBinding.DetailCallbackBinding(CodeSelectPopupControllerTypeName),
             new object?[] { offerIndex, registration.Value.Controller, registration.Value.Popup },
             "select-code-offer-detail"
         );
@@ -2211,9 +2200,9 @@ internal sealed class NetherRuntimeBridge : NetherOwnedPopupStageBridgeAdapter, 
         // Packaged-game ISIL: b__12_0 invokes controller._onCancel; b__12_2 invokes
         // controller._onConfirm(selectedId).  Detail selection above must therefore be
         // followed by b__12_2, never the visually adjacent cancel callback.
-        NetherNativeActionResult confirm = TryInvokeGeneratedCallback(
+        NetherNativeActionResult confirm = TryInvokeVersionedCodePopupCallback(
             registration.Value.Controller,
-            NetherCodePopupNativeBinding.ConfirmDescriptor(CodeSelectPopupControllerTypeName),
+            NetherCodePopupNativeBinding.ConfirmCallbackBinding(CodeSelectPopupControllerTypeName),
             new object?[] { null, registration.Value.Controller },
             "select-code-offer"
         );
@@ -2426,9 +2415,9 @@ internal sealed class NetherRuntimeBridge : NetherOwnedPopupStageBridgeAdapter, 
         // Packaged ISIL: AbyssCodeSelectPopupController.<>c.<SetupPopupEvent>b__12_0
         // invokes controller._onCancel.  That closure calls the static generated cancel
         // sequence below with Forget(), which Harmony observes rather than inventing a task.
-        NetherNativeActionResult cancel = TryInvokeGeneratedCallback(
+        NetherNativeActionResult cancel = TryInvokeVersionedCodePopupCallback(
             registration.Value.Controller,
-            NetherCodePopupNativeBinding.CancelDescriptor(CodeSelectPopupControllerTypeName),
+            NetherCodePopupNativeBinding.CancelCallbackBinding(CodeSelectPopupControllerTypeName),
             new object?[] { null, registration.Value.Controller },
             "keep-code-offer"
         );
@@ -3008,6 +2997,56 @@ internal sealed class NetherRuntimeBridge : NetherOwnedPopupStageBridgeAdapter, 
     {
         NetherNativeMethodDescriptor descriptor = new(callbackName, parameterTypeNames, "System.Void");
         return TryInvokeGeneratedCallback(controller, descriptor, arguments, action);
+    }
+
+    /// <summary>
+    /// Invokes only the current packaged Code-offer generated callbacks.  Unlike the legacy
+    /// checkpoint helper below, this resolver understands BepInEx sanitization and exact
+    /// ObfuscatedName contracts, so cpp2il's raw <c>&lt;&gt;c</c>/<c>CancellationToken</c> names
+    /// cannot accidentally select a similarly-shaped wrong native method.
+    /// </summary>
+    private static NetherNativeActionResult TryInvokeVersionedCodePopupCallback(
+        object controller,
+        NetherCodePopupInteropMethodBinding binding,
+        object?[] arguments,
+        string action
+    )
+    {
+        if (!NetherCodePopupInteropResolver.TryResolveGeneratedCallback(
+                controller.GetType(),
+                binding,
+                out string error,
+                out object? singleton,
+                out MethodInfo? method
+            ))
+        {
+            return NetherNativeActionResult.BindingUnavailable(error);
+        }
+
+        try
+        {
+            object?[] invokeArguments = (object?[])arguments.Clone();
+            ParameterInfo[] parameters = method!.GetParameters();
+            if (parameters.Length != invokeArguments.Length)
+                return NetherNativeActionResult.BindingUnavailable("binding-unavailable:" + action + ":argument-count");
+            for (int index = 0; index < invokeArguments.Length; index++)
+            {
+                if (invokeArguments[index] == null)
+                    invokeArguments[index] = CreateDefaultValue(parameters[index].ParameterType);
+            }
+            method.Invoke(singleton, invokeArguments);
+            return NetherNativeActionResult.Started("native-" + action);
+        }
+        catch (TargetInvocationException ex)
+        {
+            return NetherNativeActionResult.UnknownOutcome(FormatInvocationException(action, ex));
+        }
+        catch (Exception ex)
+        {
+            return NetherNativeActionResult.UnknownOutcome(
+                "native-" + action + "-exception:" + ex.GetType().Name + ":" + ex.Message
+            );
+        }
     }
 
     private static NetherNativeActionResult TryInvokeGeneratedCallback(

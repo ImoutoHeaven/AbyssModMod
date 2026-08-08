@@ -24,6 +24,7 @@ public static class PatchManager
         Harmony.CreateAndPatchAll(typeof(NetherAutoClimbResultPatch));
         Harmony.CreateAndPatchAll(typeof(NetherAutoClimbBattleLifecyclePatch));
         Harmony.CreateAndPatchAll(typeof(NetherAutoClimbCodeSelectionLifecyclePatch));
+        Harmony.CreateAndPatchAll(typeof(NetherAutoClimbCodeKeepCancelLifecyclePatch));
         Harmony.CreateAndPatchAll(typeof(GeneralTextPatch));
         Harmony.CreateAndPatchAll(typeof(MasterDataTranslationPatch));
 #if DEBUG

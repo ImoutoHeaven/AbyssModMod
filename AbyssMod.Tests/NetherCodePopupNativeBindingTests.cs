@@ -8,8 +8,10 @@ public class NetherCodePopupNativeBindingTests
     [Fact]
     public void Normal_offer_confirmation_uses_distinct_confirm_callback_not_cancel()
     {
-        Assert.Equal("<SetupPopupEvent>b__12_2", NetherCodePopupNativeBinding.ConfirmCallback);
-        Assert.Equal("<SetupPopupEvent>b__12_0", NetherCodePopupNativeBinding.CancelCallback);
+        Assert.Equal("_SetupPopupEvent_b__12_2", NetherCodePopupNativeBinding.ConfirmCallback);
+        Assert.Equal("_SetupPopupEvent_b__12_0", NetherCodePopupNativeBinding.CancelCallback);
+        Assert.Equal("<SetupPopupEvent>b__12_2", NetherCodePopupNativeBinding.ConfirmCallbackObfuscatedName);
+        Assert.Equal("<SetupPopupEvent>b__12_0", NetherCodePopupNativeBinding.CancelCallbackObfuscatedName);
         Assert.NotEqual(NetherCodePopupNativeBinding.CancelCallback, NetherCodePopupNativeBinding.ConfirmCallback);
         Assert.NotEqual(NetherCodePopupNativeBinding.DetailCallback, NetherCodePopupNativeBinding.ConfirmCallback);
     }
@@ -92,5 +94,41 @@ public class NetherCodePopupNativeBindingTests
 
         Assert.Equal(NetherNativeActionResultKind.BindingUnavailable, selected.ResultKind);
         Assert.Null(selected.Method);
+    }
+
+    [Fact]
+    public void Packaged_sanitized_confirm_callback_shape_is_not_lost_to_the_cpp2il_raw_name()
+    {
+        const string controller = "Project.Nether.AbyssCodeSelectPopup.AbyssCodeSelectPopupController";
+        NetherNativeBindingSelection selected = NetherNativeMethodBindingSelector.Select(
+            NetherCodePopupNativeBinding.ConfirmDescriptor(controller),
+            [
+                new NetherNativeMethodDescriptor(
+                    "_SetupPopupEvent_b__12_2",
+                    new[] { "UniRx.Unit", controller },
+                    "System.Void"
+                ) { IsStatic = false },
+            ]
+        );
+
+        Assert.Equal(NetherNativeActionResultKind.Started, selected.ResultKind);
+    }
+
+    [Fact]
+    public void Packaged_sanitized_keep_task_shape_uses_il2cpp_cancellation_token()
+    {
+        const string controller = "Project.Nether.AbyssCodeSelectPopup.AbyssCodeSelectPopupController";
+        NetherNativeBindingSelection selected = NetherNativeMethodBindingSelector.Select(
+            NetherCodePopupNativeBinding.CancelSequenceDescriptor(controller),
+            [
+                new NetherNativeMethodDescriptor(
+                    "Method_Internal_Static_UniTask_AbyssCodeSelectPopupController_CancellationToken_0",
+                    new[] { controller, "Il2CppSystem.Threading.CancellationToken" },
+                    "Cysharp.Threading.Tasks.UniTask"
+                ) { IsStatic = true },
+            ]
+        );
+
+        Assert.Equal(NetherNativeActionResultKind.Started, selected.ResultKind);
     }
 }
