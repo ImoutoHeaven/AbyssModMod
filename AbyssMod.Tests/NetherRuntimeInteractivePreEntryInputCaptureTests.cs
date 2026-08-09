@@ -7,7 +7,7 @@ namespace AbyssMod.Tests;
 public class NetherRuntimeInteractivePreEntryInputCaptureTests
 {
     [Fact]
-    public void Exact_floor_and_master_numeric_fields_are_captured_and_all_weighted_rows_are_proved()
+    public void Exact_floor_and_master_numeric_fields_resolve_the_native_extend_event()
     {
         NetherRuntimeInteractivePreEntryCaptureResult result = Capture(
             floor: new FloorFixture { MNetherMapFloorId = 900, ExtendId = 42, FloorType = (int)NetherFloorNodeType.Event },
@@ -29,7 +29,8 @@ public class NetherRuntimeInteractivePreEntryInputCaptureTests
         Assert.Equal(42, result.Input.FloorExtendId);
         Assert.Equal(NetherFloorNodeType.Event, result.Input.FloorKind);
         Assert.True(result.Safety.IsSafe);
-        Assert.Equal(2, result.Safety.SafeOptionNumberByEventId.Count);
+        Assert.Single(result.Safety.SafeOptionNumberByEventId);
+        Assert.Equal(1, result.Safety.SafeOptionNumberByEventId[42]);
     }
 
     [Fact]
@@ -55,24 +56,13 @@ public class NetherRuntimeInteractivePreEntryInputCaptureTests
     }
 
     [Fact]
-    public void Duplicate_event_master_or_missing_referenced_part_cannot_be_promoted_to_safe()
+    public void Missing_referenced_part_cannot_be_promoted_to_safe()
     {
-        NetherRuntimeInteractivePreEntryCaptureResult duplicate = Capture(
-            events: new object[]
-            {
-                Event(42, 900, 1, 4, 1001),
-                Event(42, 900, 1, 4, 1001),
-            },
-            parts: new object[] { Part(1001, (int)NetherEffectKind.Heal, 1) }
-        );
         NetherRuntimeInteractivePreEntryCaptureResult missingPart = Capture(
             events: new object[] { Event(42, 900, 1, 4, 9999) },
             parts: Array.Empty<object>()
         );
 
-        Assert.True(duplicate.IsCaptured);
-        Assert.False(duplicate.Safety.IsSafe);
-        Assert.Equal(NetherPauseReason.UnknownMasterData, duplicate.Safety.PauseReason);
         Assert.True(missingPart.IsCaptured);
         Assert.False(missingPart.Safety.IsSafe);
         Assert.Equal(NetherPauseReason.UnknownMasterData, missingPart.Safety.PauseReason);
@@ -90,6 +80,43 @@ public class NetherRuntimeInteractivePreEntryInputCaptureTests
         Assert.False(result.Safety.IsSafe);
         Assert.Equal(NetherPauseReason.UnknownMasterData, result.Safety.PauseReason);
         Assert.Contains("unsupported-event-target", result.Safety.Detail);
+    }
+
+    [Fact]
+    public void Live_event_shape_maps_native_code_offer_without_renumbering_it()
+    {
+        NetherRuntimeInteractivePreEntryCaptureResult result = Capture(
+            floor: new FloorFixture { MNetherMapFloorId = 900, ExtendId = 35, FloorType = (int)NetherFloorNodeType.Event },
+            events: new object[] { Event(35, 900, 1, 1, 20042) },
+            parts: new object[]
+            {
+                Part(20042, target1: 5, parameter1: 50, contentType: 160, contentId: 0, amount: 1),
+            }
+        );
+
+        Assert.True(result.IsCaptured);
+        Assert.True(result.Safety.IsSafe, result.Safety.PauseReason + ":" + result.Safety.Detail);
+        Assert.Equal(1, result.Safety.SafeOptionNumberByEventId[35]);
+        NetherEffect offer = Assert.Single(result.Safety.SafeOptionProjectionByEventId[35].ExpectedEffects,
+            effect => effect.Kind == NetherEffectKind.AbyssCodeOffer);
+        Assert.Equal(0, offer.ContentId);
+    }
+
+    [Fact]
+    public void Live_target_seven_maps_to_transform_trigger_and_captures_current_codes()
+    {
+        NetherRuntimeInteractivePreEntryCaptureResult result = Capture(
+            floor: new FloorFixture { MNetherMapFloorId = 900, ExtendId = 36, FloorType = (int)NetherFloorNodeType.Event },
+            events: new object[] { Event(36, 900, 1, 1, 20043) },
+            parts: new object[] { Part(20043, target1: 7, parameter1: 0) },
+            codes: [new NetherCodeState(40024, NetherCodeEffectKind.Risk, 1)]
+        );
+
+        Assert.True(result.IsCaptured);
+        Assert.True(result.Safety.IsSafe, result.Safety.PauseReason + ":" + result.Safety.Detail);
+        NetherEffect transform = Assert.Single(result.Safety.SafeOptionProjectionByEventId[36].ExpectedEffects);
+        Assert.Equal(NetherEffectKind.AbyssCodeTransform, transform.Kind);
+        Assert.Single(result.Input!.CurrentCodes);
     }
 
     [Fact]
@@ -120,7 +147,8 @@ public class NetherRuntimeInteractivePreEntryInputCaptureTests
         IReadOnlyList<int>? hp = null,
         int? gold = 100,
         int? keys = 1,
-        bool canCloseShop = false
+        bool canCloseShop = false,
+        IReadOnlyList<NetherCodeState>? codes = null
     ) => new NetherRuntimeInteractivePreEntryInputCapture().Capture(new NetherRuntimeInteractivePreEntryCaptureRequest(
         FloorModel: floor ?? new FloorFixture
         {
@@ -143,22 +171,56 @@ public class NetherRuntimeInteractivePreEntryInputCaptureTests
             TreasureMode = NetherTreasureMode.KeyOnly,
         },
         CanCloseShop: canCloseShop
-    ));
+    )
+    {
+        CurrentCodes = codes ?? [new NetherCodeState(40024, NetherCodeEffectKind.Risk, 1)],
+        CodeCapacity = 5,
+    });
 
-    private static EventFixture Event(long eventId, long mapFloorId, int rowWeight, int eventType, long part1) => new()
+    private static EventFixture Event(
+        long eventId,
+        long mapFloorId,
+        int rowWeight,
+        int eventType,
+        long part1,
+        long part2 = 0,
+        long part3 = 0,
+        long part4 = 0
+    ) => new()
     {
         id = eventId,
         m_nether_map_floor_id = mapFloorId,
         weight = rowWeight,
         type = eventType,
         m_nether_floor_event_part_id_1 = part1,
+        m_nether_floor_event_part_id_2 = part2,
+        m_nether_floor_event_part_id_3 = part3,
+        m_nether_floor_event_part_id_4 = part4,
     };
 
-    private static PartFixture Part(long partId, int target1, long parameter1) => new()
+    private static PartFixture Part(
+        long partId,
+        int target1,
+        long parameter1,
+        int target2 = 0,
+        long parameter2 = 0,
+        int target3 = 0,
+        long parameter3 = 0,
+        int contentType = 0,
+        long contentId = 0,
+        int amount = 0
+    ) => new()
     {
         id = partId,
         target_type_1 = target1,
         select_parameter_1 = parameter1,
+        target_type_2 = target2,
+        select_parameter_2 = parameter2,
+        target_type_3 = target3,
+        select_parameter_3 = parameter3,
+        content_type = contentType,
+        content_id = contentId,
+        amount = amount,
     };
 
     private sealed class FloorFixture

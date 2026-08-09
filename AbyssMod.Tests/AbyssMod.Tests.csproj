@@ -44,6 +44,7 @@
     <Compile Include="..\AbyssMod\Services\NetherActivePartyHpSafetyMapper.cs" Link="NetherActivePartyHpSafetyMapper.cs" Condition="Exists('..\AbyssMod\Services\NetherActivePartyHpSafetyMapper.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherRuntimeActivePartyHpExtractor.cs" Link="NetherRuntimeActivePartyHpExtractor.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeActivePartyHpExtractor.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherActiveCodeErosionProjectionMapper.cs" Link="NetherActiveCodeErosionProjectionMapper.cs" Condition="Exists('..\AbyssMod\Services\NetherActiveCodeErosionProjectionMapper.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherRuntimeEnumerableReader.cs" Link="NetherRuntimeEnumerableReader.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeEnumerableReader.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherRuntimeActiveCodeErosionExtractor.cs" Link="NetherRuntimeActiveCodeErosionExtractor.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeActiveCodeErosionExtractor.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherRouteSafetyProductionCoordinator.cs" Link="NetherRouteSafetyProductionCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherRouteSafetyProductionCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherAutoClimbRouteSafetyWiring.cs" Link="NetherAutoClimbRouteSafetyWiring.cs" Condition="Exists('..\AbyssMod\Services\NetherAutoClimbRouteSafetyWiring.cs')" />
@@ -51,6 +52,8 @@
     <Compile Include="..\AbyssMod\Services\NetherBattleProjectionCalibration.cs" Link="NetherBattleProjectionCalibration.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleProjectionCalibration.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherInteractiveFloorPreEntrySafety.cs" Link="NetherInteractiveFloorPreEntrySafety.cs" Condition="Exists('..\AbyssMod\Services\NetherInteractiveFloorPreEntrySafety.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherRuntimeInteractivePreEntryInputCapture.cs" Link="NetherRuntimeInteractivePreEntryInputCapture.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeInteractivePreEntryInputCapture.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherRuntimeFloorModelValidator.cs" Link="NetherRuntimeFloorModelValidator.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeFloorModelValidator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherRuntimeFloorGraphMapper.cs" Link="NetherRuntimeFloorGraphMapper.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeFloorGraphMapper.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherNativeWaitGate.cs" Link="NetherNativeWaitGate.cs" Condition="Exists('..\AbyssMod\Services\NetherNativeWaitGate.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCheckpointNativeFlow.cs" Link="NetherCheckpointNativeFlow.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointNativeFlow.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCheckpointContinueNativeBinding.cs" Link="NetherCheckpointContinueNativeBinding.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointContinueNativeBinding.cs')" />
@@ -62,8 +65,10 @@
     <Compile Include="..\AbyssMod\Services\NetherCodeCategorySemantics.cs" Link="NetherCodeCategorySemantics.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeCategorySemantics.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodeRuntimeSemanticMapper.cs" Link="NetherCodeRuntimeSemanticMapper.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeRuntimeSemanticMapper.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherDetailedAuditLogger.cs" Link="NetherDetailedAuditLogger.cs" Condition="Exists('..\AbyssMod\Services\NetherDetailedAuditLogger.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherAutoClimbDiagnostics.cs" Link="NetherAutoClimbDiagnostics.cs" Condition="Exists('..\AbyssMod\Services\NetherAutoClimbDiagnostics.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherAutoClimbController.cs" Link="NetherAutoClimbController.cs" Condition="Exists('..\AbyssMod\Services\NetherAutoClimbController.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodePolicy.cs" Link="NetherCodePolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCodePolicy.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCodeTransformPolicy.cs" Link="NetherCodeTransformPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeTransformPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherEventPolicy.cs" Link="NetherEventPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherEventPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCheckpointPolicy.cs" Link="NetherCheckpointPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherReturnItemPolicy.cs" Link="NetherReturnItemPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherReturnItemPolicy.cs')" />
@@ -76,16 +81,28 @@
     <Compile Include="..\AbyssMod\Services\NetherShopPurchaseCloseCoordinator.cs" Link="NetherShopPurchaseCloseCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherShopPurchaseCloseCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodeReloadEpochCoordinator.cs" Link="NetherCodeReloadEpochCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeReloadEpochCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodeKeepCancelCoordinator.cs" Link="NetherCodeKeepCancelCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeKeepCancelCoordinator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCodeTransformNativeFlow.cs" Link="NetherCodeTransformNativeFlow.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeTransformNativeFlow.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherOwnedPopupNativeStageRuntime.cs" Link="NetherOwnedPopupNativeStageRuntime.cs" Condition="Exists('..\AbyssMod\Services\NetherOwnedPopupNativeStageRuntime.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherOwnedPopupStageBridgeEntry.cs" Link="NetherOwnedPopupStageBridgeEntry.cs" Condition="Exists('..\AbyssMod\Services\NetherOwnedPopupStageBridgeEntry.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherPopupDispatchPolicy.cs" Link="NetherPopupDispatchPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherPopupDispatchPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherPopupOwnershipRegistry.cs" Link="NetherPopupOwnershipRegistry.cs" Condition="Exists('..\AbyssMod\Services\NetherPopupOwnershipRegistry.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherRuntimeFlowCoordinator.cs" Link="NetherRuntimeFlowCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeFlowCoordinator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherFloorEventSequenceTaskFlow.cs" Link="NetherFloorEventSequenceTaskFlow.cs" Condition="Exists('..\AbyssMod\Services\NetherFloorEventSequenceTaskFlow.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherRecoveredFloorEventTaskLease.cs" Link="NetherRecoveredFloorEventTaskLease.cs" Condition="Exists('..\AbyssMod\Services\NetherRecoveredFloorEventTaskLease.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherContentAcquiredConfirmLease.cs" Link="NetherContentAcquiredConfirmLease.cs" Condition="Exists('..\AbyssMod\Services\NetherContentAcquiredConfirmLease.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherFloorEventSequenceNativeBinding.cs" Link="NetherFloorEventSequenceNativeBinding.cs" Condition="Exists('..\AbyssMod\Services\NetherFloorEventSequenceNativeBinding.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodePopupNativeBinding.cs" Link="NetherCodePopupNativeBinding.cs" Condition="Exists('..\AbyssMod\Services\NetherCodePopupNativeBinding.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCodeTransformNativeBinding.cs" Link="NetherCodeTransformNativeBinding.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeTransformNativeBinding.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodePopupInteropResolver.cs" Link="NetherCodePopupInteropResolver.cs" Condition="Exists('..\AbyssMod\Services\NetherCodePopupInteropResolver.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherLifecycleInteropBindings.cs" Link="NetherLifecycleInteropBindings.cs" Condition="Exists('..\AbyssMod\Services\NetherLifecycleInteropBindings.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherReadOnlyReconcileCoordinator.cs" Link="NetherReadOnlyReconcileCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherReadOnlyReconcileCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherReadOnlyReconcileNativeBinding.cs" Link="NetherReadOnlyReconcileNativeBinding.cs" Condition="Exists('..\AbyssMod\Services\NetherReadOnlyReconcileNativeBinding.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherBattleSettlementCoordinator.cs" Link="NetherBattleSettlementCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleSettlementCoordinator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleTerminalObservationPolicy.cs" Link="NetherBattleTerminalObservationPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleTerminalObservationPolicy.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleResultContinuationFlow.cs" Link="NetherBattleResultContinuationFlow.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleResultContinuationFlow.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleResultNextNativeBinding.cs" Link="NetherBattleResultNextNativeBinding.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleResultNextNativeBinding.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleResultReboundReadiness.cs" Link="NetherBattleResultReboundReadiness.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleResultReboundReadiness.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleIngressCoordinator.cs" Link="NetherBattleIngressCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleIngressCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherResultSceneCoordinator.cs" Link="NetherResultSceneCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherResultSceneCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherContinueSceneCoordinator.cs" Link="NetherContinueSceneCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherContinueSceneCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherRuntimeGenerationVisibility.cs" Link="NetherRuntimeGenerationVisibility.cs" Condition="Exists('..\AbyssMod\Services\NetherRuntimeGenerationVisibility.cs')" />

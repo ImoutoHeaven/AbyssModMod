@@ -70,6 +70,25 @@ public class NetherRouteSafetyContextBuilderTests
     }
 
     [Fact]
+    public void Known_dead_end_is_reported_as_no_terminal_path_instead_of_missing_context()
+    {
+        NetherRouteSafetyFloorInput[] floors =
+        [
+            Floor(1, 1, NetherFloorNodeType.Recovery),
+            Floor(2, 2, NetherFloorNodeType.Battle, previous: new long[] { 1 }),
+            Floor(3, 2, NetherFloorNodeType.Recovery, previous: new long[] { 1 }),
+            Floor(4, 3, NetherFloorNodeType.Boss, previous: new long[] { 3 }),
+        ];
+
+        NetherRouteSafetyContext context = Build(floors, terminals: new HashSet<long> { 4 });
+
+        Assert.True(context.IsKnown(2));
+        Assert.False(context.IsHardSafe(2));
+        Assert.Equal("known-no-terminal-path", context.DiagnosticDetail(2));
+        Assert.Equal("missing-context-entry", context.DiagnosticDetail(999));
+    }
+
+    [Fact]
     public void MissingSafeExitKey_ProducesAllExplicitUnsafeDictionaryEntriesForThatCandidate()
     {
         NetherRouteSafetyFloorInput[] floors =

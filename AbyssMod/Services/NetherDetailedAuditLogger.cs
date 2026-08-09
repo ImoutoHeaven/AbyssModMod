@@ -31,10 +31,16 @@ internal readonly record struct NetherDetailedAuditField(string Name, string Val
 /// </summary>
 internal sealed class NetherDetailedAuditLogger
 {
-    internal const int MaximumEntriesPerKind = 16;
+    // Diagnostic builds emit a floor summary plus the native-resolved Event row and up to four
+    // option rows. Keep a complete 130-floor run observable while bounding a pathological run.
+    internal const int MaximumEntriesPerKind = 1024;
     private const int MaximumKeyLength = 64;
-    private const int MaximumValueLength = 72;
-    private const int MaximumFields = 10;
+    // Unknown native event rows need enough room to preserve their exact target/content tuple.
+    // This remains bounded so a malformed runtime object cannot create an unbounded log line.
+    private const int MaximumValueLength = 192;
+    // Route diagnostics need node identity, graph links, three safety gates, both erosion
+    // projections, and the component failure. Keep all twelve while bounding every value.
+    private const int MaximumFields = 12;
     private static readonly HashSet<string> SensitiveFieldNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "name",

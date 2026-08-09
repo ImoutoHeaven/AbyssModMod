@@ -58,7 +58,7 @@ internal sealed class NetherAutoClimbRouteSafetyWiring
         bool missingProjection = false;
         if (isCombat)
         {
-            if (!plan.BattleProjectionByFloorId.TryGetValue(selected!.FloorId, out projection))
+            if (!plan.BattleProjectionByFloorId.TryGetValue(selected!.NodeId, out projection))
                 missingProjection = true;
         }
 

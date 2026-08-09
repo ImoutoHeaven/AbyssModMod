@@ -14,6 +14,19 @@ public class NetherCheckpointPolicyTests
     }
 
     [Fact]
+    public void Play_at_floor_zero_is_a_valid_initial_route_boundary()
+    {
+        NetherCheckpointDecision decision = Decide(
+            Snapshot(NetherSessionStatus.Play, floor: 0, max: 130, masterMax: 130),
+            Settings(maxDepth: 130)
+        );
+
+        Assert.Equal(NetherCheckpointDecisionKind.None, decision.Kind);
+        Assert.Equal(NetherPauseReason.None, decision.PauseReason);
+        Assert.Equal(130, decision.EffectiveMaxDepth);
+    }
+
+    [Fact]
     public void F12_never_enters_a_floor_above_effective_target()
     {
         NetherSnapshot snapshot = Snapshot(NetherSessionStatus.Play, floor: 10, max: 120, masterMax: 110);

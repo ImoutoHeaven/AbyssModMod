@@ -38,4 +38,24 @@ public class NetherPopupOwnershipRegistryTests
         Assert.True(registry.TryGetOwned(NetherActionKind.SelectFloor, secondGeneration, out NetherPopupOwnership current));
         Assert.Same(second, current.Popup);
     }
+
+    [Fact]
+    public void Child_sequence_is_monotonic_without_replacing_current_popup_even_after_clear()
+    {
+        var registry = new NetherPopupOwnershipRegistry();
+        long firstGeneration = registry.BeginOwner(NetherActionKind.SelectFloor);
+        NetherPopupOwnership first = registry.Register(new object(), NetherActionKind.SelectFloor, firstGeneration);
+        registry.Clear();
+
+        long secondGeneration = registry.BeginOwner(NetherActionKind.SelectFloor);
+        object parentPopup = new();
+        NetherPopupOwnership parent = registry.Register(parentPopup, NetherActionKind.SelectFloor, secondGeneration);
+        long childSequence = registry.ReserveChildSequence(NetherActionKind.SelectFloor, secondGeneration);
+
+        Assert.True(childSequence > parent.Sequence);
+        Assert.True(parent.Sequence > first.Sequence);
+        Assert.True(registry.TryGetOwned(NetherActionKind.SelectFloor, secondGeneration, out NetherPopupOwnership current));
+        Assert.Same(parentPopup, current.Popup);
+        Assert.Equal(parent.Sequence, current.Sequence);
+    }
 }

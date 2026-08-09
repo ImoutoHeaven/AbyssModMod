@@ -73,6 +73,18 @@ internal interface INetherOwnedPopupNativeStagePort
     NetherNativeActionResult InvokeCodeKeepCancel(NetherCodeKeepCancelOwner owner);
 
     NetherNativeActionResult PollCodeKeepCancelTask(NetherCodeKeepCancelOwner owner);
+
+    NetherNativeActionResult InvokeCodeTransform(NetherCodeTransformOwner owner) =>
+        NetherNativeActionResult.BindingUnavailable("code-transform-start-unavailable");
+
+    NetherNativeActionResult InvokeCodeTransformConfirm(NetherCodeTransformOwner owner) =>
+        NetherNativeActionResult.BindingUnavailable("code-transform-confirm-unavailable");
+
+    NetherNativeActionResult InvokeCodeTransformCompleteClose(NetherCodeTransformOwner owner) =>
+        NetherNativeActionResult.BindingUnavailable("code-transform-complete-unavailable");
+
+    NetherNativeActionResult PollCodeTransformTask(NetherCodeTransformOwner owner) =>
+        NetherNativeActionResult.BindingUnavailable("code-transform-task-unavailable");
 }
 
 internal enum NetherOwnedPopupNativeStagePumpKind
@@ -107,6 +119,7 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
     private readonly NetherShopPurchaseCloseCoordinator _shopPurchaseClose;
     private readonly NetherCodeReloadEpochCoordinator _codeReloadEpoch;
     private readonly NetherCodeKeepCancelCoordinator _codeKeepCancel;
+    private readonly NetherCodeTransformNativeFlow _codeTransform;
 
     public NetherOwnedPopupNativeStageRuntime(
         INetherOwnedPopupNativeStagePort port,
@@ -117,6 +130,7 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
         _shopPurchaseClose = new NetherShopPurchaseCloseCoordinator(maximumPendingPumps);
         _codeReloadEpoch = new NetherCodeReloadEpochCoordinator(maximumPendingPumps);
         _codeKeepCancel = new NetherCodeKeepCancelCoordinator(maximumPendingPumps);
+        _codeTransform = new NetherCodeTransformNativeFlow(maximumPendingPumps);
     }
 
     public long GetDecisionEpoch(NetherOwnedPopupStageOwner owner) =>
@@ -124,12 +138,16 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
 
     public NetherCodeKeepCancelOwner? KeepOwner => _codeKeepCancel.Owner;
 
+    public NetherCodeTransformOwner? TransformOwner => _codeTransform.Owner;
+
     public bool HasPendingMutation => _shopPurchaseClose.IsActive
         || _shopPurchaseClose.Stage == NetherShopPurchaseCloseStage.Faulted
         || _codeReloadEpoch.IsActive
         || _codeReloadEpoch.Stage == NetherCodeReloadEpochStage.Faulted
         || _codeKeepCancel.IsActive
-        || _codeKeepCancel.Stage == NetherCodeKeepCancelStage.Faulted;
+        || _codeKeepCancel.Stage == NetherCodeKeepCancelStage.Faulted
+        || _codeTransform.IsActive
+        || _codeTransform.Stage == NetherCodeTransformNativeStage.Faulted;
 
     /// <summary>
     /// Validates a final Receive/Keep decision against the same current CodeOffer tuple.  The
@@ -177,6 +195,7 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
             NetherActionKind.BuyShopItem => BeginShopPurchase(popup, owner, action),
             NetherActionKind.ReloadCode => BeginCodeReload(popup, owner),
             NetherActionKind.KeepCode => BeginCodeKeep(popup, owner),
+            NetherActionKind.TransformCode => BeginCodeTransform(popup, owner, action),
             _ => NetherNativeActionResult.Rejected("unsupported-owned-popup-stage-action:" + action.Kind),
         };
     }
@@ -199,6 +218,15 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
             )
         )
         && _codeKeepCancel.ObserveTask(owner);
+
+    public bool ObserveCodeTransformTask(NetherCodeTransformOwner owner) =>
+        _codeTransform.Owner is NetherCodeTransformOwner expected
+        && expected == owner
+        && _port.IsCurrentOwnedPopup(
+            NetherRuntimePopupKind.CodeTransform,
+            new NetherOwnedPopupStageOwner(owner.OwnerAction, owner.Generation, owner.Sequence, 0)
+        )
+        && _codeTransform.ObserveTask(owner);
 
     /// <summary>
     /// Advances one owned child at a time.  ReloadReady deliberately returns its own typed
@@ -247,6 +275,22 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
             return ToPumpResult(result, reloadReady: false);
         }
 
+        if (_codeTransform.IsActive || _codeTransform.Stage == NetherCodeTransformNativeStage.Faulted)
+        {
+            NetherNativeActionResult result = _codeTransform.Pump(
+                () => _codeTransform.Owner is NetherCodeTransformOwner owner
+                    ? _port.InvokeCodeTransformConfirm(owner)
+                    : NetherNativeActionResult.BindingUnavailable("code-transform-missing-owner"),
+                () => _codeTransform.Owner is NetherCodeTransformOwner owner
+                    ? _port.InvokeCodeTransformCompleteClose(owner)
+                    : NetherNativeActionResult.BindingUnavailable("code-transform-missing-owner"),
+                () => _codeTransform.Owner is NetherCodeTransformOwner owner
+                    ? _port.PollCodeTransformTask(owner)
+                    : NetherNativeActionResult.BindingUnavailable("code-transform-missing-owner")
+            );
+            return ToPumpResult(result, reloadReady: false);
+        }
+
         return NetherOwnedPopupNativeStagePumpResult.None();
     }
 
@@ -255,6 +299,7 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
         _shopPurchaseClose.Reset();
         _codeReloadEpoch.Reset();
         _codeKeepCancel.Reset();
+        _codeTransform.Reset();
     }
 
     private NetherNativeActionResult BeginShopPurchase(
@@ -334,6 +379,33 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
             return invoked;
 
         _codeKeepCancel.Reset();
+        return invoked;
+    }
+
+    private NetherNativeActionResult BeginCodeTransform(
+        NetherRuntimePopupContext popup,
+        NetherOwnedPopupStageOwner owner,
+        NetherPlannedAction action
+    )
+    {
+        var transformOwner = new NetherCodeTransformOwner(
+            owner.OwnerAction,
+            owner.Generation,
+            owner.Sequence,
+            action.ReplaceCodeId
+        );
+        if (popup.Kind != NetherRuntimePopupKind.CodeTransform
+            || !transformOwner.IsValid
+            || !_codeTransform.Begin(transformOwner))
+        {
+            return NetherNativeActionResult.BindingUnavailable("code-transform-already-in-flight-or-invalid");
+        }
+
+        NetherNativeActionResult invoked = _port.InvokeCodeTransform(transformOwner);
+        if (invoked.Kind == NetherNativeActionResultKind.Started)
+            return invoked;
+
+        _codeTransform.Reset();
         return invoked;
     }
 

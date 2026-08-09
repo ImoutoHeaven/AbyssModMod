@@ -56,6 +56,18 @@ internal sealed class NetherPopupOwnershipRegistry
         return ownership;
     }
 
+    /// <summary>
+    /// Allocates a fresh sequence for a native child modal without replacing the parent's
+    /// current dispatch identity.  This uses the same monotonic counter as Register so a
+    /// confirmation popup can never look older after a scene-level registry Clear.
+    /// </summary>
+    public long ReserveChildSequence(NetherActionKind action, long generation)
+    {
+        if (action == NetherActionKind.None || action != _ownerAction || generation != _ownerGeneration)
+            return 0;
+        return checked(++_nextSequence);
+    }
+
     public bool TryGetOwned(NetherActionKind action, long generation, out NetherPopupOwnership ownership)
     {
         if (_current is NetherPopupOwnership candidate

@@ -171,7 +171,7 @@ public class NetherActionReconcilePolicyTests
     }
 
     [Fact]
-    public void Composed_recovery_treasure_and_event_effects_do_not_accept_wrong_hp_item_or_code()
+    public void Composed_recovery_treasure_and_event_effects_do_not_accept_wrong_hp_or_item()
     {
         NetherSnapshot before = Snapshot(floorId: 10, gold: 20) with
         {
@@ -199,12 +199,75 @@ public class NetherActionReconcilePolicyTests
             {
                 new NetherEffect(NetherEffectKind.Heal, 20),
                 new NetherEffect(NetherEffectKind.Item, 1) { ContentId = 7001 },
-                new NetherEffect(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
             },
         };
 
         Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(action, before, exact));
         Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(action, before, wrongItem));
+    }
+
+    [Fact]
+    public void Composed_event_damage_requires_the_exact_delta_for_each_active_party_member()
+    {
+        NetherSnapshot before = Snapshot(floorId: 10) with
+        {
+            Characters = new[]
+            {
+                new NetherCharacterState(101, 1000),
+                new NetherCharacterState(102, 1000),
+                new NetherCharacterState(103, 0, IsActive: false),
+            },
+            CharacterHpHash = "101:1000:1;102:1000:1;103:0:0",
+        };
+        NetherSnapshot exact = Snapshot(floorId: 11, floorLevel: 11) with
+        {
+            Characters = new[]
+            {
+                new NetherCharacterState(101, 900),
+                new NetherCharacterState(102, 900),
+                new NetherCharacterState(103, 0, IsActive: false),
+            },
+            CharacterHpHash = "101:900:1;102:900:1;103:0:0",
+        };
+        NetherSnapshot wrongMemberDelta = exact with
+        {
+            Characters = new[]
+            {
+                new NetherCharacterState(101, 900),
+                new NetherCharacterState(102, 800),
+                new NetherCharacterState(103, 0, IsActive: false),
+            },
+            CharacterHpHash = "101:900:1;102:800:1;103:0:0",
+        };
+        NetherEffect[] effects = { new(NetherEffectKind.Damage, 100) };
+        NetherPlannedAction action = ComposedFloor(
+            NetherRuntimePopupKind.Event,
+            NetherActionKind.SelectEventOption
+        ) with
+        {
+            OptionNumber = 1,
+            ExpectedEffects = effects,
+            OwnedPopupStages = new[]
+            {
+                new NetherFloorPopupStage(
+                    NetherRuntimePopupKind.Event,
+                    NetherActionKind.SelectEventOption,
+                    OwnerGeneration: 7,
+                    Sequence: 1,
+                    ExpectedAfterStatus: NetherSessionStatus.Play,
+                    OptionNumber: 1,
+                    ExpectedEffects: effects,
+                    ContentId: 0,
+                    ContentAmount: 0,
+                    GoldCost: 0,
+                    CodeId: 0,
+                    ReplaceCodeId: 0
+                ),
+            },
+        };
+
+        Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(action, before, exact));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(action, before, wrongMemberDelta));
     }
 
     [Fact]
@@ -236,7 +299,7 @@ public class NetherActionReconcilePolicyTests
                     ExpectedEffects: new NetherEffect[]
                     {
                         new NetherEffect(NetherEffectKind.NetherGoldGain, 5),
-                        new NetherEffect(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
+                        new NetherEffect(NetherEffectKind.AbyssCodeOffer, 1),
                     },
                     ContentId: 0,
                     ContentAmount: 0,
@@ -452,7 +515,7 @@ public class NetherActionReconcilePolicyTests
                     ExpectedEffects: new NetherEffect[]
                     {
                         new(NetherEffectKind.NetherGoldGain, 5),
-                        new(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
+                        new(NetherEffectKind.AbyssCodeOffer, 1),
                         new(NetherEffectKind.Battle, 0),
                     },
                     ContentId: 0,
@@ -510,6 +573,94 @@ public class NetherActionReconcilePolicyTests
             battle,
             before,
             battleAfter with { Status = NetherSessionStatus.Play }
+        ));
+    }
+
+    [Fact]
+    public void Transform_code_requires_exact_one_removed_one_added_and_preserves_other_codes()
+    {
+        NetherSnapshot before = Snapshot(codeHash: "30024|40024") with
+        {
+            Codes =
+            [
+                new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1),
+                new NetherCodeState(40024, NetherCodeEffectKind.Risk, 1),
+            ],
+        };
+        NetherSnapshot exact = before with
+        {
+            Codes =
+            [
+                new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1),
+                new NetherCodeState(51001, NetherCodeEffectKind.General, 1),
+            ],
+            CodeHash = "30024|51001",
+        };
+        NetherPlannedAction action = new(NetherActionKind.TransformCode) { ReplaceCodeId = 40024 };
+
+        Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(action, before, exact));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(
+            action,
+            before,
+            exact with { Codes = [new NetherCodeState(51001, NetherCodeEffectKind.General, 1)], CodeHash = "51001" }
+        ));
+        Assert.Equal(NetherActionOutcome.NotApplied, NetherActionReconcilePolicy.Evaluate(
+            action,
+            before,
+            before
+        ));
+    }
+
+    [Fact]
+    public void Composed_event_transform_and_offer_reconcile_each_contract_once()
+    {
+        NetherSnapshot before = Snapshot(floorId: 10, gold: 20, codeHash: "30024|40024") with
+        {
+            Codes =
+            [
+                new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1),
+                new NetherCodeState(40024, NetherCodeEffectKind.Risk, 1),
+            ],
+        };
+        NetherSnapshot exact = Snapshot(floorId: 11, floorLevel: 11, gold: 25, codeHash: "30024|51001") with
+        {
+            Codes =
+            [
+                new NetherCodeState(30024, NetherCodeEffectKind.Safe, 1),
+                new NetherCodeState(51001, NetherCodeEffectKind.General, 1),
+            ],
+        };
+        NetherPlannedAction action = ComposedFloor(NetherRuntimePopupKind.CodeOffer, NetherActionKind.KeepCode) with
+        {
+            OwnedPopupStages =
+            [
+                new NetherFloorPopupStage(
+                    NetherRuntimePopupKind.Event,
+                    NetherActionKind.SelectEventOption,
+                    7, 1, NetherSessionStatus.Play, 1,
+                    [
+                        new NetherEffect(NetherEffectKind.NetherGoldGain, 5),
+                        new NetherEffect(NetherEffectKind.AbyssCodeTransform, 0),
+                        new NetherEffect(NetherEffectKind.AbyssCodeOffer, 1),
+                    ],
+                    0, 0, 0, 0, 0
+                ),
+                new NetherFloorPopupStage(
+                    NetherRuntimePopupKind.CodeTransform,
+                    NetherActionKind.TransformCode,
+                    7, 2, NetherSessionStatus.Play, 0,
+                    Array.Empty<NetherEffect>(),
+                    0, 0, 0, 0, 40024
+                ),
+                CodeStage(NetherActionKind.KeepCode, epoch: 0) with { Sequence = 3 },
+            ],
+        };
+
+        Assert.Equal(NetherActionOutcome.Applied, NetherActionReconcilePolicy.Evaluate(action, before, exact));
+        Assert.Equal(NetherActionOutcome.Ambiguous, NetherActionReconcilePolicy.Evaluate(
+            action,
+            before,
+            exact with { NetherGold = 24 }
         ));
     }
 

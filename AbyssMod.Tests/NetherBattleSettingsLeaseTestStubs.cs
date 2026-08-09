@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 
 namespace BepInEx
@@ -14,8 +15,17 @@ namespace AbyssMod
     // Logging is intentionally outside the behavior asserted by the lease tests.
     public static class Logger
     {
-        public static void Info(string message) { }
-        public static void Error(string message) { }
+        private static readonly ConcurrentQueue<string> Captured = new();
+
+        public static IReadOnlyCollection<string> Messages => Captured.ToArray();
+
+        public static void Reset()
+        {
+            while (Captured.TryDequeue(out _)) { }
+        }
+
+        public static void Info(string message) => Captured.Enqueue(message);
+        public static void Error(string message) => Captured.Enqueue(message);
     }
 
     public sealed class ControllerTestConfigEntry<T>

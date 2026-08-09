@@ -16,6 +16,8 @@ internal enum NetherRuntimePopupKind
     Shop,
     Continue,
     ReturnItems,
+    /// <summary>AbyssCodeListPopupType.Change created by a native target_type=7 event.</summary>
+    CodeTransform,
 }
 
 /// <summary>
@@ -97,6 +99,7 @@ internal static class NetherPopupDispatchPolicy
         return popup.Kind switch
         {
             NetherRuntimePopupKind.CodeOffer => new NetherPopupDispatchDecision { Kind = NetherPopupDispatchKind.Code },
+            NetherRuntimePopupKind.CodeTransform => FromCodeTransform(snapshot),
             NetherRuntimePopupKind.Event when popup.RawFloorType == (int)NetherFloorNodeType.Event =>
                 FromEventDecision(EventPolicy.DecideEvent(snapshot, popup.Options, settings)),
             NetherRuntimePopupKind.Event => Pause(NetherPauseReason.UnknownFloor, "event-popup-raw-type-mismatch:" + popup.RawFloorType),
@@ -107,6 +110,25 @@ internal static class NetherPopupDispatchPolicy
                 new NetherPopupDispatchDecision { Kind = NetherPopupDispatchKind.AwaitNativeFlow },
             _ => Pause(NetherPauseReason.UnsupportedPopup, "unsupported-or-missing-native-popup:" + popup.Kind),
         };
+    }
+
+    private static NetherPopupDispatchDecision FromCodeTransform(NetherSnapshot snapshot)
+    {
+        NetherCodeTransformDecision decision = new NetherCodeTransformPolicy().Decide(
+            snapshot.Codes,
+            snapshot.CodeCapacity
+        );
+        return decision.CanTransform
+            ? new NetherPopupDispatchDecision
+            {
+                Kind = NetherPopupDispatchKind.NativeAction,
+                Action = new NetherPlannedAction(NetherActionKind.TransformCode)
+                {
+                    ReplaceCodeId = decision.RemoveCodeId,
+                },
+                Detail = "popup-code-transform:" + decision.RemoveCodeId,
+            }
+            : Pause(decision.PauseReason, decision.Detail);
     }
 
     private static NetherPopupDispatchDecision FromEventDecision(NetherEventDecision decision) => decision.Kind switch

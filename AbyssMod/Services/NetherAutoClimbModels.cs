@@ -36,10 +36,12 @@ internal enum NetherAutoClimbPhase
     Reconciling,
     Stable,
     ExecutingNativeAction,
+    AwaitingBattleSceneHandoff,
     AwaitingContinueSceneHandoff,
     AwaitingBattle,
     AwaitingF11,
     AwaitingBattleSettlement,
+    AwaitingBattleResultContinuation,
     AwaitingSceneChange,
     Paused,
     Completed,
@@ -67,6 +69,8 @@ internal enum NetherActionKind
     AwaitNativeFlow,
     BattleSettlement,
     RestoreBattleSettings,
+    /// <summary>Native floor-event Abyss-code conversion: remove one current code and receive one server-selected code.</summary>
+    TransformCode,
 }
 
 internal enum NetherPauseReason
@@ -267,11 +271,14 @@ internal enum NetherEffectKind
     ErosionHeal = 4,
     NetherGoldUsed = 5,
     TreasureKeyUsed = 6,
-    AbyssCodeChanged = 7,
+    /// <summary>Native target_type=7: open the code-conversion list; its parameter is not a code ID.</summary>
+    AbyssCodeTransform = 7,
     Battle = 8,
     Item = 9,
     NetherGoldGain = 10,
     TreasureKeyGain = 11,
+    /// <summary>Native content_type=160: open the server-provided Abyss-code offer flow.</summary>
+    AbyssCodeOffer = 12,
 }
 
 internal enum NetherCodeEffectKind
@@ -340,7 +347,8 @@ internal readonly record struct NetherSnapshotFingerprint(
     int treasureKeyCount = 0,
     int netherGold = 0,
     int codeReloadCount = 0,
-    int lockReward = 0
+    int lockReward = 0,
+    long currentNodeId = 0
 )
 {
     public NetherSessionStatus Status => status;
@@ -358,6 +366,7 @@ internal readonly record struct NetherSnapshotFingerprint(
     public int NetherGold => netherGold;
     public int CodeReloadCount => codeReloadCount;
     public int LockReward => lockReward;
+    public long CurrentNodeId => currentNodeId;
 }
 
 internal sealed record NetherFloorNode(
@@ -367,6 +376,14 @@ internal sealed record NetherFloorNode(
     NetherFloorNodeType NodeType
 )
 {
+    /// <summary>
+    /// Stable server-coordinate identity for this rendered node.  <see cref="FloorId"/> is the
+    /// reusable MNetherMapFloors/master ID and is not globally unique in a Nether map.
+    /// Tests and non-runtime callers retain the historical default for compact fixtures.
+    /// </summary>
+    public long NodeId { get; init; } = FloorId;
+    /// <summary>Server/API floor_index (native FloorPosition), distinct from the per-level UI index.</summary>
+    public int ApiFloorIndex { get; init; } = FloorIndex;
     public bool IsHidden { get; init; }
     public bool IsUnlocked { get; init; }
     public IReadOnlyList<long> PreviousFloorIds { get; init; } = Array.Empty<long>();
@@ -449,6 +466,8 @@ internal sealed record NetherSnapshot
     public long NetherId { get; init; }
     public long MapId { get; init; }
     public long CurrentFloorId { get; init; }
+    /// <summary>Coordinate identity of the current rendered node; FloorId remains the master ID.</summary>
+    public long CurrentNodeId { get; init; }
     public int FloorLevel { get; init; }
     public int FloorIndex { get; init; }
     public int MaxFloorLevel { get; init; }
@@ -486,7 +505,8 @@ internal sealed record NetherSnapshot
         TreasureKeyCount,
         NetherGold,
         CodeReloadCount,
-        LockReward
+        LockReward,
+        CurrentNodeId
     );
 }
 

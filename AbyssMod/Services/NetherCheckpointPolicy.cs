@@ -33,7 +33,7 @@ internal sealed class NetherCheckpointPolicy
             throw new ArgumentNullException(nameof(settings));
         if (settings.MaxDepth < 1)
             return Pause(NetherPauseReason.InvalidConfiguration, "invalid-max-depth");
-        if (snapshot.MaxFloorLevel < 1 || snapshot.MasterMaxFloorLevel < 1 || snapshot.FloorLevel < 1)
+        if (snapshot.MaxFloorLevel < 1 || snapshot.MasterMaxFloorLevel < 1 || snapshot.FloorLevel < 0)
             return Pause(NetherPauseReason.UnknownMasterData, "invalid-server-or-master-depth");
 
         int target = Math.Min(settings.MaxDepth, Math.Min(snapshot.MaxFloorLevel, snapshot.MasterMaxFloorLevel));

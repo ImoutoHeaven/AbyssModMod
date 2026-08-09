@@ -29,7 +29,7 @@ public class NetherAutoClimbRouteSafetyWiringTests
         Assert.Equal(NetherSessionStatus.Play, action.ExpectedBeforeStatus);
         Assert.Equal(NetherSessionStatus.Battle, action.ExpectedAfterStatus);
         Assert.Same(decision.SelectedBattleProjection, action.BattleProjection);
-        Assert.Equal("route-battle:2:1:40:5:10:active:60001:6:2", decision.SelectedBattleProjection!.ProjectionIdentity);
+        Assert.Equal("route-battle:2:1:40:5:5:active:60001:6:2", decision.SelectedBattleProjection!.ProjectionIdentity);
         Assert.True(decision.Context.KnownNodeByFloorId[2]);
         Assert.Contains(decision.Route.Audit, item => item.FloorId == 2 && item.Reason == "selected");
     }
@@ -60,14 +60,14 @@ public class NetherAutoClimbRouteSafetyWiringTests
     }
 
     [Fact]
-    public void NecessaryBossUsesHardLimitButNinetyNineToOneHundredRemainsRejected()
+    public void NecessaryBossUsesHardLimitButNinetyFiveToOneHundredRemainsRejected()
     {
-        NetherAutoClimbRouteSafetyDecision allowedBoss = DecideBoss(95, Bounds((2, 1, 1)));
-        NetherAutoClimbRouteSafetyDecision rejectedBoss = DecideBoss(99, Bounds((2, 1, 1)));
+        NetherAutoClimbRouteSafetyDecision allowedBoss = DecideBoss(94, Bounds((2, 0, 100)));
+        NetherAutoClimbRouteSafetyDecision rejectedBoss = DecideBoss(95, Bounds((2, 0, 100)));
 
         Assert.Equal(2, Assert.IsType<NetherFloorNode>(allowedBoss.Route.SelectedNode).FloorId);
         Assert.NotNull(allowedBoss.SelectedBattleProjection);
-        Assert.Equal(96, allowedBoss.SelectedBattleProjection!.ProjectedMaximumErosion);
+        Assert.Equal(99, allowedBoss.SelectedBattleProjection!.ProjectedMaximumErosion);
         Assert.False(rejectedBoss.Route.HasSelection);
         Assert.Null(rejectedBoss.SelectedBattleProjection);
     }

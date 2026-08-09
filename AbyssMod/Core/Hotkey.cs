@@ -22,6 +22,13 @@ public class Hotkey : MonoBehaviour
 
     private void Update()
     {
+        // Capture F12 before any subsystem update. If an earlier updater throws, this line is
+        // still enough to distinguish "Unity never saw the key" from "dispatch was aborted".
+        bool f12KeyDown = Input.GetKeyDown(KeyCode.F12);
+        bool f12Accepted = f12KeyDown && CanTrigger(KeyCode.F12);
+        if (f12KeyDown)
+            NetherAutoClimbController.ObserveHotkeyInput(f12Accepted);
+
         ConfigAutoReload.Update(Time.unscaledTime);
         BattleSessionAutoSL.Update();
         NetherAutoClimbController.Update();
@@ -72,8 +79,8 @@ public class Hotkey : MonoBehaviour
             }
         }
 
-        if (Input.GetKeyDown(KeyCode.F12) && CanTrigger(KeyCode.F12))
-            NetherAutoClimbController.Toggle();
+        if (f12Accepted)
+            NetherAutoClimbController.ToggleFromHotkey();
 
         if (Config.Translation.Value && Time.unscaledTime - _lastRefreshTime >= RefreshInterval)
         {

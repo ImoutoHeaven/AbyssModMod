@@ -90,6 +90,25 @@ public class NetherDetailedAuditLoggerTests
     }
 
     [Fact]
+    public void A_full_130_floor_debug_run_keeps_unique_route_evidence()
+    {
+        var entries = new List<string>();
+        var logger = new NetherDetailedAuditLogger(entries.Add);
+
+        for (int floor = 1; floor <= 130; floor++)
+        {
+            logger.Emit(
+                enabled: true,
+                NetherDetailedAuditKind.Route,
+                "floor-" + floor,
+                new NetherDetailedAuditField("floorLevel", floor.ToString())
+            );
+        }
+
+        Assert.Equal(130, entries.Count);
+    }
+
+    [Fact]
     public void Every_required_audit_family_is_structured_without_unbounded_detail()
     {
         var entries = new List<string>();
@@ -122,5 +141,27 @@ public class NetherDetailedAuditLoggerTests
         Assert.All(entries, entry => Assert.True(entry.Length <= 256));
         Assert.Contains(entries, entry => entry.Contains("audit=lease"));
         Assert.Contains(entries, entry => entry.Contains("audit=reconcile"));
+    }
+
+    [Fact]
+    public void Interactive_failure_detail_keeps_the_raw_native_fields_needed_for_diagnosis()
+    {
+        var entries = new List<string>();
+        var logger = new NetherDetailedAuditLogger(entries.Add);
+        string detail =
+            "event-part-10002:unsupported-event-target-type-or-parameter:99:"
+            + "target1=99:parameter1=123456:target2=8:parameter2=90:"
+            + "target3=0:parameter3=0:content=165:1:40";
+
+        logger.Emit(
+            enabled: true,
+            NetherDetailedAuditKind.Interactive,
+            "event-part-10002",
+            new NetherDetailedAuditField("detail", detail)
+        );
+
+        Assert.Single(entries);
+        Assert.Contains("target3_0:parameter3_0:content_165:1:40", entries[0]);
+        Assert.True(entries[0].Length <= 256);
     }
 }

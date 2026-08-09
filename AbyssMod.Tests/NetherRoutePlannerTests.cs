@@ -108,6 +108,31 @@ public class NetherRoutePlannerTests
     }
 
     [Fact]
+    public void Unknown_candidate_audit_preserves_the_exact_context_failure_detail()
+    {
+        NetherRouteSafetyContext context = Context() with
+        {
+            KnownNodeByFloorId = new Dictionary<long, bool> { [2] = false },
+            UnknownDetailByFloorId = new Dictionary<long, string>
+            {
+                [2] = "bounds:missing-runtime-node|hp:known|codes:known",
+            },
+        };
+        NetherSnapshot snapshot = Snapshot(
+            1,
+            Node(1, 1, NetherFloorNodeType.Recovery),
+            Node(2, 2, NetherFloorNodeType.Battle, 1),
+            Terminal(3, 3, 2)
+        );
+
+        NetherRoutePlan plan = new NetherRoutePlanner().Plan(snapshot, context);
+
+        NetherRouteCandidateAudit audit = Assert.Single(plan.Audit);
+        Assert.Equal("unknown-node", audit.Reason);
+        Assert.Equal("bounds:missing-runtime-node|hp:known|codes:known", audit.Detail);
+    }
+
+    [Fact]
     public void Equivalent_candidates_use_floor_index_then_id_for_stable_tie_breaking()
     {
         NetherFloorNode laterIndex = Node(30, 2, NetherFloorNodeType.Recovery, 1) with { FloorIndex = 3 };
@@ -116,6 +141,21 @@ public class NetherRoutePlannerTests
         NetherRoutePlan plan = Plan(Snapshot(1, Node(1, 1, NetherFloorNodeType.Recovery), laterIndex, laterIdAtSameIndex, firstIdAtSameIndex, Terminal(40, 3, 10, 20, 30)));
 
         Assert.Equal(10, Assert.IsType<NetherFloorNode>(plan.SelectedNode).FloorId);
+    }
+
+    [Fact]
+    public void Reused_master_id_does_not_collapse_distinct_runtime_nodes()
+    {
+        NetherFloorNode current = Node(3, 3, NetherFloorNodeType.Recovery) with { NodeId = 100 };
+        NetherFloorNode next = Node(3, 4, NetherFloorNodeType.Recovery, 100) with { NodeId = 200 };
+        NetherFloorNode terminal = Terminal(9, 5, 200) with { NodeId = 300 };
+        NetherSnapshot snapshot = Snapshot(3, current, next, terminal) with { CurrentNodeId = 100 };
+
+        NetherRoutePlan plan = Plan(snapshot);
+
+        NetherFloorNode selected = Assert.IsType<NetherFloorNode>(plan.SelectedNode);
+        Assert.Equal(3, selected.FloorId);
+        Assert.Equal(200, selected.NodeId);
     }
 
     private static NetherRoutePlan Plan(NetherSnapshot snapshot) => new NetherRoutePlanner().Plan(snapshot, Context());

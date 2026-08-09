@@ -11,7 +11,7 @@ internal static class NetherReadOnlyReconcileNativeBinding
 
     public static NetherNativeMethodDescriptor SyncDescriptor { get; } = new(
         "SyncNetherDataAsync",
-        new[] { "System.Threading.CancellationToken" },
+        new[] { "Il2CppSystem.Threading.CancellationToken" },
         "Cysharp.Threading.Tasks.UniTask"
     );
 }

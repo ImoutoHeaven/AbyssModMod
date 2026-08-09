@@ -6,45 +6,49 @@ namespace AbyssMod.Tests;
 public class NetherInteractiveFloorPreEntrySafetyTests
 {
     [Fact]
-    public void Event_is_safe_only_when_every_positive_weight_master_row_has_a_safe_exit()
+    public void Zero_extend_id_uses_the_first_floor_event_row_like_the_native_resolver()
     {
         NetherInteractiveFloorPreEntrySafetyResult result = Evaluate(Input(
             NetherFloorNodeType.Event,
             events:
             [
-                Event(100, 1001),
+                Event(100, 1001) with { Weight = 0 },
                 Event(101, 1002),
             ],
             parts:
             [
                 Part(1001, targetType1: (int)NetherEffectKind.Heal, parameter1: 1),
-                Part(1002, targetType1: (int)NetherEffectKind.Heal, parameter1: 100),
+                Part(1002, targetType1: (int)NetherEffectKind.Damage, parameter1: 500),
             ]
         ));
 
         Assert.True(result.IsSafe);
-        Assert.Equal(2, result.SafeOptionNumberByEventId.Count);
+        Assert.Single(result.SafeOptionNumberByEventId);
         Assert.Equal(1, result.SafeOptionNumberByEventId[100]);
-        Assert.Equal(1, result.SafeOptionNumberByEventId[101]);
     }
 
     [Fact]
-    public void One_possible_event_row_without_safe_option_makes_the_floor_unsafe()
+    public void Positive_extend_id_uses_the_exact_event_row_without_generation_filters()
     {
         NetherInteractiveFloorPreEntrySafetyResult result = Evaluate(Input(
             NetherFloorNodeType.Event,
-            events: [Event(100, 1001), Event(101, 1002)],
+            events:
+            [
+                Event(101, 1002),
+                Event(100, 1001) with { MapFloorMasterId = 901, Weight = 0 },
+            ],
             parts:
             [
                 Part(1001, targetType1: (int)NetherEffectKind.Heal, parameter1: 1),
                 Part(1002, targetType1: (int)NetherEffectKind.Damage, parameter1: 500),
             ],
-            hp: 500
+            hp: 500,
+            floorExtendId: 100
         ));
 
-        Assert.False(result.IsSafe);
-        Assert.Equal(NetherPauseReason.UnsafeHp, result.PauseReason);
-        Assert.Contains("event-row-101", result.Detail);
+        Assert.True(result.IsSafe, result.PauseReason + ":" + result.Detail);
+        Assert.Single(result.SafeOptionNumberByEventId);
+        Assert.Equal(1, result.SafeOptionNumberByEventId[100]);
     }
 
     [Fact]
@@ -58,6 +62,22 @@ public class NetherInteractiveFloorPreEntrySafetyTests
 
         Assert.True(result.IsSafe);
         Assert.Equal(1, result.SafeOptionNumberByEventId[100]);
+    }
+
+    [Fact]
+    public void Map_generation_erosion_range_is_not_an_interactive_action_cost()
+    {
+        NetherInteractiveFloorPreEntrySafetyResult result = Evaluate(Input(
+            NetherFloorNodeType.Recovery,
+            events: [Event(100, 1001)],
+            parts: [Part(1001, targetType1: (int)NetherEffectKind.NetherGoldUsed, parameter1: 0)],
+            erosion: 0,
+            mapMinimumErosion: 0,
+            mapMaximumErosion: 100
+        ));
+
+        Assert.True(result.IsSafe, result.PauseReason + ":" + result.Detail);
+        Assert.Equal(0, result.WorstCaseProjection!.Value.ErosionDelta);
     }
 
     [Theory]
@@ -105,6 +125,119 @@ public class NetherInteractiveFloorPreEntrySafetyTests
         Assert.Equal(NetherPauseReason.NoSafeRoute, onlyBattle.PauseReason);
         Assert.True(fallback.IsSafe);
         Assert.Equal(2, fallback.SafeOptionNumberByEventId[100]);
+    }
+
+    [Theory]
+    [InlineData(160, (int)NetherEffectKind.AbyssCodeOffer)]
+    [InlineData(165, (int)NetherEffectKind.NetherGoldGain)]
+    [InlineData(166, (int)NetherEffectKind.TreasureKeyGain)]
+    public void Native_resource_content_allows_zero_content_id(int contentType, int expectedKind)
+    {
+        NetherInteractiveFloorPreEntrySafetyResult result = Evaluate(Input(
+            NetherFloorNodeType.Event,
+            events: [Event(100, 1001)],
+            parts:
+            [
+                Part(
+                    1001,
+                    targetType1: 0,
+                    parameter1: 0,
+                    contentType: contentType,
+                    contentId: 0,
+                    amount: 30
+                ),
+            ]
+        ));
+
+        Assert.True(result.IsSafe, result.PauseReason + ":" + result.Detail);
+        Assert.Equal(1, result.SafeOptionNumberByEventId[100]);
+        NetherEffect effect = Assert.Single(result.SafeOptionProjectionByEventId[100].ExpectedEffects);
+        Assert.Equal((NetherEffectKind)expectedKind, effect.Kind);
+        Assert.Equal(0, effect.ContentId);
+        Assert.Equal(30, effect.Amount);
+    }
+
+    [Fact]
+    public void Native_code_transform_target_and_code_offer_content_are_exact_safe_options()
+    {
+        NetherInteractiveFloorPreEntrySafetyResult transform = Evaluate(Input(
+            NetherFloorNodeType.Recovery,
+            events: [Event(354, 700)],
+            parts: [Part(700, targetType1: 7, parameter1: 0)],
+            codes: [Code(40024, NetherCodeEffectKind.Risk)]
+        ));
+        NetherInteractiveFloorPreEntrySafetyResult offer = Evaluate(Input(
+            NetherFloorNodeType.Event,
+            events: [Event(355, 701)],
+            parts: [Part(701, targetType1: 0, parameter1: 0, contentType: 160, contentId: 0, amount: 1)]
+        ));
+
+        Assert.True(transform.IsSafe, transform.PauseReason + ":" + transform.Detail);
+        Assert.Equal(1, transform.SafeOptionNumberByEventId[354]);
+        NetherEffect transformEffect = Assert.Single(transform.SafeOptionProjectionByEventId[354].ExpectedEffects);
+        Assert.Equal(NetherEffectKind.AbyssCodeTransform, transformEffect.Kind);
+        Assert.Equal(0, transformEffect.ReplacementCodeId);
+
+        Assert.True(offer.IsSafe, offer.PauseReason + ":" + offer.Detail);
+        NetherEffect offerEffect = Assert.Single(offer.SafeOptionProjectionByEventId[355].ExpectedEffects);
+        Assert.Equal(NetherEffectKind.AbyssCodeOffer, offerEffect.Kind);
+        Assert.Equal(0, offerEffect.ContentId);
+    }
+
+    [Fact]
+    public void Transform_option_without_a_removable_current_code_fails_before_floor_click()
+    {
+        NetherInteractiveFloorPreEntrySafetyResult result = Evaluate(Input(
+            NetherFloorNodeType.Event,
+            events: [Event(100, 1001)],
+            parts: [Part(1001, targetType1: 7, parameter1: 0)],
+            codes: [Code(30024, NetherCodeEffectKind.Safe)]
+        ));
+
+        Assert.False(result.IsSafe);
+        Assert.Equal(NetherPauseReason.NoSafeRoute, result.PauseReason);
+        Assert.Contains("no-removable-code", result.Detail);
+    }
+
+    [Fact]
+    public void Three_targets_plus_native_content_are_all_retained()
+    {
+        NetherInteractiveFloorPreEntrySafetyResult result = Evaluate(Input(
+            NetherFloorNodeType.Event,
+            events: [Event(100, 1001)],
+            parts:
+            [
+                Part(
+                    1001,
+                    targetType1: (int)NetherEffectKind.Heal,
+                    parameter1: 10,
+                    targetType2: (int)NetherEffectKind.ErosionHeal,
+                    parameter2: 5,
+                    targetType3: (int)NetherEffectKind.NetherGoldUsed,
+                    parameter3: 0,
+                    contentType: 160,
+                    contentId: 0,
+                    amount: 1
+                ),
+            ]
+        ));
+
+        Assert.True(result.IsSafe, result.PauseReason + ":" + result.Detail);
+        Assert.Equal(4, result.SafeOptionProjectionByEventId[100].ExpectedEffects.Count);
+    }
+
+    [Fact]
+    public void Structural_part_corruption_is_not_hidden_by_a_known_safe_option()
+    {
+        NetherInteractiveFloorPreEntrySafetyResult result = Evaluate(Input(
+            NetherFloorNodeType.Event,
+            events: [Event(100, 1001, 9999)],
+            parts: [Part(1001, targetType1: (int)NetherEffectKind.Heal, parameter1: 1)]
+        ));
+
+        Assert.False(result.IsSafe);
+        Assert.Equal(NetherPauseReason.UnknownMasterData, result.PauseReason);
+        Assert.Contains("missing-m-nether-floor-event-part:9999", result.Detail);
     }
 
     [Fact]
@@ -176,11 +309,15 @@ public class NetherInteractiveFloorPreEntrySafetyTests
         int hp = 500,
         int gold = 100,
         int keys = 1,
-        bool canCloseShop = true
+        bool canCloseShop = true,
+        int mapMinimumErosion = 0,
+        int mapMaximumErosion = 10,
+        long floorExtendId = 0,
+        IReadOnlyList<NetherCodeState>? codes = null
     ) => new(
         FloorKind: kind,
         FloorMasterId: 900,
-        MapFloorRows: [new NetherFloorMasterBoundsRow(900, 0, 10)],
+        MapFloorRows: [new NetherFloorMasterBoundsRow(900, mapMinimumErosion, mapMaximumErosion)],
         EventRows: events ?? [],
         EventPartRows: parts ?? [],
         CurrentErosion: erosion,
@@ -197,6 +334,18 @@ public class NetherInteractiveFloorPreEntrySafetyTests
     )
     {
         CanCloseShop = canCloseShop,
+        FloorExtendId = floorExtendId,
+        CurrentCodes = codes ?? [Code(40024, NetherCodeEffectKind.Risk)],
+        CodeCapacity = 5,
+    };
+
+    private static NetherCodeState Code(long id, NetherCodeEffectKind kind) => new(id, kind, 1)
+    {
+        IsKnown = true,
+        Category = kind == NetherCodeEffectKind.Safe
+            ? NetherCodeCategory.ErosionResistance
+            : NetherCodeCategory.ErosionEnhancement,
+        Rarity = 1,
     };
 
     private static NetherFloorEventMasterRow Event(long eventId, params long[] partIds) => new(

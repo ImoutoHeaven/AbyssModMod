@@ -44,6 +44,11 @@ public class Plugin : BasePlugin
         Log = base.Log;
         ConfigFile = base.Config;
         Log.LogInfo($"Plugin {MyPluginInfo.PLUGIN_GUID} is loaded!");
+        NetherAutoClimbController.LogDiagnostic(
+            "build",
+            new("version", MyPluginInfo.PLUGIN_VERSION),
+            new("profile", "autonether-party-hp-reconcile-v19")
+        );
 
         AddComponent<ToastUI>();
         AbyssMod.Config.Initialize();

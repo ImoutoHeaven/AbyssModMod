@@ -78,8 +78,13 @@ internal abstract class NetherOwnedPopupStageBridgeAdapter
 
     protected NetherCodeKeepCancelOwner? OwnedPopupKeepOwner => Entry.KeepOwner;
 
+    protected NetherCodeTransformOwner? OwnedPopupTransformOwner => Entry.TransformOwner;
+
     protected bool ObserveOwnedPopupKeepCancelTask(NetherCodeKeepCancelOwner owner) =>
         Entry.ObserveKeepCancelTask(owner);
+
+    protected bool ObserveOwnedPopupCodeTransformTask(NetherCodeTransformOwner owner) =>
+        Entry.ObserveCodeTransformTask(owner);
 
     protected NetherOwnedPopupStageParentGate PumpOwnedPopupStagesBeforeParent() =>
         Entry.PumpBeforeParent();
@@ -125,8 +130,13 @@ internal sealed class NetherOwnedPopupStageBridgeEntry
 
     public NetherCodeKeepCancelOwner? KeepOwner => _runtime.KeepOwner;
 
+    public NetherCodeTransformOwner? TransformOwner => _runtime.TransformOwner;
+
     public bool ObserveKeepCancelTask(NetherCodeKeepCancelOwner owner) =>
         _runtime.ObserveKeepCancelTask(owner);
+
+    public bool ObserveCodeTransformTask(NetherCodeTransformOwner owner) =>
+        _runtime.ObserveCodeTransformTask(owner);
 
     public void Reset() => _runtime.Reset();
 
@@ -155,7 +165,8 @@ internal sealed class NetherOwnedPopupStageBridgeEntry
         {
             NetherActionKind.SelectEventOption => selectEventOption(action),
             NetherActionKind.LeaveShop => leaveShop(),
-            NetherActionKind.BuyShopItem or NetherActionKind.ReloadCode or NetherActionKind.KeepCode =>
+            NetherActionKind.BuyShopItem or NetherActionKind.ReloadCode or NetherActionKind.KeepCode
+                or NetherActionKind.TransformCode =>
                 _runtime.Dispatch(parent, popup, action),
             NetherActionKind.SelectCode => _runtime.CanInvokeCodeTerminal(popup, action.Kind)
                 ? selectCode(action)

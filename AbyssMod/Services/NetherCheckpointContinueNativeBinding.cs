@@ -37,6 +37,34 @@ internal static class NetherCheckpointContinueNativeBinding
         "System.Void"
     );
 
+    public static NetherCodePopupInteropMethodBinding ContinueCallbackInterop { get; } = new(
+        "_SetupPopupEvent_b__8_2",
+        "<SetupPopupEvent>b__8_2",
+        new[] { UnitTypeName, ContinueControllerTypeName },
+        "System.Void"
+    ) { IsStatic = false };
+
+    public static NetherCodePopupInteropMethodBinding FinishCallbackInterop { get; } = new(
+        "_SetupPopupEvent_b__8_1",
+        "<SetupPopupEvent>b__8_1",
+        new[] { UnitTypeName, ContinueControllerTypeName },
+        "System.Void"
+    ) { IsStatic = false };
+
+    public static NetherCodePopupInteropMethodBinding BoostSetCountInterop { get; } = new(
+        "_SetupPopupEvent_b__7_2",
+        "<SetupPopupEvent>b__7_2",
+        new[] { "System.Int32", BoostControllerTypeName, BoostPopupTypeName },
+        "System.Void"
+    ) { IsStatic = false };
+
+    public static NetherCodePopupInteropMethodBinding BoostConfirmInterop { get; } = new(
+        "_SetupPopupEvent_b__7_1",
+        "<SetupPopupEvent>b__7_1",
+        new[] { UnitTypeName, BoostControllerTypeName, BoostPopupTypeName },
+        "System.Void"
+    ) { IsStatic = false };
+
     public const int ExactTicketCount = 1;
 
     public static bool SubmitContinue(NetherCheckpointNativeFlow flow, bool canBoost) =>

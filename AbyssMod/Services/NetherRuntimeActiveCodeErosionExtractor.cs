@@ -1,7 +1,6 @@
 #nullable enable
 
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
@@ -24,8 +23,12 @@ internal sealed class NetherRuntimeActiveCodeErosionExtractor
     {
         if (rawPossessionCodes == null)
             return NetherActiveCodeErosionProjectionMapper.Unknown("missing-possession-nether-codes");
-        if (!TryEnumerate(rawPossessionCodes, out List<object>? rawPossessions))
-            return NetherActiveCodeErosionProjectionMapper.Unknown("invalid-possession-nether-code-collection");
+        if (!NetherRuntimeEnumerableReader.TryRead(rawPossessionCodes, out List<object> rawPossessions, out string possessionError))
+        {
+            return NetherActiveCodeErosionProjectionMapper.Unknown(
+                "invalid-possession-nether-code-collection:" + possessionError
+            );
+        }
 
         var possessions = new List<NetherPossessionCodeErosionInput>(rawPossessions!.Count);
         foreach (object rawPossession in rawPossessions)
@@ -40,8 +43,12 @@ internal sealed class NetherRuntimeActiveCodeErosionExtractor
 
         if (rawMasterRows == null)
             return _mapper.Map(possessions, null);
-        if (!TryEnumerate(rawMasterRows, out List<object>? rawMasters))
-            return NetherActiveCodeErosionProjectionMapper.Unknown("invalid-m-nether-code-collection");
+        if (!NetherRuntimeEnumerableReader.TryRead(rawMasterRows, out List<object> rawMasters, out string masterError))
+        {
+            return NetherActiveCodeErosionProjectionMapper.Unknown(
+                "invalid-m-nether-code-collection:" + masterError
+            );
+        }
 
         var masters = new List<NetherCodeErosionMasterInput>(rawMasters!.Count);
         foreach (object rawMaster in rawMasters)
@@ -64,48 +71,6 @@ internal sealed class NetherRuntimeActiveCodeErosionExtractor
         }
 
         return _mapper.Map(possessions, masters);
-    }
-
-    private static bool TryEnumerate(object collection, out List<object>? values)
-    {
-        values = new List<object>();
-        if (collection is IEnumerable enumerable)
-        {
-            foreach (object? value in enumerable)
-            {
-                if (value != null)
-                    values.Add(value);
-            }
-            return true;
-        }
-
-        MethodInfo? getEnumerator = collection.GetType().GetMethod(
-            "GetEnumerator",
-            InstanceFlags,
-            null,
-            Type.EmptyTypes,
-            null
-        );
-        if (getEnumerator == null)
-            return false;
-        object? enumerator = getEnumerator.Invoke(collection, Array.Empty<object>());
-        if (enumerator == null)
-            return false;
-        MethodInfo? moveNext = enumerator.GetType().GetMethod(
-            "MoveNext",
-            InstanceFlags,
-            null,
-            Type.EmptyTypes,
-            null
-        );
-        if (moveNext == null)
-            return false;
-        while (moveNext.Invoke(enumerator, Array.Empty<object>()) is bool hasNext && hasNext)
-        {
-            if (TryReadMember(enumerator, "Current", out object? current) && current != null)
-                values.Add(current);
-        }
-        return true;
     }
 
     private static bool TryReadMember(object target, string name, out object? value)

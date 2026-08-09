@@ -138,7 +138,7 @@ public class NetherFloorActionTransactionComposerTests
             ExpectedEffects = new[]
             {
                 new NetherEffect(NetherEffectKind.NetherGoldGain, 5),
-                new NetherEffect(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
+                new NetherEffect(NetherEffectKind.AbyssCodeOffer, 1),
             },
         };
         NetherPlannedAction codeChoice = new(NetherActionKind.SelectCode)
@@ -160,7 +160,7 @@ public class NetherFloorActionTransactionComposerTests
         ));
 
         Assert.Contains(afterCode.ExpectedEffects, effect => effect.Kind == NetherEffectKind.NetherGoldGain && effect.Amount == 5);
-        Assert.Contains(afterCode.ExpectedEffects, effect => effect.Kind == NetherEffectKind.AbyssCodeChanged && effect.ReplacementCodeId == 30024);
+        Assert.Contains(afterCode.ExpectedEffects, effect => effect.Kind == NetherEffectKind.AbyssCodeOffer);
         Assert.Equal(30024, afterCode.CodeId);
     }
 
@@ -188,7 +188,7 @@ public class NetherFloorActionTransactionComposerTests
             OptionNumber = 1,
             ExpectedEffects = new[]
             {
-                new NetherEffect(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
+                new NetherEffect(NetherEffectKind.AbyssCodeOffer, 1),
             },
         };
         Assert.True(NetherFloorActionTransactionComposer.TryCompose(
@@ -204,7 +204,7 @@ public class NetherFloorActionTransactionComposerTests
             new NetherPlannedAction(NetherActionKind.SelectCode) { CodeId = 30024 },
             out _
         ));
-        Assert.False(NetherFloorActionTransactionComposer.TryCompose(
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
             afterEvent,
             new NetherRuntimePopupContext { Kind = NetherRuntimePopupKind.CodeOffer, OwnerGeneration = 7, Sequence = 2 },
             new NetherPlannedAction(NetherActionKind.SelectCode) { CodeId = 40024 },
@@ -383,7 +383,7 @@ public class NetherFloorActionTransactionComposerTests
             ExpectedEffects = new[]
             {
                 new NetherEffect(NetherEffectKind.NetherGoldGain, 5),
-                new NetherEffect(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 },
+                new NetherEffect(NetherEffectKind.AbyssCodeOffer, 1),
                 new NetherEffect(NetherEffectKind.Battle, 0),
             },
         };
@@ -420,6 +420,89 @@ public class NetherFloorActionTransactionComposerTests
         Assert.True(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(afterCode));
     }
 
+    [Fact]
+    public void Native_code_offer_trigger_requires_one_terminal_code_offer_stage()
+    {
+        NetherPlannedAction parent = Parent();
+        NetherPlannedAction eventChoice = new(NetherActionKind.SelectEventOption)
+        {
+            OptionNumber = 1,
+            ExpectedEffects = [new NetherEffect(NetherEffectKind.AbyssCodeOffer, 1)],
+        };
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            Popup(NetherRuntimePopupKind.Event, 1),
+            eventChoice,
+            out NetherPlannedAction afterEvent
+        ));
+        Assert.False(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(afterEvent));
+
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterEvent,
+            Popup(NetherRuntimePopupKind.CodeOffer, 2),
+            new NetherPlannedAction(NetherActionKind.SelectCode) { CodeId = 51001 },
+            out NetherPlannedAction complete
+        ));
+        Assert.True(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(complete));
+    }
+
+    [Fact]
+    public void Native_transform_then_offer_children_are_required_in_exact_order()
+    {
+        NetherPlannedAction parent = Parent();
+        NetherPlannedAction eventChoice = new(NetherActionKind.SelectEventOption)
+        {
+            OptionNumber = 1,
+            ExpectedEffects =
+            [
+                new NetherEffect(NetherEffectKind.NetherGoldGain, 5),
+                new NetherEffect(NetherEffectKind.AbyssCodeTransform, 0),
+                new NetherEffect(NetherEffectKind.AbyssCodeOffer, 1),
+            ],
+        };
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            Popup(NetherRuntimePopupKind.Event, 1),
+            eventChoice,
+            out NetherPlannedAction afterEvent
+        ));
+        Assert.False(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(afterEvent));
+        Assert.False(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterEvent,
+            Popup(NetherRuntimePopupKind.CodeOffer, 2),
+            new NetherPlannedAction(NetherActionKind.KeepCode),
+            out _
+        ));
+
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterEvent,
+            Popup(NetherRuntimePopupKind.CodeTransform, 2),
+            new NetherPlannedAction(NetherActionKind.TransformCode) { ReplaceCodeId = 40024 },
+            out NetherPlannedAction afterTransform
+        ));
+        Assert.False(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(afterTransform));
+        Assert.True(NetherFloorActionTransactionComposer.TryCompose(
+            parent,
+            afterTransform,
+            Popup(NetherRuntimePopupKind.CodeOffer, 3),
+            new NetherPlannedAction(NetherActionKind.KeepCode),
+            out NetherPlannedAction complete
+        ));
+        Assert.True(NetherFloorActionTransactionComposer.IsCompleteForParentTerminal(complete));
+        Assert.Equal(
+            new[]
+            {
+                NetherActionKind.SelectEventOption,
+                NetherActionKind.TransformCode,
+                NetherActionKind.KeepCode,
+            },
+            complete.OwnedPopupStages.Select(stage => stage.ActionKind).ToArray()
+        );
+    }
+
     private static NetherPlannedAction Parent() => new(NetherActionKind.SelectFloor)
     {
         FloorId = 11,
@@ -427,5 +510,13 @@ public class NetherFloorActionTransactionComposerTests
         FloorIndex = 2,
         ExpectedBeforeStatus = NetherSessionStatus.Play,
         ExpectedAfterStatus = NetherSessionStatus.Wait,
+    };
+
+    private static NetherRuntimePopupContext Popup(NetherRuntimePopupKind kind, long sequence) => new()
+    {
+        Kind = kind,
+        OwnerAction = NetherActionKind.SelectFloor,
+        OwnerGeneration = 7,
+        Sequence = sequence,
     };
 }

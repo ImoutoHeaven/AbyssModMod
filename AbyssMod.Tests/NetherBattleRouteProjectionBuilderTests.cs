@@ -11,7 +11,7 @@ public class NetherBattleRouteProjectionBuilderTests
     [InlineData(0, 40)]
     [InlineData(5, 45)]
     [InlineData(10, 50)]
-    public void BattleProjection_UsesAuthoritativeMasterMaximumForZeroFiveAndTen(
+    public void BattleProjection_UsesProvidedEffectiveBaseRangeForZeroFiveAndTen(
         int maximumErosion,
         int expectedMaximum
     )

@@ -24,7 +24,11 @@ internal sealed record NetherRuntimeInteractivePreEntryCaptureRequest(
     int? CurrentTreasureKeys,
     NetherAutoClimbSettings? Settings,
     bool CanCloseShop
-);
+)
+{
+    public IReadOnlyList<NetherCodeState> CurrentCodes { get; init; } = Array.Empty<NetherCodeState>();
+    public int CodeCapacity { get; init; }
+}
 
 /// <summary>
 /// Captured source input and the immediate fail-closed pre-entry decision.  <c>IsCaptured</c>
@@ -48,7 +52,8 @@ internal sealed record NetherRuntimeInteractivePreEntryCaptureResult
 internal sealed record NetherRuntimeInteractivePreEntryInputsResult
 {
     public bool IsSuccess { get; init; }
-    public IReadOnlyDictionary<long, NetherRuntimeInteractivePreEntryCaptureResult> ByFloorMasterId { get; init; } =
+    /// <summary>Keyed by stable runtime node identity, while each value retains its master ID.</summary>
+    public IReadOnlyDictionary<long, NetherRuntimeInteractivePreEntryCaptureResult> ByFloorNodeId { get; init; } =
         new Dictionary<long, NetherRuntimeInteractivePreEntryCaptureResult>();
     public string Detail { get; init; } = string.Empty;
 
@@ -57,7 +62,7 @@ internal sealed record NetherRuntimeInteractivePreEntryInputsResult
     ) => new()
     {
         IsSuccess = true,
-        ByFloorMasterId = entries,
+        ByFloorNodeId = entries,
     };
 
     public static NetherRuntimeInteractivePreEntryInputsResult Failure(string detail) => new()
@@ -114,6 +119,8 @@ internal sealed class NetherRuntimeInteractivePreEntryInputCapture
         {
             FloorExtendId = extendId,
             CanCloseShop = request.CanCloseShop,
+            CurrentCodes = request.CurrentCodes ?? Array.Empty<NetherCodeState>(),
+            CodeCapacity = request.CodeCapacity,
         };
         return new NetherRuntimeInteractivePreEntryCaptureResult
         {

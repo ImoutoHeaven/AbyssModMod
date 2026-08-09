@@ -28,6 +28,7 @@ internal static class NetherAutoClimbController
     // owner/generation/parent-terminal transitions used below.
     private static NetherRuntimeFlowCoordinator RuntimeFlow = new(_bridge);
     private static NetherReadOnlyReconcileCoordinator ReadOnlyReconcileFlow = new(_bridge);
+    private static NetherBattleIngressCoordinator BattleIngressFlow = new(_bridge, _bridge);
     private static NetherBattleSettlementCoordinator BattleSettlementFlow = new(_bridge, _bridge, _bridge);
     private static NetherContinueSceneRuntimeCoordinator ContinueSceneFlow = new(State, _bridge);
     private static readonly NetherDetailedAuditLogger DetailedAudit = new(message =>
@@ -36,6 +37,7 @@ internal static class NetherAutoClimbController
     private static NetherBattleSettingsLeaseControllerLifecycle BattleSettingsLifecycle = new(
         NetherBattleSettingsLease.Instance
     );
+    private static readonly NetherNativeWaitGate BattleAccessorWait = new(maximumMissingPolls: 3600);
 
     private static bool _initialized;
     private static NetherCombatLane? _lockedCombatLane;
@@ -81,6 +83,7 @@ internal static class NetherAutoClimbController
             ProjectionCalibration,
             RuntimeFlow,
             ReadOnlyReconcileFlow,
+            BattleIngressFlow,
             BattleSettlementFlow,
             ContinueSceneFlow,
             BattleSettingsLifecycle,
@@ -95,12 +98,14 @@ internal static class NetherAutoClimbController
         ProjectionCalibration = new NetherActionProjectionCalibration();
         RuntimeFlow = new NetherRuntimeFlowCoordinator(bridge);
         ReadOnlyReconcileFlow = new NetherReadOnlyReconcileCoordinator(bridge);
+        BattleIngressFlow = new NetherBattleIngressCoordinator(bridge, bridge);
         BattleSettlementFlow = new NetherBattleSettlementCoordinator(bridge, bridge, bridge);
         ContinueSceneFlow = new NetherContinueSceneRuntimeCoordinator(State, bridge);
         BattleSettingsLifecycle = battleSettingsLifecycle;
         _initialized = false;
         _lockedCombatLane = null;
         _pendingBattleProjection = null;
+        BattleAccessorWait.Clear();
         _lastTransition = string.Empty;
         return scope;
     }
@@ -120,10 +125,46 @@ internal static class NetherAutoClimbController
             "startup-lease-discovery",
             pauseEnabledState: false
         );
+        LogDiagnostic(
+            "controller-initialized",
+            new("mapping", "coordinate-node-v5"),
+            new("phase", State.Phase.ToString()),
+            new("leasePhase", BattleSettingsLifecycle.LeasePhase.ToString()),
+            new("leaseRuntime", BattleSettingsLifecycle.RuntimeState.ToString())
+        );
+    }
+
+    public static void ObserveHotkeyInput(bool accepted)
+    {
+        LogDiagnostic(
+            "hotkey-input",
+            new("key", "F12"),
+            new("accepted", accepted.ToString()),
+            new("enabled", State.IsEnabled.ToString()),
+            new("phase", State.Phase.ToString())
+        );
+    }
+
+    public static void ToggleFromHotkey()
+    {
+        LogDiagnostic(
+            "hotkey-dispatch",
+            new("key", "F12"),
+            new("enabled", State.IsEnabled.ToString()),
+            new("phase", State.Phase.ToString())
+        );
+        Toggle();
     }
 
     public static void Toggle()
     {
+        LogDiagnostic(
+            "toggle-request",
+            new("enabled", State.IsEnabled.ToString()),
+            new("phase", State.Phase.ToString()),
+            new("pauseReason", State.PauseReason.ToString()),
+            new("pauseDetail", State.PauseDetail)
+        );
         Initialize();
         if (State.IsEnabled)
         {
@@ -134,13 +175,46 @@ internal static class NetherAutoClimbController
                 pauseEnabledState: false
             );
             LogTransition("OFF user-disabled");
+            LogDiagnostic(
+                "toggle-result",
+                new("outcome", "disabled"),
+                new("phase", State.Phase.ToString()),
+                new("pending", (State.PendingAction?.Kind ?? NetherActionKind.None).ToString())
+            );
             return;
         }
 
         if (!_bridge.HasRegisteredFloorSelection)
         {
+            // A proven Nether battle-result view is itself an in-Nether owner.  FloorSelection
+            // is intentionally absent on this page, so F12 must resume through the exact native
+            // Next callback instead of rejecting the user as outside Nether.
+            if (_bridge.HasObservedNetherBattleResult && State.EnableFromBattleResult())
+            {
+                _lockedCombatLane = null;
+                _pendingBattleProjection = null;
+                NetherAutoClimbSettings resultSettings = BuildSettings();
+                LogTransition("ON source=battle-result-resume maxDepth=" + resultSettings.MaxDepth);
+                LogDiagnostic(
+                    "toggle-result",
+                    new("outcome", "enabled"),
+                    new("source", "battle-result-resume"),
+                    new("phase", State.Phase.ToString()),
+                    new("maxDepth", resultSettings.MaxDepth.ToString()),
+                    new("softErosion", resultSettings.SoftErosionLimit.ToString()),
+                    new("detailedLogging", resultSettings.DetailedLogging.ToString())
+                );
+                return;
+            }
+
             State.Toggle(isInNether: false);
             LogTransition("OFF no-registered-nether-runtime");
+            LogDiagnostic(
+                "toggle-result",
+                new("outcome", "rejected"),
+                new("reason", "no-registered-floor-selection"),
+                new("phase", State.Phase.ToString())
+            );
             return;
         }
 
@@ -149,9 +223,18 @@ internal static class NetherAutoClimbController
         {
             State.Toggle(isInNether: false);
             LogTransition("OFF snapshot-before-enable-failed:" + captured.Detail);
+            LogDiagnostic(
+                "toggle-result",
+                new("outcome", "rejected"),
+                new("reason", "snapshot-before-enable-failed"),
+                new("detail", captured.Detail),
+                new("phase", State.Phase.ToString())
+            );
             return;
         }
 
+        AuditSnapshot(captured.Snapshot!, "toggle-before-enable");
+        LogSnapshotDiagnostic(captured.Snapshot!, "toggle-before-enable");
         State.Toggle(isInNether: true);
         State.ObserveStable(captured.Snapshot!.Fingerprint);
         if (State.Phase != NetherAutoClimbPhase.Stable)
@@ -159,12 +242,34 @@ internal static class NetherAutoClimbController
             NetherAutoClimbPhase unavailablePhase = State.Phase;
             State.Toggle(isInNether: true);
             LogTransition("OFF not-at-stable-nether-boundary:" + unavailablePhase);
+            LogDiagnostic(
+                "toggle-result",
+                new("outcome", "rejected"),
+                new("reason", "not-at-stable-nether-boundary"),
+                new("observedPhase", unavailablePhase.ToString()),
+                new("finalPhase", State.Phase.ToString()),
+                new("pauseReason", State.PauseReason.ToString()),
+                new("pauseDetail", State.PauseDetail)
+            );
             return;
         }
 
         _lockedCombatLane = null;
         _pendingBattleProjection = null;
         LogTransition("ON maxDepth=" + BuildSettings().MaxDepth + " softErosion=" + BuildSettings().SoftErosionLimit + " lease=deferred-until-battle");
+        NetherAutoClimbSettings settings = BuildSettings();
+        LogDiagnostic(
+            "toggle-result",
+            new("outcome", "enabled"),
+            new("phase", State.Phase.ToString()),
+            new("maxDepth", settings.MaxDepth.ToString()),
+            new("softErosion", settings.SoftErosionLimit.ToString()),
+            new("minHpPermille", settings.MinimumCharacterHpPermille.ToString()),
+            new("combatLane", settings.CombatLane.ToString()),
+            new("treasureMode", settings.TreasureMode.ToString()),
+            new("shopMode", settings.ShopMode.ToString()),
+            new("detailedLogging", settings.DetailedLogging.ToString())
+        );
     }
 
     public static void Update()
@@ -188,6 +293,15 @@ internal static class NetherAutoClimbController
             return;
         }
 
+        // The per-battle result page deliberately has no FloorSelection controller.  Its exact
+        // InitializeView task and generated Next callback own the only safe transition back to
+        // NetherTop, so this flow must run before the generic missing-owner gate.
+        if (State.Phase == NetherAutoClimbPhase.AwaitingBattleResultContinuation)
+        {
+            ObserveBattleResultContinuation();
+            return;
+        }
+
         // A native Sleep Continue intentionally tears down the old FloorSelection before the
         // new NetherTop segment registers.  Its coordinator owns the parent/teardown/rebind
         // evidence, so it must run before the ordinary "no floor controller" fail-closed gate.
@@ -201,13 +315,48 @@ internal static class NetherAutoClimbController
             return;
         }
 
+        // A direct combat floor changes scene before the battle scene creates StartQuestAsync.
+        // FloorSelection may therefore already be gone while its exact parent task is becoming
+        // terminal.  Keep polling the captured parent/StartQuest evidence ahead of the generic
+        // floor-controller gate; neither absence is proof that the player left Nether.
+        if (State.PendingAction is NetherPlannedAction combatSelection
+            && combatSelection.Kind == NetherActionKind.SelectFloor
+            && combatSelection.BattleProjection != null
+            && State.Phase is (
+                NetherAutoClimbPhase.ExecutingNativeAction
+                or NetherAutoClimbPhase.AwaitingBattleSceneHandoff
+            ))
+        {
+            if (State.Phase == NetherAutoClimbPhase.ExecutingNativeAction)
+                PollFloorParentNativeAction();
+            else
+                ObserveBattleIngress();
+            return;
+        }
+
+        // Once the authoritative Battle snapshot has been established, battle lifecycle tasks
+        // belong to the battle scene, not FloorSelection.  Continue observing them even though
+        // the map owner is expected to remain unregistered until battle returns to NetherTop.
+        if (State.PendingAction?.Kind == NetherActionKind.BattleSettlement
+            && State.Phase is (
+                NetherAutoClimbPhase.AwaitingBattle
+                or NetherAutoClimbPhase.AwaitingF11
+                or NetherAutoClimbPhase.AwaitingBattleSettlement
+            ))
+        {
+            ObserveBattle();
+            return;
+        }
+
         bool disabledReconciliation = !State.IsEnabled
             && State.Phase is (
                 NetherAutoClimbPhase.ExecutingNativeAction or
                 NetherAutoClimbPhase.Reconciling or
+                NetherAutoClimbPhase.AwaitingBattleSceneHandoff or
                 NetherAutoClimbPhase.AwaitingF11 or
                 NetherAutoClimbPhase.AwaitingBattle or
                 NetherAutoClimbPhase.AwaitingBattleSettlement or
+                NetherAutoClimbPhase.AwaitingBattleResultContinuation or
                 NetherAutoClimbPhase.AwaitingContinueSceneHandoff or
                 NetherAutoClimbPhase.AwaitingSceneChange
             )
@@ -263,11 +412,13 @@ internal static class NetherAutoClimbController
         _bridge.ClearRegistrations();
         RuntimeFlow.TerminateParent();
         ReadOnlyReconcileFlow.Reset();
+        BattleIngressFlow.Reset();
         BattleSettlementFlow.TerminateForSceneLoss();
         ContinueSceneFlow.Reset();
         _initialized = false;
         _lockedCombatLane = null;
         _pendingBattleProjection = null;
+        BattleAccessorWait.Clear();
         ProjectionCalibration.Clear();
         _lastTransition = string.Empty;
     }
@@ -280,6 +431,13 @@ internal static class NetherAutoClimbController
     {
         if (!_initialized)
             return;
+        BattleAccessorWait.ObserveRegistration();
+        LogDiagnostic(
+            "runtime-lifecycle",
+            new("action", "battle-settings-accessor-registered"),
+            new("enabled", State.IsEnabled.ToString()),
+            new("phase", State.Phase.ToString())
+        );
         ObserveBattleSettingsLeaseBoundary(
             BattleSettingsLifecycle.OnExactAccessorRegistered(),
             "native-accessor-registered",
@@ -295,7 +453,15 @@ internal static class NetherAutoClimbController
     {
         if (!_initialized)
             return;
+        BattleAccessorWait.Clear();
         BattleSettingsLifecycle.OnExactAccessorUnregistered();
+        LogDiagnostic(
+            "runtime-lifecycle",
+            new("action", "battle-settings-accessor-unregistered"),
+            new("enabled", State.IsEnabled.ToString()),
+            new("phase", State.Phase.ToString()),
+            new("blocksRoute", BattleSettingsLifecycle.BlocksRoute.ToString())
+        );
         // A normal battle view can disappear after a successful restore.  That clean state
         // has no persisted setting to recover, so map navigation may continue and the next
         // battle will wait for its own exact accessor.  An active/unrestored lease remains a
@@ -317,6 +483,23 @@ internal static class NetherAutoClimbController
     {
         if (!_initialized)
             return;
+
+        bool expectedBattleSceneTransition = State.Phase == NetherAutoClimbPhase.AwaitingBattleSceneHandoff
+            || State.PendingAction is NetherPlannedAction pending
+                && (pending.Kind == NetherActionKind.BattleSettlement
+                    || pending.Kind == NetherActionKind.SelectFloor && pending.BattleProjection != null);
+        if (expectedBattleSceneTransition)
+        {
+            LogDiagnostic(
+                "runtime-lifecycle",
+                new("action", "floor-selection-terminated-for-battle-handoff"),
+                new("phase", State.Phase.ToString()),
+                new("pending", (State.PendingAction?.Kind ?? NetherActionKind.None).ToString()),
+                new("battleProjection", (State.PendingAction?.BattleProjection != null).ToString())
+            );
+            return;
+        }
+
         ObserveBattleSettingsLeaseBoundary(
             BattleSettingsLifecycle.OnLeaveNether(),
             "floor-selection-terminated",
@@ -397,6 +580,39 @@ internal static class NetherAutoClimbController
                     );
                     return;
                 }
+                if (settlement.BattleProjection != null
+                    && (settlement.OwnedPopupStages?.Count ?? 0) == 0)
+                {
+                    if (State.PreActionSnapshot is not NetherSnapshot before
+                        || !BattleIngressFlow.Begin(settlement, before)
+                        || !State.BeginBattleSceneHandoff())
+                    {
+                        BattleIngressFlow.Reset();
+                        FailClosedTerminal(
+                            NetherPauseReason.BattleLifecycleFault,
+                            "could-not-begin-battle-scene-handoff"
+                        );
+                        return;
+                    }
+                    Audit(
+                        NetherDetailedAuditKind.Battle,
+                        "ingress:parent-terminal:" + settlement.FloorId,
+                        new NetherDetailedAuditField("step", "ParentTerminal"),
+                        new NetherDetailedAuditField("mapId", before.MapId.ToString()),
+                        new NetherDetailedAuditField("floorId", settlement.FloorId.ToString()),
+                        new NetherDetailedAuditField("floorRegistered", _bridge.HasRegisteredFloorSelection.ToString()),
+                        new NetherDetailedAuditField("detail", result.Detail)
+                    );
+                    LogDiagnostic(
+                        "battle-ingress",
+                        new("action", "floor-parent-terminal"),
+                        new("mapId", before.MapId.ToString()),
+                        new("floorId", settlement.FloorId.ToString()),
+                        new("floorRegistered", _bridge.HasRegisteredFloorSelection.ToString()),
+                        new("phase", State.Phase.ToString())
+                    );
+                    return;
+                }
                 // The parent task is the only proof that Event/Treasure's internal void flow
                 // has reached its native terminal.  Reconcile before making another decision.
                 State.ObserveUnknownOutcome();
@@ -412,7 +628,11 @@ internal static class NetherAutoClimbController
                     || result.Detail.StartsWith("code-reload-", StringComparison.Ordinal)
                     || result.Detail.StartsWith("owned-popup:code-reload-", StringComparison.Ordinal)
                     || result.Detail.StartsWith("code-keep-", StringComparison.Ordinal)
-                    || result.Detail.StartsWith("owned-popup:code-keep-", StringComparison.Ordinal))
+                    || result.Detail.StartsWith("owned-popup:code-keep-", StringComparison.Ordinal)
+                    || (settlement.OwnedPopupStages ?? Array.Empty<NetherFloorPopupStage>())
+                        .Any(stage => stage != null
+                            && stage.PopupKind == NetherRuntimePopupKind.CodeTransform
+                            && stage.ActionKind == NetherActionKind.TransformCode))
                 {
                     FailClosed(NetherPauseReason.BindingUnavailable, result.Detail);
                     return;
@@ -500,7 +720,10 @@ internal static class NetherAutoClimbController
                 new NetherDetailedAuditField("action", decision.Action.Kind.ToString()),
                 new NetherDetailedAuditField("option", decision.Action.OptionNumber.ToString()),
                 new NetherDetailedAuditField("content", decision.Action.ContentId.ToString()),
+                new NetherDetailedAuditField("codeId", decision.Action.CodeId.ToString()),
+                new NetherDetailedAuditField("replaceCodeId", decision.Action.ReplaceCodeId.ToString()),
                 new NetherDetailedAuditField("goldCost", decision.Action.GoldCost.ToString()),
+                new NetherDetailedAuditField("decisionDetail", decision.Detail),
                 new NetherDetailedAuditField("afterStatus", composed.ExpectedAfterStatus.ToString())
             );
         }
@@ -531,6 +754,7 @@ internal static class NetherAutoClimbController
             candidates.Candidates,
             settings
         );
+        AuditCodeDecision(snapshot, candidates.Candidates, decision, "owned");
         if (decision.Kind == NetherCodeDecisionKind.Pause)
             return NetherNativeActionResult.BindingUnavailable("owned-code-policy:" + decision.PauseReason + ":" + decision.Detail);
 
@@ -657,6 +881,40 @@ internal static class NetherAutoClimbController
             return;
         }
 
+        // Do not let a very fast/previously-loaded battle reach clear observation before the
+        // exact battle-view accessor has acquired its scoped Auto/speed lease.  The lease is
+        // intentionally deferred until this scene owner exists; after a successful acquire we
+        // wait one frame before polling battle terminal tasks.
+        if (State.IsEnabled
+            && State.Phase is (NetherAutoClimbPhase.AwaitingBattle or NetherAutoClimbPhase.AwaitingF11)
+            && !_bridge.IsF11Busy
+            && BattleSettingsLifecycle.LeasePhase != NetherBattleSettingsLeasePhase.Forced)
+        {
+            if (!BattleSettingsLifecycle.IsExactAccessorRegistered
+                && !BattleSettingsLifecycle.BlocksRoute)
+            {
+                NetherNativeActionResult accessor = BattleAccessorWait.AwaitRegistration(
+                    "battle-settings-accessor"
+                );
+                Audit(
+                    NetherDetailedAuditKind.Lease,
+                    "battle-entry-accessor:" + accessor.Kind + ":" + accessor.Detail,
+                    new NetherDetailedAuditField("boundary", "battle-entry-accessor"),
+                    new NetherDetailedAuditField("result", accessor.Kind.ToString()),
+                    new NetherDetailedAuditField("phase", BattleSettingsLifecycle.LeasePhase.ToString()),
+                    new NetherDetailedAuditField("runtimeState", BattleSettingsLifecycle.RuntimeState.ToString()),
+                    new NetherDetailedAuditField("detail", accessor.Detail)
+                );
+                if (accessor.Kind == NetherNativeActionResultKind.BindingUnavailable)
+                    PauseForBattleSettingsLease(accessor, "battle-entry-accessor-timeout");
+                return;
+            }
+            if (!EnsureBattleLease())
+                return;
+            BattleAccessorWait.Clear();
+            return;
+        }
+
         NetherBattleSettlementStep step = BattleSettlementFlow.Pump();
         Audit(
             NetherDetailedAuditKind.Battle,
@@ -678,8 +936,6 @@ internal static class NetherAutoClimbController
                 return;
             case NetherBattleSettlementStepKind.AwaitingBattle:
                 State.ObserveF11Busy(isBusy: false);
-                if (State.IsEnabled && !EnsureBattleLease())
-                    return;
                 return;
             case NetherBattleSettlementStepKind.AwaitingSettlement:
                 State.ObserveF11Busy(isBusy: false);
@@ -709,7 +965,17 @@ internal static class NetherAutoClimbController
                     FailClosedTerminal(NetherPauseReason.BattleSettlementWrongTarget, "battle-settlement-missing-authoritative-snapshot");
                     return;
                 }
-                State.ObserveActionResult(step.Snapshot.Fingerprint, NetherActionOutcome.Applied);
+                if (!State.BeginBattleResultContinuation())
+                {
+                    FailClosedTerminal(
+                        NetherPauseReason.BattleLifecycleFault,
+                        "could-not-enter-battle-result-continuation"
+                    );
+                    return;
+                }
+                // Pump immediately: on a fully initialized result view this clicks Next in the
+                // same main-thread update; otherwise it only records a bounded AwaitingView.
+                ObserveBattleResultContinuation();
                 return;
             case NetherBattleSettlementStepKind.Unchanged:
                 FailClosedTerminal(NetherPauseReason.BattleSettlementUnchanged, "battle-settlement-unchanged:" + step.Detail);
@@ -740,6 +1006,176 @@ internal static class NetherAutoClimbController
                 return;
             default:
                 FailClosedTerminal(NetherPauseReason.BattleLifecycleFault, "battle-lifecycle-fault:" + step.Detail);
+                return;
+        }
+    }
+
+    private static void ObserveBattleResultContinuation()
+    {
+        NetherBattleResultContinuationStep step = _bridge.PollBattleResultContinuation(
+            allowInvoke: State.IsEnabled
+        );
+        Audit(
+            NetherDetailedAuditKind.Battle,
+            "battle-result-continuation:" + step.Kind + ":" + step.Detail,
+            new NetherDetailedAuditField("step", step.Kind.ToString()),
+            new NetherDetailedAuditField("detail", step.Detail),
+            new NetherDetailedAuditField("enabled", State.IsEnabled.ToString()),
+            new NetherDetailedAuditField("phase", State.Phase.ToString()),
+            new NetherDetailedAuditField("pending", State.PendingAction?.Kind.ToString() ?? "none")
+        );
+        LogDiagnostic(
+            "battle-result-continuation",
+            new("step", step.Kind.ToString()),
+            new("detail", step.Detail),
+            new("enabled", State.IsEnabled.ToString()),
+            new("phase", State.Phase.ToString()),
+            new("hasSnapshot", (step.Snapshot != null).ToString())
+        );
+
+        switch (step.Kind)
+        {
+            case NetherBattleResultContinuationStepKind.AwaitingView:
+            case NetherBattleResultContinuationStepKind.AwaitingFloorRebind:
+                return;
+            case NetherBattleResultContinuationStepKind.Completed:
+                if (step.Snapshot == null)
+                {
+                    FailClosedTerminal(
+                        NetherPauseReason.BattleSettlementWrongTarget,
+                        "battle-result-continuation-missing-rebound-snapshot"
+                    );
+                    return;
+                }
+                AuditSnapshot(step.Snapshot, "battle-result-floor-rebound");
+                LogSnapshotDiagnostic(step.Snapshot, "battle-result-floor-rebound");
+                if (!State.CompleteBattleResultContinuation(step.Snapshot.Fingerprint))
+                {
+                    FailClosedTerminal(
+                        NetherPauseReason.BattleLifecycleFault,
+                        "could-not-complete-battle-result-continuation"
+                    );
+                    return;
+                }
+                _pendingBattleProjection = null;
+                BattleAccessorWait.Clear();
+                LogTransition("BATTLE_RESULT_NEXT completed floor-rebound");
+                return;
+            case NetherBattleResultContinuationStepKind.CanceledBeforeInvoke:
+                if (!State.CancelBattleResultContinuationBeforeInvoke())
+                {
+                    FailClosedTerminal(
+                        NetherPauseReason.BattleLifecycleCanceled,
+                        "battle-result-next-cancel-state-mismatch:" + step.Detail
+                    );
+                    return;
+                }
+                LogTransition("OFF battle-result-next-canceled-before-invoke");
+                return;
+            case NetherBattleResultContinuationStepKind.BindingUnavailable:
+                FailClosedTerminal(
+                    NetherPauseReason.BindingUnavailable,
+                    "battle-result-next-binding:" + step.Detail
+                );
+                return;
+            default:
+                FailClosedTerminal(
+                    NetherPauseReason.BattleLifecycleFault,
+                    "battle-result-next-fault:" + step.Detail
+                );
+                return;
+        }
+    }
+
+    private static void ObserveBattleIngress()
+    {
+        if (State.PendingAction is not NetherPlannedAction action
+            || action.Kind != NetherActionKind.SelectFloor
+            || action.BattleProjection == null
+            || State.Phase != NetherAutoClimbPhase.AwaitingBattleSceneHandoff)
+        {
+            BattleIngressFlow.Reset();
+            FailClosedTerminal(
+                NetherPauseReason.BattleLifecycleFault,
+                "missing-battle-ingress-pending-action"
+            );
+            return;
+        }
+
+        NetherBattleIngressStep step = BattleIngressFlow.Pump();
+        Audit(
+            NetherDetailedAuditKind.Battle,
+            "ingress:" + step.Kind + ":" + action.FloorId + ":" + step.Detail,
+            new NetherDetailedAuditField("step", step.Kind.ToString()),
+            new NetherDetailedAuditField("mapId", action.BattleProjection.MapId.ToString()),
+            new NetherDetailedAuditField("floorId", action.FloorId.ToString()),
+            new NetherDetailedAuditField("floorRegistered", _bridge.HasRegisteredFloorSelection.ToString()),
+            new NetherDetailedAuditField("battleActive", _bridge.IsBattleActive.ToString()),
+            new NetherDetailedAuditField("detail", step.Detail)
+        );
+        switch (step.Kind)
+        {
+            case NetherBattleIngressStepKind.AwaitingStart:
+            case NetherBattleIngressStepKind.Reconciling:
+                return;
+            case NetherBattleIngressStepKind.Entered:
+                if (step.Snapshot == null)
+                {
+                    FailClosedTerminal(
+                        NetherPauseReason.BattleSettlementWrongTarget,
+                        "battle-ingress-missing-authoritative-snapshot"
+                    );
+                    return;
+                }
+
+                LogDiagnostic(
+                    "battle-ingress",
+                    new("action", "authoritative-battle-entered"),
+                    new("mapId", step.Snapshot.MapId.ToString()),
+                    new("floorId", step.Snapshot.CurrentFloorId.ToString()),
+                    new("status", step.Snapshot.Status.ToString()),
+                    new("floorRegistered", _bridge.HasRegisteredFloorSelection.ToString()),
+                    new("enabled", State.IsEnabled.ToString())
+                );
+                State.ObserveActionResult(step.Snapshot.Fingerprint, NetherActionOutcome.Applied);
+                if (!State.IsEnabled)
+                {
+                    _pendingBattleProjection = null;
+                    return;
+                }
+                if (State.Phase != NetherAutoClimbPhase.Stable)
+                {
+                    FailClosedTerminal(
+                        NetherPauseReason.BattleLifecycleFault,
+                        "battle-ingress-did-not-reach-stable-boundary"
+                    );
+                    return;
+                }
+                BeginBattleWait(step.Snapshot);
+                return;
+            case NetherBattleIngressStepKind.WrongTarget:
+                FailClosedTerminal(
+                    NetherPauseReason.BattleSettlementWrongTarget,
+                    "battle-ingress-wrong-target:" + step.Detail
+                );
+                return;
+            case NetherBattleIngressStepKind.BindingUnavailable:
+                FailClosedTerminal(
+                    NetherPauseReason.BindingUnavailable,
+                    "battle-ingress-binding:" + step.Detail
+                );
+                return;
+            case NetherBattleIngressStepKind.Canceled:
+                FailClosedTerminal(
+                    NetherPauseReason.BattleLifecycleCanceled,
+                    "battle-ingress-canceled:" + step.Detail
+                );
+                return;
+            default:
+                FailClosedTerminal(
+                    NetherPauseReason.BattleLifecycleFault,
+                    "battle-ingress-fault:" + step.Detail
+                );
                 return;
         }
     }
@@ -897,17 +1333,6 @@ internal static class NetherAutoClimbController
             new NetherDetailedAuditField("floorId", snapshot.CurrentFloorId.ToString())
         );
 
-        // Event/Recovery/Treasure confirmation is a packaged UniTask.Void callback.  Only a
-        // SelectFloor parent registered by this controller supplies an exact task to wait for.
-        // Never automate a recovered direct Wait popup and then turn its visual callback into
-        // a premature GET-only reconciliation; preserve user control instead.
-        if (popup.Kind is NetherRuntimePopupKind.Event or NetherRuntimePopupKind.Recovery or NetherRuntimePopupKind.Treasure
-            && popup.OwnerAction != NetherActionKind.SelectFloor)
-        {
-            FailClosed(NetherPauseReason.BindingUnavailable, "direct-wait-event-parent-task-unavailable");
-            return;
-        }
-
         NetherPopupDispatchDecision decision = NetherPopupDispatchPolicy.Decide(snapshot, popup, settings);
         switch (decision.Kind)
         {
@@ -1024,6 +1449,7 @@ internal static class NetherAutoClimbController
             candidates.Candidates,
             settings
         );
+        AuditCodeDecision(snapshot, candidates.Candidates, decision, "direct");
         if (decision.Kind == NetherCodeDecisionKind.Pause)
         {
             FailClosed(decision.PauseReason, decision.Detail);
@@ -1059,13 +1485,15 @@ internal static class NetherAutoClimbController
         NetherRuntimeRouteSafetyData runtimeSafety = _bridge.TryCaptureRouteSafety(snapshot.Floors);
         NetherRuntimeInteractivePreEntryInputsResult interactivePreEntry =
             _bridge.TryCaptureInteractivePreEntryInputs(snapshot, settings);
+        AuditRouteRuntimeInputs(snapshot, runtimeSafety);
         Audit(
             NetherDetailedAuditKind.Interactive,
-            "preentry:" + interactivePreEntry.IsSuccess + ":" + interactivePreEntry.ByFloorMasterId.Count,
+            "preentry:" + interactivePreEntry.IsSuccess + ":" + interactivePreEntry.ByFloorNodeId.Count,
             new NetherDetailedAuditField("captured", interactivePreEntry.IsSuccess.ToString()),
-            new NetherDetailedAuditField("floorInputs", interactivePreEntry.ByFloorMasterId.Count.ToString()),
+            new NetherDetailedAuditField("floorInputs", interactivePreEntry.ByFloorNodeId.Count.ToString()),
             new NetherDetailedAuditField("detail", interactivePreEntry.Detail)
         );
+        AuditInteractivePreEntryInputs(snapshot, interactivePreEntry);
         NetherAutoClimbRouteSafetyDecision routeDecision = RouteSafetyWiring.Plan(
             snapshot,
             settings,
@@ -1080,7 +1508,7 @@ internal static class NetherAutoClimbController
             LogAction(
                 "route-rejected",
                 snapshot,
-                string.Join(",", route.Audit.Take(16).Select(item => item.FloorId + ":" + item.Reason))
+                string.Join(",", route.Audit.Take(16).Select(FormatRouteCandidateAudit))
             );
             FailClosed(route.PauseReason, "route:" + route.PauseDetail);
             return;
@@ -1102,7 +1530,7 @@ internal static class NetherAutoClimbController
         LogAction(
             "route-selected",
             snapshot,
-            string.Join(",", route.Audit.Take(16).Select(item => item.FloorId + ":" + item.Reason))
+            string.Join(",", route.Audit.Take(16).Select(FormatRouteCandidateAudit))
         );
         ExecuteNativeAction(snapshot, action, "route");
     }
@@ -1156,8 +1584,7 @@ internal static class NetherAutoClimbController
             return;
         }
         _pendingBattleProjection = null;
-        if (!_bridge.IsF11Busy && !EnsureBattleLease())
-            return;
+        BattleAccessorWait.Clear();
         LogAction("await-battle-settlement", snapshot, action.BattleSettlement.ProjectionIdentity);
     }
 
@@ -1353,6 +1780,14 @@ internal static class NetherAutoClimbController
             pauseEnabledState: false
         );
         LogTransition("PAUSED " + reason + ":" + detail);
+        LogDiagnostic(
+            "pause",
+            new("terminal", "False"),
+            new("reason", reason.ToString()),
+            new("detail", detail),
+            new("phase", State.Phase.ToString()),
+            new("pending", (State.PendingAction?.Kind ?? NetherActionKind.None).ToString())
+        );
     }
 
     private static void FailClosedTerminal(NetherPauseReason reason, string detail)
@@ -1360,7 +1795,9 @@ internal static class NetherAutoClimbController
         // Unlike an ordinary pause, a terminal battle fault must invalidate the pending
         // action evidence.  Re-enabling F12 cannot replay or reconcile a task after the
         // native scene/controller that owned it has faulted, been canceled, or disappeared.
+        BattleIngressFlow.Reset();
         BattleSettlementFlow.TerminateForSceneLoss();
+        BattleAccessorWait.Clear();
         State.TerminatePendingAndPause(reason, detail);
         ProjectionCalibration.Clear();
         ObserveBattleSettingsLeaseBoundary(
@@ -1369,6 +1806,13 @@ internal static class NetherAutoClimbController
             pauseEnabledState: false
         );
         LogTransition("PAUSED terminal " + reason + ":" + detail);
+        LogDiagnostic(
+            "pause",
+            new("terminal", "True"),
+            new("reason", reason.ToString()),
+            new("detail", detail),
+            new("phase", State.Phase.ToString())
+        );
     }
 
     private static void PumpBattleSettingsLeaseRetry()
@@ -1436,6 +1880,15 @@ internal static class NetherAutoClimbController
             State.Pause(reason, detail);
         ProjectionCalibration.Clear();
         LogTransition("PAUSED " + reason + ":" + detail);
+        LogDiagnostic(
+            "pause",
+            new("terminal", "False"),
+            new("reason", reason.ToString()),
+            new("detail", detail),
+            new("phase", State.Phase.ToString()),
+            new("leasePhase", BattleSettingsLifecycle.LeasePhase.ToString()),
+            new("leaseRuntime", BattleSettingsLifecycle.RuntimeState.ToString())
+        );
     }
 
     private static NetherSnapshot BuildSnapshotFromFingerprint(NetherSnapshotFingerprint fingerprint) => new()
@@ -1444,6 +1897,7 @@ internal static class NetherAutoClimbController
         NetherId = fingerprint.NetherId,
         MapId = fingerprint.MapId,
         CurrentFloorId = fingerprint.CurrentFloorId,
+        CurrentNodeId = fingerprint.CurrentNodeId,
         FloorLevel = fingerprint.FloorLevel,
         FloorIndex = fingerprint.FloorIndex,
         ErosionPoint = fingerprint.ErosionPoint,
@@ -1478,7 +1932,10 @@ internal static class NetherAutoClimbController
             new NetherDetailedAuditField("status", snapshot.Status.ToString()),
             new NetherDetailedAuditField("mapId", snapshot.MapId.ToString()),
             new NetherDetailedAuditField("floorId", snapshot.CurrentFloorId.ToString()),
+            new NetherDetailedAuditField("nodeId", snapshot.CurrentNodeId.ToString()),
             new NetherDetailedAuditField("floorLevel", snapshot.FloorLevel.ToString()),
+            new NetherDetailedAuditField("apiFloorIndex", snapshot.FloorIndex.ToString()),
+            new NetherDetailedAuditField("mapNodes", snapshot.Floors.Count.ToString()),
             new NetherDetailedAuditField("erosion", snapshot.ErosionPoint.ToString()),
             new NetherDetailedAuditField("detail", detail)
         );
@@ -1500,6 +1957,11 @@ internal static class NetherAutoClimbController
         );
     }
 
+    internal static void LogDiagnostic(
+        string eventName,
+        params NetherAutoClimbDiagnosticField[] fields
+    ) => Logger.Info(NetherAutoClimbDiagnostics.Format(eventName, fields));
+
     private static void Audit(
         NetherDetailedAuditKind kind,
         string key,
@@ -1507,6 +1969,64 @@ internal static class NetherAutoClimbController
     )
     {
         DetailedAudit.Emit(Config.NetherAutoClimbDetailedLogging.Value, kind, key, fields);
+    }
+
+    private static void AuditCodeDecision(
+        NetherSnapshot snapshot,
+        IReadOnlyList<NetherCodeCandidate> candidates,
+        NetherCodeDecision decision,
+        string boundary
+    )
+    {
+        Audit(
+            NetherDetailedAuditKind.Interactive,
+            "code-policy:" + boundary + ":" + snapshot.Fingerprint + ":" + decision.Kind,
+            new NetherDetailedAuditField("decision", decision.Kind.ToString()),
+            new NetherDetailedAuditField("selectedCodeId", decision.SelectedCodeId.ToString()),
+            new NetherDetailedAuditField("removeCodeId", decision.RemoveCodeId.ToString()),
+            new NetherDetailedAuditField("lane", decision.LockedLane.ToString()),
+            new NetherDetailedAuditField("reloadCount", snapshot.CodeReloadCount.ToString()),
+            new NetherDetailedAuditField("capacity", snapshot.CodeCapacity.ToString()),
+            new NetherDetailedAuditField("protected", string.Join("|", decision.ProtectedCodeIds.Take(8))),
+            new NetherDetailedAuditField("removable", string.Join("|", decision.RemovableCodeIds.Take(8))),
+            new NetherDetailedAuditField("detail", decision.Detail)
+        );
+
+        foreach (NetherCodeState current in snapshot.Codes.Take(8))
+        {
+            Audit(
+                NetherDetailedAuditKind.Interactive,
+                "code-current:" + boundary + ":" + current.CodeId + ":" + snapshot.Fingerprint,
+                new NetherDetailedAuditField("codeId", current.CodeId.ToString()),
+                new NetherDetailedAuditField("known", current.IsKnown.ToString()),
+                new NetherDetailedAuditField("category", current.Category.ToString()),
+                new NetherDetailedAuditField("effect", current.EffectKind.ToString()),
+                new NetherDetailedAuditField("rarity", current.Rarity.ToString()),
+                new NetherDetailedAuditField("level", current.Level.ToString()),
+                new NetherDetailedAuditField("coverageKnown", current.PartyCoverageKnown.ToString()),
+                new NetherDetailedAuditField("coverage", current.PartyCoverage.ToString()),
+                new NetherDetailedAuditField("researchKnown", current.IsResearchOnlyKnown.ToString()),
+                new NetherDetailedAuditField("research", current.IsResearchOnly.ToString())
+            );
+        }
+
+        foreach (NetherCodeCandidate candidate in candidates.Take(8))
+        {
+            Audit(
+                NetherDetailedAuditKind.Interactive,
+                "code-candidate:" + boundary + ":" + candidate.CodeId + ":" + snapshot.Fingerprint,
+                new NetherDetailedAuditField("codeId", candidate.CodeId.ToString()),
+                new NetherDetailedAuditField("known", candidate.IsKnown.ToString()),
+                new NetherDetailedAuditField("category", candidate.Category.ToString()),
+                new NetherDetailedAuditField("effect", candidate.EffectKind.ToString()),
+                new NetherDetailedAuditField("rarity", candidate.Rarity.ToString()),
+                new NetherDetailedAuditField("level", candidate.Level.ToString()),
+                new NetherDetailedAuditField("coverageKnown", candidate.PartyCoverageKnown.ToString()),
+                new NetherDetailedAuditField("coverage", candidate.PartyCoverage.ToString()),
+                new NetherDetailedAuditField("researchKnown", candidate.IsResearchOnlyKnown.ToString()),
+                new NetherDetailedAuditField("research", candidate.IsResearchOnly.ToString())
+            );
+        }
     }
 
     private static void AuditSnapshot(NetherSnapshot snapshot, string boundary)
@@ -1540,25 +2060,286 @@ internal static class NetherAutoClimbController
     )
     {
         long selectedFloorId = route.SelectedNode?.FloorId ?? 0;
+        long selectedNodeId = route.SelectedNode?.NodeId ?? 0;
         string candidates = string.Join(
             "|",
             route.Audit
                 .Take(8)
-                .Select(candidate => candidate.FloorId + ":" + candidate.Reason)
+                .Select(FormatRouteCandidateAudit)
         );
-        int terminalWorstCase = selectedFloorId > 0
-            ? context.MinimumWorstCaseErosion(selectedFloorId)
+        int terminalWorstCase = selectedNodeId > 0
+            ? context.MinimumWorstCaseErosion(selectedNodeId)
             : -1;
         Audit(
             NetherDetailedAuditKind.Route,
             "route:" + snapshot.MapId + ":" + snapshot.CurrentFloorId + ":" + selectedFloorId + ":" + route.PauseReason,
             new NetherDetailedAuditField("selectedFloorId", selectedFloorId.ToString()),
+            new NetherDetailedAuditField("selectedNodeId", selectedNodeId.ToString()),
             new NetherDetailedAuditField("pauseReason", route.PauseReason.ToString()),
             new NetherDetailedAuditField("pauseDetail", route.PauseDetail),
             new NetherDetailedAuditField("candidates", candidates),
             new NetherDetailedAuditField("reverseWorst", terminalWorstCase.ToString()),
             new NetherDetailedAuditField("maxDepth", context.MaximumFloorLevel.ToString()),
             new NetherDetailedAuditField("mapId", snapshot.MapId.ToString())
+        );
+
+        IReadOnlyList<NetherFloorNode> floors = snapshot.Floors ?? Array.Empty<NetherFloorNode>();
+        foreach (NetherRouteCandidateAudit candidate in route.Audit.Take(8))
+        {
+            NetherFloorNode? node = floors.FirstOrDefault(floor => floor.NodeId == candidate.FloorId);
+            long nodeId = node?.NodeId ?? candidate.FloorId;
+            string detail = string.IsNullOrEmpty(candidate.Detail)
+                ? context.DiagnosticDetail(nodeId)
+                : candidate.Detail;
+            Audit(
+                NetherDetailedAuditKind.Route,
+                "route-candidate:" + nodeId + ":" + snapshot.Fingerprint,
+                new NetherDetailedAuditField("nodeId", nodeId.ToString()),
+                new NetherDetailedAuditField("masterId", (node?.FloorId ?? 0).ToString()),
+                new NetherDetailedAuditField("nodeType", (node?.NodeType ?? NetherFloorNodeType.Unknown).ToString()),
+                new NetherDetailedAuditField("floorLevel", (node?.FloorLevel ?? -1).ToString()),
+                new NetherDetailedAuditField("apiFloorIndex", (node?.ApiFloorIndex ?? -1).ToString()),
+                new NetherDetailedAuditField("reason", candidate.Reason),
+                new NetherDetailedAuditField("detail", detail),
+                new NetherDetailedAuditField("known", context.IsKnown(nodeId).ToString()),
+                new NetherDetailedAuditField("hardSafe", context.IsHardSafe(nodeId).ToString()),
+                new NetherDetailedAuditField("hpSafe", context.IsHpSafe(nodeId).ToString()),
+                new NetherDetailedAuditField(
+                    "projectedErosionDelta",
+                    context.IsKnown(nodeId) ? context.ProjectedErosionDelta(nodeId).ToString() : "unknown"
+                ),
+                new NetherDetailedAuditField(
+                    "terminalWorstCase",
+                    context.IsHardSafe(nodeId) ? context.MinimumWorstCaseErosion(nodeId).ToString() : "unknown"
+                )
+            );
+        }
+
+        if (!route.HasSelection)
+        {
+            foreach (NetherFloorNode node in floors
+                .Where(floor => floor != null)
+                .OrderBy(floor => floor.FloorLevel)
+                .ThenBy(floor => floor.ApiFloorIndex)
+                .ThenBy(floor => floor.NodeId))
+            {
+                string previous = node.PreviousFloorIds == null
+                    ? "null"
+                    : string.Join("|", node.PreviousFloorIds.Take(8));
+                Audit(
+                    NetherDetailedAuditKind.Route,
+                    "route-node:" + node.NodeId + ":" + snapshot.Fingerprint,
+                    new NetherDetailedAuditField("nodeId", node.NodeId.ToString()),
+                    new NetherDetailedAuditField("masterId", node.FloorId.ToString()),
+                    new NetherDetailedAuditField("nodeType", node.NodeType.ToString()),
+                    new NetherDetailedAuditField("floorLevel", node.FloorLevel.ToString()),
+                    new NetherDetailedAuditField("apiFloorIndex", node.ApiFloorIndex.ToString()),
+                    new NetherDetailedAuditField("previous", previous),
+                    new NetherDetailedAuditField("known", context.IsKnown(node.NodeId).ToString()),
+                    new NetherDetailedAuditField("hardSafe", context.IsHardSafe(node.NodeId).ToString()),
+                    new NetherDetailedAuditField("hpSafe", context.IsHpSafe(node.NodeId).ToString()),
+                    new NetherDetailedAuditField(
+                        "projectedErosionDelta",
+                        context.IsKnown(node.NodeId) ? context.ProjectedErosionDelta(node.NodeId).ToString() : "unknown"
+                    ),
+                    new NetherDetailedAuditField(
+                        "terminalWorstCase",
+                        context.IsHardSafe(node.NodeId) ? context.MinimumWorstCaseErosion(node.NodeId).ToString() : "unknown"
+                    ),
+                    new NetherDetailedAuditField("detail", context.DiagnosticDetail(node.NodeId))
+                );
+            }
+        }
+    }
+
+    private static void AuditInteractivePreEntryInputs(
+        NetherSnapshot snapshot,
+        NetherRuntimeInteractivePreEntryInputsResult runtime
+    )
+    {
+        foreach (KeyValuePair<long, NetherRuntimeInteractivePreEntryCaptureResult> entry in
+            runtime.ByFloorNodeId.OrderBy(pair => pair.Key).Take(16))
+        {
+            long nodeId = entry.Key;
+            NetherRuntimeInteractivePreEntryCaptureResult capture = entry.Value;
+            NetherInteractiveFloorPreEntrySafetyInput? input = capture.Input;
+            NetherInteractiveFloorPreEntrySafetyResult safety = capture.Safety;
+            Audit(
+                NetherDetailedAuditKind.Interactive,
+                "preentry-floor:" + nodeId + ":" + snapshot.Fingerprint,
+                new NetherDetailedAuditField("nodeId", nodeId.ToString()),
+                new NetherDetailedAuditField("captured", capture.IsCaptured.ToString()),
+                new NetherDetailedAuditField("floorKind", input?.FloorKind.ToString() ?? "unknown"),
+                new NetherDetailedAuditField("masterId", input?.FloorMasterId.ToString() ?? "unknown"),
+                new NetherDetailedAuditField("extendId", input?.FloorExtendId.ToString() ?? "unknown"),
+                new NetherDetailedAuditField("safe", safety.IsSafe.ToString()),
+                new NetherDetailedAuditField("safetyReason", safety.PauseReason.ToString()),
+                new NetherDetailedAuditField("safetyDetail", safety.Detail),
+                new NetherDetailedAuditField("captureDetail", capture.Detail),
+                new NetherDetailedAuditField("eventRows", (input?.EventRows?.Count ?? 0).ToString()),
+                new NetherDetailedAuditField("partRows", (input?.EventPartRows?.Count ?? 0).ToString())
+            );
+
+            if (input == null
+                || input.FloorKind is not (NetherFloorNodeType.Event or NetherFloorNodeType.Recovery)
+                || input.EventRows == null)
+            {
+                continue;
+            }
+
+            NetherFloorEventMasterRow[] resolverMatches = input.EventRows
+                .Where(row => input.FloorExtendId > 0
+                    ? row.EventId == input.FloorExtendId
+                    : row.MapFloorMasterId == input.FloorMasterId)
+                .Take(4)
+                .ToArray();
+            for (int rowIndex = 0; rowIndex < resolverMatches.Length; rowIndex++)
+            {
+                NetherFloorEventMasterRow row = resolverMatches[rowIndex];
+                Audit(
+                    NetherDetailedAuditKind.Interactive,
+                    "event-master:" + nodeId + ":" + row.EventId + ":" + rowIndex + ":" + snapshot.Fingerprint,
+                    new NetherDetailedAuditField("nodeId", nodeId.ToString()),
+                    new NetherDetailedAuditField("masterId", input.FloorMasterId.ToString()),
+                    new NetherDetailedAuditField("extendId", input.FloorExtendId.ToString()),
+                    new NetherDetailedAuditField("eventId", row.EventId.ToString()),
+                    new NetherDetailedAuditField("mapFloorId", row.MapFloorMasterId.ToString()),
+                    new NetherDetailedAuditField("eventType", row.Type.ToString()),
+                    new NetherDetailedAuditField("weight", row.Weight.ToString()),
+                    new NetherDetailedAuditField("resolverIndex", rowIndex.ToString()),
+                    new NetherDetailedAuditField("part1", row.PartId1.ToString()),
+                    new NetherDetailedAuditField("part2", row.PartId2.ToString()),
+                    new NetherDetailedAuditField("part3", row.PartId3.ToString()),
+                    new NetherDetailedAuditField("part4", row.PartId4.ToString())
+                );
+
+                long[] partIds = [row.PartId1, row.PartId2, row.PartId3, row.PartId4];
+                for (int optionIndex = 0; optionIndex < partIds.Length; optionIndex++)
+                {
+                    long partId = partIds[optionIndex];
+                    if (partId <= 0)
+                        continue;
+                    NetherFloorEventPartMasterRow[] partMatches = (input.EventPartRows
+                            ?? Array.Empty<NetherFloorEventPartMasterRow>())
+                        .Where(part => part.PartId == partId)
+                        .Take(4)
+                        .ToArray();
+                    if (partMatches.Length == 0)
+                    {
+                        Audit(
+                            NetherDetailedAuditKind.Interactive,
+                            "event-part-missing:" + nodeId + ":" + row.EventId + ":" + partId + ":" + snapshot.Fingerprint,
+                            new NetherDetailedAuditField("nodeId", nodeId.ToString()),
+                            new NetherDetailedAuditField("eventId", row.EventId.ToString()),
+                            new NetherDetailedAuditField("partId", partId.ToString()),
+                            new NetherDetailedAuditField("option", (optionIndex + 1).ToString()),
+                            new NetherDetailedAuditField("status", "missing")
+                        );
+                        continue;
+                    }
+
+                    for (int partIndex = 0; partIndex < partMatches.Length; partIndex++)
+                    {
+                        NetherFloorEventPartMasterRow part = partMatches[partIndex];
+                        Audit(
+                            NetherDetailedAuditKind.Interactive,
+                            "event-part:" + nodeId + ":" + row.EventId + ":" + partId + ":" + partIndex + ":" + snapshot.Fingerprint,
+                            new NetherDetailedAuditField("nodeId", nodeId.ToString()),
+                            new NetherDetailedAuditField("eventId", row.EventId.ToString()),
+                            new NetherDetailedAuditField("partId", partId.ToString()),
+                            new NetherDetailedAuditField("option", (optionIndex + 1).ToString()),
+                            new NetherDetailedAuditField("rowIndex", partIndex.ToString()),
+                            new NetherDetailedAuditField("target1", part.TargetType1.ToString()),
+                            new NetherDetailedAuditField("parameter1", part.SelectParameter1.ToString()),
+                            new NetherDetailedAuditField("target2", part.TargetType2.ToString()),
+                            new NetherDetailedAuditField("parameter2", part.SelectParameter2.ToString()),
+                            new NetherDetailedAuditField("target3", part.TargetType3.ToString()),
+                            new NetherDetailedAuditField("parameter3", part.SelectParameter3.ToString()),
+                            new NetherDetailedAuditField(
+                                "content",
+                                part.ContentType + ":" + part.ContentId + ":" + part.Amount
+                            )
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    private static void AuditRouteRuntimeInputs(
+        NetherSnapshot snapshot,
+        NetherRuntimeRouteSafetyData runtime
+    )
+    {
+        IReadOnlyList<NetherFloorNode> floors = snapshot.Floors ?? Array.Empty<NetherFloorNode>();
+        IReadOnlyDictionary<long, NetherFloorMasterBounds> bounds = runtime.FloorBoundsByFloorId
+            ?? new Dictionary<long, NetherFloorMasterBounds>();
+        int knownBounds = floors.Count(floor =>
+            floor.NodeId > 0
+            && bounds.TryGetValue(floor.NodeId, out NetherFloorMasterBounds mapped)
+            && mapped.IsKnown
+        );
+        string unknownBounds = string.Join(
+            "|",
+            floors
+                .Where(floor => floor.NodeId > 0
+                    && (!bounds.TryGetValue(floor.NodeId, out NetherFloorMasterBounds mapped) || !mapped.IsKnown))
+                .Take(8)
+                .Select(floor =>
+                {
+                    string detail = bounds.TryGetValue(floor.NodeId, out NetherFloorMasterBounds mapped)
+                        ? mapped.Detail
+                        : "missing-runtime-node";
+                    return floor.NodeId + "/" + floor.FloorId + ":" + detail;
+                })
+        );
+        NetherActiveCodeErosionProjection? codes = runtime.ActiveCodeErosion;
+        Audit(
+            NetherDetailedAuditKind.Route,
+            "route-inputs:" + snapshot.MapId + ":" + snapshot.CurrentNodeId + ":" + snapshot.Fingerprint,
+            new NetherDetailedAuditField("runtimeDetail", runtime.Detail),
+            new NetherDetailedAuditField("boundsKnown", knownBounds + "/" + floors.Count),
+            new NetherDetailedAuditField("boundsUnknown", unknownBounds),
+            new NetherDetailedAuditField("hpKnown", runtime.ActivePartyHp.IsKnown.ToString()),
+            new NetherDetailedAuditField("hpMin", runtime.ActivePartyHp.MinimumHpPermille?.ToString() ?? "none"),
+            new NetherDetailedAuditField("hpDetail", runtime.ActivePartyHp.Detail),
+            new NetherDetailedAuditField("codesKnown", (codes?.ErosionProjectionKnown ?? false).ToString()),
+            new NetherDetailedAuditField("codeHash", codes?.CodeHash ?? "none"),
+            new NetherDetailedAuditField("codeCount", (codes?.Entries?.Count ?? 0).ToString()),
+            new NetherDetailedAuditField("codesDetail", codes?.Detail ?? "missing-active-code-projection")
+        );
+    }
+
+    private static string FormatRouteCandidateAudit(NetherRouteCandidateAudit candidate) =>
+        candidate.FloorId + ":" + candidate.Reason
+        + (string.IsNullOrEmpty(candidate.Detail) ? string.Empty : ":" + candidate.Detail);
+
+    private static void LogSnapshotDiagnostic(NetherSnapshot snapshot, string boundary)
+    {
+        IReadOnlyList<NetherFloorNode> floors = snapshot.Floors ?? Array.Empty<NetherFloorNode>();
+        string reusedMasterIds = string.Join(
+            "|",
+            floors
+                .GroupBy(floor => floor.FloorId)
+                .Where(group => group.Count() > 1)
+                .OrderBy(group => group.Key)
+                .Take(12)
+                .Select(group => group.Key + "x" + group.Count())
+        );
+        LogDiagnostic(
+            "snapshot-ready",
+            new("boundary", boundary),
+            new("status", snapshot.Status.ToString()),
+            new("netherId", snapshot.NetherId.ToString()),
+            new("mapId", snapshot.MapId.ToString()),
+            new("currentMasterId", snapshot.CurrentFloorId.ToString()),
+            new("currentNodeId", snapshot.CurrentNodeId.ToString()),
+            new("floorLevel", snapshot.FloorLevel.ToString()),
+            new("apiFloorIndex", snapshot.FloorIndex.ToString()),
+            new("nodeCount", floors.Count.ToString()),
+            new("masterIdCount", floors.Select(floor => floor.FloorId).Distinct().Count().ToString()),
+            new("reusedMasterIds", string.IsNullOrEmpty(reusedMasterIds) ? "none" : reusedMasterIds),
+            new("mapHash", snapshot.MapHash)
         );
     }
 
@@ -1570,6 +2351,7 @@ internal static class NetherAutoClimbController
         private readonly NetherActionProjectionCalibration _projectionCalibration;
         private readonly NetherRuntimeFlowCoordinator _runtimeFlow;
         private readonly NetherReadOnlyReconcileCoordinator _readOnlyReconcileFlow;
+        private readonly NetherBattleIngressCoordinator _battleIngressFlow;
         private readonly NetherBattleSettlementCoordinator _battleSettlementFlow;
         private readonly NetherContinueSceneRuntimeCoordinator _continueSceneFlow;
         private readonly NetherBattleSettingsLeaseControllerLifecycle _battleSettingsLifecycle;
@@ -1586,6 +2368,7 @@ internal static class NetherAutoClimbController
             NetherActionProjectionCalibration projectionCalibration,
             NetherRuntimeFlowCoordinator runtimeFlow,
             NetherReadOnlyReconcileCoordinator readOnlyReconcileFlow,
+            NetherBattleIngressCoordinator battleIngressFlow,
             NetherBattleSettlementCoordinator battleSettlementFlow,
             NetherContinueSceneRuntimeCoordinator continueSceneFlow,
             NetherBattleSettingsLeaseControllerLifecycle battleSettingsLifecycle,
@@ -1601,6 +2384,7 @@ internal static class NetherAutoClimbController
             _projectionCalibration = projectionCalibration;
             _runtimeFlow = runtimeFlow;
             _readOnlyReconcileFlow = readOnlyReconcileFlow;
+            _battleIngressFlow = battleIngressFlow;
             _battleSettlementFlow = battleSettlementFlow;
             _continueSceneFlow = continueSceneFlow;
             _battleSettingsLifecycle = battleSettingsLifecycle;
@@ -1621,6 +2405,7 @@ internal static class NetherAutoClimbController
             NetherAutoClimbController.ProjectionCalibration = _projectionCalibration;
             NetherAutoClimbController.RuntimeFlow = _runtimeFlow;
             NetherAutoClimbController.ReadOnlyReconcileFlow = _readOnlyReconcileFlow;
+            NetherAutoClimbController.BattleIngressFlow = _battleIngressFlow;
             NetherAutoClimbController.BattleSettlementFlow = _battleSettlementFlow;
             NetherAutoClimbController.ContinueSceneFlow = _continueSceneFlow;
             NetherAutoClimbController.BattleSettingsLifecycle = _battleSettingsLifecycle;

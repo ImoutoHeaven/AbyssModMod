@@ -74,8 +74,8 @@ internal sealed record NetherShopDecision
 
 internal sealed class NetherEventPolicy
 {
-    private const long PreferredSafeCodeId = 30024;
     private readonly NetherErosionPolicy _erosionPolicy = new();
+    private readonly NetherCodeTransformPolicy _transformPolicy = new();
 
     public NetherEventDecision DecideEvent(
         NetherSnapshot snapshot,
@@ -219,7 +219,7 @@ internal sealed class NetherEventPolicy
     {
         candidate = default;
         rejection = default!;
-        if (option == null || option.OptionNumber < 1 || option.Effects == null || option.Effects.Count is < 1 or > 3)
+        if (option == null || option.OptionNumber < 1 || option.Effects == null || option.Effects.Count is < 1 or > 4)
         {
             rejection = Pause(NetherPauseReason.UnknownEffect, "invalid-event-option");
             return false;
@@ -229,11 +229,20 @@ internal sealed class NetherEventPolicy
             rejection = Pause(NetherPauseReason.UnknownEffect, "unknown-event-effect");
             return false;
         }
-        if (option.Effects.Count(effect => effect.Kind == NetherEffectKind.AbyssCodeChanged) > 1
-            || option.Effects.Any(effect => effect.Kind == NetherEffectKind.AbyssCodeChanged && effect.ReplacementCodeId <= 0))
+        if (option.Effects.Count(effect => effect.Kind == NetherEffectKind.AbyssCodeTransform) > 1
+            || option.Effects.Count(effect => effect.Kind == NetherEffectKind.AbyssCodeOffer) > 1)
         {
-            rejection = Pause(NetherPauseReason.UnknownEffect, "ambiguous-code-change");
+            rejection = Pause(NetherPauseReason.UnknownEffect, "ambiguous-code-event-trigger");
             return false;
+        }
+        if (option.Effects.Any(effect => effect.Kind == NetherEffectKind.AbyssCodeTransform))
+        {
+            NetherCodeTransformDecision transform = _transformPolicy.Decide(snapshot.Codes, snapshot.CodeCapacity);
+            if (!transform.CanTransform)
+            {
+                rejection = Pause(transform.PauseReason, transform.Detail);
+                return false;
+            }
         }
         if (option.Effects.Any(effect => effect.Kind == NetherEffectKind.NetherGoldUsed && effect.Amount > snapshot.NetherGold)
             || option.Effects.Any(effect => effect.Kind == NetherEffectKind.TreasureKeyUsed && effect.Amount > snapshot.TreasureKeyCount))
@@ -276,17 +285,19 @@ internal sealed class NetherEventPolicy
         }
 
         int erosionDelta = erosion.ProjectedErosion - snapshot.ErosionPoint;
-        long replacement = option.Effects.FirstOrDefault(effect => effect.Kind == NetherEffectKind.AbyssCodeChanged)?.ReplacementCodeId ?? 0;
         bool startsBattle = option.Effects.Any(effect => effect.Kind == NetherEffectKind.Battle);
         bool optionalBattle = option.Effects.Any(effect => effect.Kind == NetherEffectKind.Battle && effect.IsOptionalBattle);
-        int benefit = option.Effects.Count(effect => effect.Kind is NetherEffectKind.Item or NetherEffectKind.NetherGoldGain or NetherEffectKind.TreasureKeyGain);
+        int benefit = option.Effects.Count(effect => effect.Kind is NetherEffectKind.Item
+            or NetherEffectKind.NetherGoldGain
+            or NetherEffectKind.TreasureKeyGain
+            or NetherEffectKind.AbyssCodeOffer);
         candidate = new EventCandidate(
             option,
             erosion.ProjectedErosion,
             erosionDelta,
             hpDelta,
-            replacement,
-            replacement == PreferredSafeCodeId ? 1 : 0,
+            0,
+            option.Effects.Any(effect => effect.Kind == NetherEffectKind.AbyssCodeOffer) ? 1 : 0,
             benefit,
             startsBattle,
             optionalBattle

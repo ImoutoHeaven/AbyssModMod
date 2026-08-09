@@ -14,7 +14,7 @@ namespace AbyssMod.Tests;
 public class NetherInteractiveRouteSafetyWiringTests
 {
     [Fact]
-    public void ControllerRouteWiring_SelectsEventOnlyWhenEveryPositiveWeightRowHasASafeExit()
+    public void ControllerRouteWiring_SelectsEventWhenTheNativeResolvedRowHasASafeExit()
     {
         NetherRuntimeInteractivePreEntryCaptureResult capture = Capture(
             NetherFloorNodeType.Event,
@@ -39,14 +39,14 @@ public class NetherInteractiveRouteSafetyWiringTests
     }
 
     [Fact]
-    public void ControllerRouteWiring_RejectsEventWhenOnePossibleMasterRowIsUnsafe()
+    public void ControllerRouteWiring_RejectsEventWhenTheNativeResolvedRowIsUnsafe()
     {
         NetherRuntimeInteractivePreEntryCaptureResult capture = Capture(
             NetherFloorNodeType.Event,
             events:
             [
-                Event(42, 2, 1, 1001),
-                Event(43, 2, 1, 1002),
+                Event(42, 2, 1, 1002),
+                Event(43, 2, 1, 1001),
             ],
             parts:
             [
@@ -156,15 +156,14 @@ public class NetherInteractiveRouteSafetyWiringTests
         Assert.True(safeCapture.Safety.IsSafe);
         Assert.False(decision.Route.HasSelection);
         Assert.False(decision.Context.KnownNodeByFloorId[2]);
+        Assert.Contains(
+            "interactive:safety:NoSafeRoute:mutation-proof-rejected-preentry",
+            decision.Context.UnknownDetail(2)
+        );
     }
 
-    [Theory]
-    [InlineData(20, false)]
-    [InlineData(19, true)]
-    public void ControllerRouteWiring_BudgetsWorstPossibleEventProjectionBeforeTerminalSelection(
-        int bossErosion,
-        bool expectedSelection
-    )
+    [Fact]
+    public void ControllerRouteWiring_BudgetsEventProjectionWithTheFixedBattleBaseCost()
     {
         NetherRuntimeInteractivePreEntryCaptureResult capture = Capture(
             NetherFloorNodeType.Event,
@@ -173,14 +172,11 @@ public class NetherInteractiveRouteSafetyWiringTests
             parts: [Part(1001, (int)NetherEffectKind.Erosion, 60)]
         );
 
-        NetherAutoClimbRouteSafetyDecision decision = DecideWorstEventBudget(capture, bossErosion);
+        NetherAutoClimbRouteSafetyDecision decision = DecideWorstEventBudget(capture);
 
         Assert.True(capture.Safety.IsSafe);
-        Assert.Equal(expectedSelection, decision.Route.HasSelection);
-        if (expectedSelection)
-            Assert.Equal(2, Assert.IsType<NetherFloorNode>(decision.Route.SelectedNode).FloorId);
-        else
-            Assert.Contains(decision.Route.Audit, item => item.FloorId == 2 && item.Reason == "terminal-erosion-100");
+        Assert.True(decision.Route.HasSelection);
+        Assert.Equal(2, Assert.IsType<NetherFloorNode>(decision.Route.SelectedNode).FloorId);
     }
 
     [Fact]
@@ -244,8 +240,7 @@ public class NetherInteractiveRouteSafetyWiringTests
     );
 
     private static NetherAutoClimbRouteSafetyDecision DecideWorstEventBudget(
-        NetherRuntimeInteractivePreEntryCaptureResult capture,
-        int bossErosion
+        NetherRuntimeInteractivePreEntryCaptureResult capture
     ) => new NetherAutoClimbRouteSafetyWiring().Plan(
         new NetherSnapshot
         {
@@ -269,7 +264,7 @@ public class NetherInteractiveRouteSafetyWiringTests
         {
             FloorBoundsByFloorId = new Dictionary<long, NetherFloorMasterBounds>
             {
-                [3] = new NetherFloorMasterBounds(3, bossErosion, bossErosion, IsKnown: true, Detail: string.Empty),
+                [3] = new NetherFloorMasterBounds(3, 0, 100, IsKnown: true, Detail: string.Empty),
             },
             ActivePartyHp = new NetherActivePartyHpSafety(true, 500, string.Empty),
             ActiveCodeErosion = new NetherActiveCodeErosionProjection

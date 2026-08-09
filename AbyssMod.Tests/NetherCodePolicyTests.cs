@@ -150,15 +150,16 @@ public class NetherCodePolicyTests
     }
 
     [Fact]
-    public void Category_confirmed_ordinary_offer_with_unresolved_lane_facts_pauses_without_select_or_reload()
+    public void Category_confirmed_ordinary_offer_uses_master_rarity_without_inventing_lane_facts()
     {
         NetherCodeDecision decision = Decide(
             Portfolio(reloadCount: 3),
             Candidate(51001, NetherCodeEffectKind.General, rarity: 4, coverage: 0)
         );
 
-        Assert.Equal(NetherCodeDecisionKind.Pause, decision.Kind);
-        Assert.Equal(NetherPauseReason.UnknownMasterData, decision.PauseReason);
+        Assert.Equal(NetherCodeDecisionKind.Select, decision.Kind);
+        Assert.Equal(51001, decision.SelectedCodeId);
+        Assert.Equal(NetherCombatLane.Auto, decision.LockedLane);
     }
 
     [Fact]
@@ -175,7 +176,7 @@ public class NetherCodePolicyTests
     }
 
     [Fact]
-    public void Full_portfolio_does_not_rank_or_remove_an_ordinary_code_with_unresolved_facts()
+    public void Full_portfolio_replaces_an_unprotected_ordinary_code_with_a_safe_code()
     {
         NetherCodeDecision decision = Decide(
             Portfolio(
@@ -185,8 +186,33 @@ public class NetherCodePolicyTests
             Candidate(51002, NetherCodeEffectKind.Safe, level: 1)
         );
 
-        Assert.Equal(NetherCodeDecisionKind.Pause, decision.Kind);
-        Assert.Equal(NetherPauseReason.UnknownMasterData, decision.PauseReason);
+        Assert.Equal(NetherCodeDecisionKind.Select, decision.Kind);
+        Assert.Equal(51002, decision.SelectedCodeId);
+        Assert.Equal(51001, decision.RemoveCodeId);
+    }
+
+    [Fact]
+    public void Full_portfolio_keeps_a_stronger_ordinary_code_instead_of_downgrading_it()
+    {
+        NetherCodeDecision decision = Decide(
+            Portfolio(
+                capacity: 1,
+                current: [Code(51001, NetherCodeEffectKind.General, level: 3, rarity: 4) with
+                {
+                    Category = NetherCodeCategory.Technique,
+                    PartyCoverageKnown = false,
+                    IsResearchOnlyKnown = false,
+                }]
+            ),
+            Candidate(51002, NetherCodeEffectKind.General, level: 1, rarity: 2) with
+            {
+                Category = NetherCodeCategory.Technique,
+                PartyCoverageKnown = false,
+                IsResearchOnlyKnown = false,
+            }
+        );
+
+        Assert.Equal(NetherCodeDecisionKind.Keep, decision.Kind);
     }
 
     private static NetherCodeDecision Decide(NetherCodePortfolio portfolio, params NetherCodeCandidate[] candidates) => new NetherCodePolicy().Decide(

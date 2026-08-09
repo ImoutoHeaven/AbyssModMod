@@ -97,7 +97,7 @@ internal sealed class NetherErosionPolicy
             return Pause(currentErosion, NetherPauseReason.InvalidConfiguration, "invalid-soft-limit");
         if (effects == null)
             throw new ArgumentNullException(nameof(effects));
-        if (effects.Count > 3)
+        if (effects.Count > 4)
             return Pause(currentErosion, NetherPauseReason.UnknownEffect, "too-many-event-effects");
 
         try
@@ -112,9 +112,9 @@ internal sealed class NetherErosionPolicy
                     NetherEffectKind.Erosion => checked(delta + effect.Amount),
                     NetherEffectKind.ErosionHeal => checked(delta - effect.Amount),
                     NetherEffectKind.Heal or NetherEffectKind.Damage or NetherEffectKind.NetherGoldUsed
-                        or NetherEffectKind.TreasureKeyUsed or NetherEffectKind.AbyssCodeChanged
+                        or NetherEffectKind.TreasureKeyUsed or NetherEffectKind.AbyssCodeTransform
                         or NetherEffectKind.Battle or NetherEffectKind.Item or NetherEffectKind.NetherGoldGain
-                        or NetherEffectKind.TreasureKeyGain => delta,
+                        or NetherEffectKind.TreasureKeyGain or NetherEffectKind.AbyssCodeOffer => delta,
                     _ => throw new UnknownEffectException(),
                 };
             }

@@ -13,12 +13,7 @@ namespace AbyssMod.Services;
 /// </summary>
 internal static class NetherFloorActionTransactionComposer
 {
-    private enum CodeChangeExpectation
-    {
-        None,
-        Valid,
-        Invalid,
-    }
+    private readonly record struct CodeFlowRequirements(bool Transform, bool Offer, bool Invalid);
 
     /// <summary>
     /// Compatibility overload for isolated policy tests and single-stage callers.  Runtime
@@ -144,20 +139,7 @@ internal static class NetherFloorActionTransactionComposer
         if (!HasTerminalSelectionAfterEveryReload(stages))
             return false;
 
-        CodeChangeExpectation codeChange = GetExpectedCodeChange(stages, out long expectedCodeId);
-        if (codeChange == CodeChangeExpectation.Invalid)
-            return false;
-        if (codeChange == CodeChangeExpectation.Valid)
-        {
-            NetherFloorPopupStage[] matchingSelections = stages
-                .Where(stage => stage.PopupKind == NetherRuntimePopupKind.CodeOffer
-                    && stage.ActionKind == NetherActionKind.SelectCode
-                    && stage.CodeId == expectedCodeId)
-                .ToArray();
-            return matchingSelections.Length == 1
-                && ReferenceEquals(stages[^1], matchingSelections[0]);
-        }
-        return true;
+        return HasRequiredCodeFlowStages(stages);
     }
 
     private static bool HasTerminalSelectionAfterEveryReload(
@@ -248,6 +230,8 @@ internal static class NetherFloorActionTransactionComposer
                 NetherSessionStatus.Play,
             NetherRuntimePopupKind.CodeOffer when child.Kind == NetherActionKind.KeepCode =>
                 NetherSessionStatus.Play,
+            NetherRuntimePopupKind.CodeTransform when child.Kind == NetherActionKind.TransformCode
+                && child.ReplaceCodeId > 0 => NetherSessionStatus.Play,
             _ => NetherSessionStatus.Unknown,
         };
 
@@ -260,8 +244,9 @@ internal static class NetherFloorActionTransactionComposer
         NetherSessionStatus intrinsic = GetTerminal(popupKind, child);
         return intrinsic == NetherSessionStatus.Play
             && existingTerminal == NetherSessionStatus.Battle
-            && popupKind == NetherRuntimePopupKind.CodeOffer
-            && child.Kind is NetherActionKind.SelectCode or NetherActionKind.ReloadCode or NetherActionKind.KeepCode
+            && popupKind is NetherRuntimePopupKind.CodeOffer or NetherRuntimePopupKind.CodeTransform
+            && child.Kind is NetherActionKind.SelectCode or NetherActionKind.ReloadCode
+                or NetherActionKind.KeepCode or NetherActionKind.TransformCode
                 ? NetherSessionStatus.Battle
                 : intrinsic;
     }
@@ -385,8 +370,9 @@ internal static class NetherFloorActionTransactionComposer
         return intrinsic == stage.ExpectedAfterStatus
             || (intrinsic == NetherSessionStatus.Play
                 && stage.ExpectedAfterStatus == NetherSessionStatus.Battle
-                && stage.PopupKind == NetherRuntimePopupKind.CodeOffer
-                && stage.ActionKind is NetherActionKind.SelectCode or NetherActionKind.ReloadCode or NetherActionKind.KeepCode);
+                && stage.PopupKind is NetherRuntimePopupKind.CodeOffer or NetherRuntimePopupKind.CodeTransform
+                && stage.ActionKind is NetherActionKind.SelectCode or NetherActionKind.ReloadCode
+                    or NetherActionKind.KeepCode or NetherActionKind.TransformCode);
     }
 
     private static bool CanAppend(
@@ -412,14 +398,10 @@ internal static class NetherFloorActionTransactionComposer
         if (next.ExpectedAfterStatus != previous.ExpectedAfterStatus)
             return false;
 
-        CodeChangeExpectation codeChange = GetExpectedCodeChange(stages, out long expectedCodeId);
-        if (codeChange == CodeChangeExpectation.Invalid)
+        CodeFlowRequirements requirements = GetCodeFlowRequirements(stages);
+        if (requirements.Invalid)
             return false;
-        // The only proven multi-popup floor chain is Event's code-change handoff.  Do not
-        // generalize it to arbitrary modal sequences: a code effect requires a CodeOffer,
-        // and that offer may only select the exact replacement (or first reroll, whose later
-        // same-popup epoch is completed by the code-flow seam).  This makes duplicate or
-        // conflicting effect keys fail closed instead of being silently summed.
+
         // An exact code selection is terminal for the current owned chain.  The only legal
         // same-popup continuation is a Reload run: [Reload e0, Reload e1, ..., Select eN].
         if (previous.PopupKind == NetherRuntimePopupKind.CodeOffer)
@@ -432,24 +414,32 @@ internal static class NetherFloorActionTransactionComposer
             }
         }
 
-        if (codeChange == CodeChangeExpectation.Valid)
+        bool hasEventStage = stages.Any(stage => stage.ActionKind == NetherActionKind.SelectEventOption);
+        int transformStages = stages.Count(stage => stage.PopupKind == NetherRuntimePopupKind.CodeTransform
+            && stage.ActionKind == NetherActionKind.TransformCode);
+        bool hasCodeOfferStage = stages.Any(stage => stage.PopupKind == NetherRuntimePopupKind.CodeOffer);
+
+        if (next.PopupKind == NetherRuntimePopupKind.CodeTransform)
         {
-            if (next.PopupKind != NetherRuntimePopupKind.CodeOffer
-                || next.ActionKind is not (NetherActionKind.SelectCode or NetherActionKind.ReloadCode))
-            {
-                return false;
-            }
-            return next.ActionKind != NetherActionKind.SelectCode || next.CodeId == expectedCodeId;
+            return requirements.Transform
+                && transformStages == 0
+                && !hasCodeOfferStage
+                && next.ActionKind == NetherActionKind.TransformCode
+                && next.ReplaceCodeId > 0;
         }
 
-        // A Reroll may later be followed by the terminal choice on the same live CodeOffer.
-        // It is the only other stage edge with a verified owner; all unrelated second popups
-        // are rejected until they have their own exact native parent contract.
-        return previous.PopupKind == NetherRuntimePopupKind.CodeOffer
-            && previous.ActionKind == NetherActionKind.ReloadCode
-            && next.PopupKind == NetherRuntimePopupKind.CodeOffer
-            && next.ActionKind is NetherActionKind.ReloadCode or NetherActionKind.SelectCode or NetherActionKind.KeepCode
-            && ownerParent.Kind == NetherActionKind.SelectFloor;
+        if (next.PopupKind == NetherRuntimePopupKind.CodeOffer)
+        {
+            if (hasEventStage && !requirements.Offer)
+                return false;
+            if (requirements.Transform && transformStages != 1)
+                return false;
+            return next.ActionKind is NetherActionKind.ReloadCode
+                or NetherActionKind.SelectCode
+                or NetherActionKind.KeepCode;
+        }
+
+        return false;
     }
 
     private static bool HasMonotonicStageIdentity(
@@ -468,24 +458,57 @@ internal static class NetherFloorActionTransactionComposer
             && next.DecisionEpoch > previous.DecisionEpoch;
     }
 
-    private static CodeChangeExpectation GetExpectedCodeChange(
-        IEnumerable<NetherFloorPopupStage> stages,
-        out long codeId
+    private static CodeFlowRequirements GetCodeFlowRequirements(
+        IEnumerable<NetherFloorPopupStage> stages
     )
     {
-        codeId = 0;
-        foreach (NetherEffect effect in stages
-                     .Where(stage => stage.ActionKind == NetherActionKind.SelectEventOption)
-                     .SelectMany(stage => stage.ExpectedEffects))
+        NetherEffect[] effects = stages
+            .Where(stage => stage.ActionKind == NetherActionKind.SelectEventOption)
+            .SelectMany(stage => stage.ExpectedEffects)
+            .ToArray();
+        int transform = effects.Count(effect => effect.Kind == NetherEffectKind.AbyssCodeTransform);
+        int offer = effects.Count(effect => effect.Kind == NetherEffectKind.AbyssCodeOffer);
+        return new CodeFlowRequirements(transform == 1, offer == 1, transform > 1 || offer > 1);
+    }
+
+    private static bool HasRequiredCodeFlowStages(IReadOnlyList<NetherFloorPopupStage> stages)
+    {
+        CodeFlowRequirements requirements = GetCodeFlowRequirements(stages);
+        if (requirements.Invalid || !HasTerminalSelectionAfterEveryReload(stages))
+            return false;
+
+        int eventIndex = -1;
+        int transformIndex = -1;
+        int offerIndex = -1;
+        int transformCount = 0;
+        for (int index = 0; index < stages.Count; index++)
         {
-            if (effect.Kind == NetherEffectKind.AbyssCodeChanged)
+            NetherFloorPopupStage stage = stages[index];
+            if (stage.ActionKind == NetherActionKind.SelectEventOption)
+                eventIndex = index;
+            if (stage.PopupKind == NetherRuntimePopupKind.CodeTransform)
             {
-                if (effect.ReplacementCodeId <= 0 || codeId != 0)
-                    return CodeChangeExpectation.Invalid;
-                codeId = effect.ReplacementCodeId;
+                if (stage.ActionKind != NetherActionKind.TransformCode || stage.ReplaceCodeId <= 0)
+                    return false;
+                transformCount++;
+                transformIndex = index;
             }
+            if (stage.PopupKind == NetherRuntimePopupKind.CodeOffer && offerIndex < 0)
+                offerIndex = index;
         }
-        return codeId > 0 ? CodeChangeExpectation.Valid : CodeChangeExpectation.None;
+
+        if (requirements.Transform != (transformCount == 1))
+            return false;
+        if (requirements.Offer != (offerIndex >= 0) && eventIndex >= 0)
+            return false;
+        if (requirements.Transform && transformIndex <= eventIndex)
+            return false;
+        if (requirements.Offer
+            && (offerIndex <= eventIndex || requirements.Transform && offerIndex <= transformIndex))
+        {
+            return false;
+        }
+        return true;
     }
 
     private static bool IsExactEventAction(NetherPlannedAction action) =>
@@ -498,7 +521,6 @@ internal static class NetherFloorActionTransactionComposer
             && effect.ContentKnown
             && effect.Kind != NetherEffectKind.Unknown
             && effect.Amount >= 0
-            && (effect.Kind != NetherEffectKind.AbyssCodeChanged || effect.ReplacementCodeId > 0)
             && (effect.Kind != NetherEffectKind.Item || effect.ContentId > 0));
 
     private static bool HasDuplicateEffectKeys(IReadOnlyList<NetherEffect> effects)
@@ -511,7 +533,8 @@ internal static class NetherFloorActionTransactionComposer
             string key = effect.Kind switch
             {
                 NetherEffectKind.Item => "item:" + effect.ContentId,
-                NetherEffectKind.AbyssCodeChanged => "code-change",
+                NetherEffectKind.AbyssCodeTransform => "code-transform",
+                NetherEffectKind.AbyssCodeOffer => "code-offer",
                 _ => "effect:" + (int)effect.Kind,
             };
             if (!keys.Add(key))

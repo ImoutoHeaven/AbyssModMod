@@ -9,8 +9,8 @@ namespace AbyssMod.Services;
 
 /// <summary>
 /// Exact non-localized fields copied from one <c>MNetherFloorEvents</c> row.  The four part
-/// fields are option references, not effect targets; a positive-weight row is a server-possible
-/// outcome and must therefore be safe before selecting the floor.
+/// fields are option references, not effect targets. The selected row is resolved with the same
+/// ExtendId/id-or-first-floor rule as the game's NetherFloorMasterResolver.
 /// </summary>
 internal readonly record struct NetherFloorEventMasterRow(
     long EventId,
@@ -71,11 +71,14 @@ internal sealed record NetherInteractiveFloorPreEntrySafetyInput(
     /// resolver's event row; zero means the resolver's floor-master fallback is in effect.
     /// </summary>
     public long FloorExtendId { get; init; }
+    /// <summary>Current authoritative portfolio used to prove that target_type=7 has a removable code.</summary>
+    public IReadOnlyList<NetherCodeState> CurrentCodes { get; init; } = Array.Empty<NetherCodeState>();
+    public int CodeCapacity { get; init; }
 }
 
 /// <summary>
-/// The safe option proof is retained per possible event row so the later popup dispatcher cannot
-/// mistake a safe option from one weighted row for a safe exit in another row.
+/// The safe option proof is retained under the exact native-resolved event ID so the later popup
+/// dispatcher cannot mistake an option from another master row for the selected floor.
 /// </summary>
 internal sealed record NetherInteractiveOptionProjection(
     int OptionNumber,
@@ -85,9 +88,8 @@ internal sealed record NetherInteractiveOptionProjection(
 );
 
 /// <summary>
-/// Conservative aggregate over every server-possible event row. The route planner consumes the
-/// worst erosion and HP outcomes before clicking the floor; popup dispatch retains the per-row
-/// option identity that produced this aggregate.
+/// Projection of the exact event row already represented by the server floor model. The route
+/// planner consumes its erosion and HP outcome before clicking the floor.
 /// </summary>
 internal readonly record struct NetherInteractiveWorstCaseProjection(int ErosionDelta, int HpDelta);
 
@@ -131,16 +133,14 @@ internal sealed record NetherInteractiveFloorPreEntrySafetyResult
 }
 
 /// <summary>
-/// Fail-closed proof that an interactive floor has at least one safe native exit for every
-/// server-possible weighted event row.  It is intentionally a pure production component: the
+/// Fail-closed proof that an interactive floor's native-resolved event row has a safe exit. It is
+/// intentionally a pure production component: the
 /// bridge can later copy exact master fields into these rows without exposing a reflection or UI
 /// object to route policy.
 /// </summary>
 internal sealed class NetherInteractiveFloorPreEntrySafety
 {
-    private const int HardErosionLimit = 100;
     private readonly NetherFloorMasterBoundsMapper _boundsMapper = new();
-    private readonly NetherFloorSafetyEvaluator _floorSafetyEvaluator = new();
     private readonly NetherEventPolicy _eventPolicy = new();
 
     public NetherInteractiveFloorPreEntrySafetyResult Evaluate(NetherInteractiveFloorPreEntrySafetyInput? input)
@@ -149,7 +149,7 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
             throw new ArgumentNullException(nameof(input));
         if (!TryCreateSnapshot(input, out NetherSnapshot? snapshot, out NetherInteractiveFloorPreEntrySafetyResult? invalid))
             return invalid!;
-        if (!TryEvaluateFloorBounds(input, snapshot!, out NetherInteractiveFloorPreEntrySafetyResult? boundsFailure))
+        if (!TryValidateFloorMaster(input, out NetherInteractiveFloorPreEntrySafetyResult? boundsFailure))
             return boundsFailure!;
 
         return input.FloorKind switch
@@ -213,13 +213,14 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
             NetherGold = input.CurrentNetherGold.Value,
             TreasureKeyCount = input.CurrentTreasureKeys.Value,
             Characters = characters,
+            Codes = input.CurrentCodes ?? Array.Empty<NetherCodeState>(),
+            CodeCapacity = input.CodeCapacity,
         };
         return true;
     }
 
-    private bool TryEvaluateFloorBounds(
+    private bool TryValidateFloorMaster(
         NetherInteractiveFloorPreEntrySafetyInput input,
-        NetherSnapshot snapshot,
         out NetherInteractiveFloorPreEntrySafetyResult? failure
     )
     {
@@ -231,30 +232,11 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
             return false;
         }
 
-        NetherFloorSafetyEvaluation evaluation = _floorSafetyEvaluator.Evaluate(new NetherFloorSafetyInput(
-            CurrentErosion: snapshot.ErosionPoint,
-            FloorMinimumErosion: bounds.MinimumErosionPoint.Value,
-            FloorMaximumErosion: bounds.MaximumErosionPoint.Value,
-            KnownModifierDelta: 0,
-            Kind: NetherFloorSafetyKind.Optional,
-            NodeType: input.FloorKind,
-            CurrentHpPermille: snapshot.Characters.SelectHpPermille(),
-            MinimumHpPermille: input.Settings!.MinimumCharacterHpPermille,
-            SoftErosionLimit: input.Settings.SoftErosionLimit,
-            HardErosionLimit: HardErosionLimit,
-            AllInputsKnown: true
-        )
-        {
-            ErosionModifiers = Array.Empty<NetherErosionModifier>(),
-        });
-        if (evaluation.IsSafe)
-            return true;
-
-        failure = NetherInteractiveFloorPreEntrySafetyResult.Pause(
-            evaluation.PauseReason,
-            "interactive-floor-bounds-unsafe:" + evaluation.Detail
-        );
-        return false;
+        // min/max_erosion_point belongs to MNetherMapFloors row generation eligibility.
+        // The server has already materialized this exact floor; treating the range as an
+        // action delta double-counts up to 100 erosion. Exact event effects are evaluated
+        // below, while neutral Shop/Treasure exits remain zero-cost.
+        return true;
     }
 
     private NetherInteractiveFloorPreEntrySafetyResult EvaluatePossibleEventRows(
@@ -267,7 +249,7 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
                 input.EventRows,
                 input.FloorMasterId,
                 input.FloorExtendId,
-                out IReadOnlyList<NetherFloorEventMasterRow>? possibleRows,
+                out IReadOnlyList<NetherFloorEventMasterRow>? resolvedRows,
                 out string eventError
             ))
         {
@@ -280,7 +262,7 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
         var projections = new Dictionary<long, NetherInteractiveOptionProjection>();
         int worstErosion = int.MinValue;
         int worstHp = int.MaxValue;
-        foreach (NetherFloorEventMasterRow row in possibleRows!)
+        foreach (NetherFloorEventMasterRow row in resolvedRows!)
         {
             if (!TryBuildOptions(row, parts!, out IReadOnlyList<NetherEventOption>? options, out string optionError))
                 return Unknown("event-row-" + row.EventId.ToString(CultureInfo.InvariantCulture) + ":" + optionError);
@@ -336,41 +318,40 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
             return false;
         }
 
-        var seen = new HashSet<long>();
-        var possible = new List<NetherFloorEventMasterRow>();
-        NetherFloorEventMasterRow? exactExtendRow = null;
+        NetherFloorEventMasterRow? resolved = null;
         foreach (NetherFloorEventMasterRow row in rows)
         {
-            if (!row.HasRequiredFields || row.EventId <= 0 || row.MapFloorMasterId <= 0 || row.Weight < 0 || row.Type < 0)
+            bool matches = floorExtendId > 0
+                ? row.EventId == floorExtendId
+                : row.MapFloorMasterId == floorMasterId;
+            if (matches)
             {
-                error = "invalid-m-nether-floor-event";
-                return false;
+                resolved = row;
+                break;
             }
-            if (!seen.Add(row.EventId))
-            {
-                error = "duplicate-m-nether-floor-event:" + row.EventId.ToString(CultureInfo.InvariantCulture);
-                return false;
-            }
-            if (floorExtendId > 0 && row.EventId == floorExtendId)
-                exactExtendRow = row;
-            if (row.MapFloorMasterId == floorMasterId && row.Weight > 0)
-                possible.Add(row);
         }
-        if (floorExtendId > 0
-            && (!exactExtendRow.HasValue
-                || exactExtendRow.Value.MapFloorMasterId != floorMasterId
-                || exactExtendRow.Value.Weight <= 0))
+        if (!resolved.HasValue)
         {
-            error = "missing-or-invalid-extend-m-nether-floor-event:" + floorExtendId.ToString(CultureInfo.InvariantCulture);
+            error = floorExtendId > 0
+                ? "missing-extend-m-nether-floor-event:" + floorExtendId.ToString(CultureInfo.InvariantCulture)
+                : "missing-floor-m-nether-floor-event:" + floorMasterId.ToString(CultureInfo.InvariantCulture);
             return false;
         }
-        if (possible.Count == 0)
+        NetherFloorEventMasterRow selected = resolved.Value;
+        if (!selected.HasRequiredFields
+            || selected.EventId <= 0
+            || selected.MapFloorMasterId <= 0
+            || selected.Weight < 0
+            || selected.Type < 0)
         {
-            error = "missing-positive-m-nether-floor-event:" + floorMasterId.ToString(CultureInfo.InvariantCulture);
+            error = "invalid-resolved-m-nether-floor-event:" + selected.EventId.ToString(CultureInfo.InvariantCulture);
             return false;
         }
 
-        possibleRows = possible;
+        // Native NetherFloorMasterResolver uses First(id == ExtendId) when ExtendId is
+        // positive, otherwise First(m_nether_map_floor_id == floorMasterId). Weight and the
+        // selected row's map-floor field are generation metadata, not extra resolver gates.
+        possibleRows = new[] { selected };
         error = string.Empty;
         return true;
     }
@@ -483,17 +464,18 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
 
         if (part.ContentType != 0)
         {
-            if (part.ContentId <= 0 || part.Amount is < 0 or > int.MaxValue)
+            if (part.Amount is < 0 or > int.MaxValue)
             {
                 error = "invalid-event-content";
                 return false;
             }
             NetherEffect? content = part.ContentType switch
             {
-                30 or 31 => new NetherEffect(NetherEffectKind.Item, checked((int)part.Amount))
+                30 or 31 when part.ContentId > 0 => new NetherEffect(NetherEffectKind.Item, checked((int)part.Amount))
                 {
                     ContentId = part.ContentId,
                 },
+                160 when part.ContentId == 0 => new NetherEffect(NetherEffectKind.AbyssCodeOffer, checked((int)part.Amount)),
                 165 => new NetherEffect(NetherEffectKind.NetherGoldGain, checked((int)part.Amount))
                 {
                     ContentId = part.ContentId,
@@ -512,7 +494,7 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
             mapped.Add(content);
         }
 
-        if (mapped.Count is < 1 or > 3)
+        if (mapped.Count is < 1 or > 4)
         {
             error = "invalid-event-effect-count:" + mapped.Count.ToString(CultureInfo.InvariantCulture);
             return false;
@@ -539,14 +521,11 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
         }
 
         NetherEffectKind kind = (NetherEffectKind)rawType;
-        if (kind == NetherEffectKind.AbyssCodeChanged)
+        if (kind == NetherEffectKind.AbyssCodeTransform)
         {
-            if (parameter <= 0)
-            {
-                error = "missing-event-replacement-code";
-                return false;
-            }
-            effects.Add(new NetherEffect(kind, 0) { ReplacementCodeId = parameter });
+            // Native CreateModelByEventStarted treats target_type=7 as a boolean flow flag.
+            // select_parameter is not the replacement/new code ID (zero is a valid master value).
+            effects.Add(new NetherEffect(kind, 0));
             return true;
         }
         if (kind == NetherEffectKind.Battle)
@@ -659,7 +638,11 @@ internal sealed class NetherInteractiveFloorPreEntrySafety
         if (rejection != NetherPauseReason.NoSafeRoute)
             return;
         if (decision.PauseReason == NetherPauseReason.NoSafeRoute)
+        {
+            if (!string.IsNullOrEmpty(decision.Detail))
+                detail = decision.Detail;
             return;
+        }
         rejection = decision.PauseReason;
         detail = decision.Detail;
     }

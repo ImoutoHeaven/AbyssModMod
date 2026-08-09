@@ -33,6 +33,7 @@ internal static class NetherActionReconcilePolicy
             NetherActionKind.SelectCode => EvaluateCodeSelect(action, before, after),
             NetherActionKind.ReloadCode => EvaluateCodeReload(before, after),
             NetherActionKind.KeepCode => EvaluateCodeKeep(before, after),
+            NetherActionKind.TransformCode => EvaluateCodeTransform(action, before, after),
             NetherActionKind.Continue => EvaluateContinue(action, before, after),
             NetherActionKind.BattleSettlement => EvaluateBattleSettlement(action, before, after),
             NetherActionKind.FinishAtCheckpoint => after.Status == NetherSessionStatus.Clear
@@ -123,10 +124,13 @@ internal static class NetherActionReconcilePolicy
                 }
             }
 
+            NetherActionOutcome codeStages = EvaluateOwnedCodeStages(stages, before, after);
+            if (codeStages != NetherActionOutcome.Applied)
+                return codeStages;
+
             foreach (NetherFloorPopupStage stage in stages)
             {
-                if (stage.PopupKind == NetherRuntimePopupKind.CodeOffer
-                    && stage.ActionKind == NetherActionKind.ReloadCode)
+                if (stage.PopupKind is NetherRuntimePopupKind.CodeOffer or NetherRuntimePopupKind.CodeTransform)
                 {
                     continue;
                 }
@@ -192,6 +196,8 @@ internal static class NetherActionReconcilePolicy
             // only that the original portfolio survived that cancel sequence unchanged.
             NetherRuntimePopupKind.CodeOffer when stage.ActionKind == NetherActionKind.KeepCode =>
                 EvaluateCodeKeepPortfolio(before, after),
+            NetherRuntimePopupKind.CodeTransform when stage.ActionKind == NetherActionKind.TransformCode =>
+                EvaluateCodeTransform(child, before, after),
             _ => NetherActionOutcome.Ambiguous,
         };
     }
@@ -270,13 +276,10 @@ internal static class NetherActionReconcilePolicy
                             return UnchangedOrAmbiguous(before, after);
                         }
                         break;
-                    case NetherEffectKind.AbyssCodeChanged:
-                        if (effect.ReplacementCodeId <= 0
-                            || !ContainsCode(after, effect.ReplacementCodeId)
-                            || string.Equals(before.CodeHash, after.CodeHash, StringComparison.Ordinal))
-                        {
-                            return UnchangedOrAmbiguous(before, after);
-                        }
+                    // These are native flow triggers, not direct resource/code IDs.  Their
+                    // separate owned CodeTransform/CodeOffer stages prove the mutation.
+                    case NetherEffectKind.AbyssCodeTransform:
+                    case NetherEffectKind.AbyssCodeOffer:
                         break;
                     case NetherEffectKind.Battle:
                         if (after.Status != NetherSessionStatus.Battle)
@@ -378,6 +381,142 @@ internal static class NetherActionReconcilePolicy
                 : UnchangedOrAmbiguous(before, after);
     }
 
+    private static NetherActionOutcome EvaluateOwnedCodeStages(
+        IReadOnlyList<NetherFloorPopupStage> stages,
+        NetherSnapshot before,
+        NetherSnapshot after
+    )
+    {
+        NetherFloorPopupStage[] transforms = stages
+            .Where(stage => stage.PopupKind == NetherRuntimePopupKind.CodeTransform
+                && stage.ActionKind == NetherActionKind.TransformCode)
+            .ToArray();
+        NetherFloorPopupStage[] terminals = stages
+            .Where(stage => stage.PopupKind == NetherRuntimePopupKind.CodeOffer
+                && stage.ActionKind is NetherActionKind.SelectCode or NetherActionKind.KeepCode)
+            .ToArray();
+        bool hasAnyCodeStage = stages.Any(stage => stage.PopupKind is NetherRuntimePopupKind.CodeOffer
+            or NetherRuntimePopupKind.CodeTransform);
+        if (!hasAnyCodeStage)
+            return NetherActionOutcome.Applied;
+        if (transforms.Length > 1 || terminals.Length > 1)
+            return NetherActionOutcome.Ambiguous;
+
+        if (transforms.Length == 1)
+        {
+            NetherPlannedAction transform = new(NetherActionKind.TransformCode)
+            {
+                ReplaceCodeId = transforms[0].ReplaceCodeId,
+            };
+            if (terminals.Length == 0 || terminals[0].ActionKind == NetherActionKind.KeepCode)
+                return EvaluateCodeTransform(transform, before, after);
+
+            NetherFloorPopupStage selected = terminals[0];
+            return EvaluateCodeTransformThenSelect(
+                transform.ReplaceCodeId,
+                selected.CodeId,
+                selected.ReplaceCodeId,
+                before,
+                after
+            );
+        }
+
+        if (terminals.Length == 1)
+        {
+            NetherFloorPopupStage terminal = terminals[0];
+            NetherPlannedAction action = new(terminal.ActionKind)
+            {
+                CodeId = terminal.CodeId,
+                ReplaceCodeId = terminal.ReplaceCodeId,
+            };
+            return terminal.ActionKind == NetherActionKind.SelectCode
+                ? EvaluateCodeSelectPortfolio(action, before, after)
+                : EvaluateCodeKeepPortfolio(before, after);
+        }
+
+        // A reload-only CodeOffer is not a terminal settlement.
+        return NetherActionOutcome.Ambiguous;
+    }
+
+    private static NetherActionOutcome EvaluateCodeTransform(
+        NetherPlannedAction action,
+        NetherSnapshot before,
+        NetherSnapshot after
+    )
+    {
+        if (action.ReplaceCodeId <= 0)
+            return NetherActionOutcome.Ambiguous;
+        HashSet<long>? beforeIds = TryGetCodeIds(before);
+        HashSet<long>? afterIds = TryGetCodeIds(after);
+        if (beforeIds == null || afterIds == null
+            || !beforeIds.Contains(action.ReplaceCodeId)
+            || afterIds.Contains(action.ReplaceCodeId)
+            || beforeIds.Count != afterIds.Count
+            || string.Equals(before.CodeHash, after.CodeHash, StringComparison.Ordinal))
+        {
+            return UnchangedOrAmbiguous(before, after);
+        }
+
+        if (beforeIds.Where(id => id != action.ReplaceCodeId).Any(id => !afterIds.Contains(id))
+            || afterIds.Count(id => !beforeIds.Contains(id)) != 1)
+        {
+            return UnchangedOrAmbiguous(before, after);
+        }
+        return NetherActionOutcome.Applied;
+    }
+
+    private static NetherActionOutcome EvaluateCodeTransformThenSelect(
+        long transformedCodeId,
+        long selectedCodeId,
+        long selectedReplacementId,
+        NetherSnapshot before,
+        NetherSnapshot after
+    )
+    {
+        HashSet<long>? beforeIds = TryGetCodeIds(before);
+        HashSet<long>? afterIds = TryGetCodeIds(after);
+        if (beforeIds == null || afterIds == null
+            || transformedCodeId <= 0
+            || selectedCodeId <= 0
+            || !beforeIds.Contains(transformedCodeId)
+            || beforeIds.Contains(selectedCodeId)
+            || afterIds.Contains(transformedCodeId)
+            || !afterIds.Contains(selectedCodeId)
+            || selectedReplacementId == selectedCodeId
+            || string.Equals(before.CodeHash, after.CodeHash, StringComparison.Ordinal))
+        {
+            return UnchangedOrAmbiguous(before, after);
+        }
+
+        var requiredSurvivors = new HashSet<long>(beforeIds);
+        requiredSurvivors.Remove(transformedCodeId);
+        if (selectedReplacementId > 0 && beforeIds.Contains(selectedReplacementId))
+            requiredSurvivors.Remove(selectedReplacementId);
+        if (requiredSurvivors.Any(id => !afterIds.Contains(id))
+            || selectedReplacementId > 0 && afterIds.Contains(selectedReplacementId))
+        {
+            return UnchangedOrAmbiguous(before, after);
+        }
+
+        int expectedCount = selectedReplacementId > 0 ? beforeIds.Count : checked(beforeIds.Count + 1);
+        int expectedNewIds = selectedReplacementId > 0 && !beforeIds.Contains(selectedReplacementId) ? 1 : 2;
+        return afterIds.Count == expectedCount
+            && afterIds.Count(id => !beforeIds.Contains(id)) == expectedNewIds
+                ? NetherActionOutcome.Applied
+                : UnchangedOrAmbiguous(before, after);
+    }
+
+    private static HashSet<long>? TryGetCodeIds(NetherSnapshot snapshot)
+    {
+        if (snapshot.Codes == null
+            || snapshot.Codes.Any(code => code == null || code.CodeId <= 0))
+        {
+            return null;
+        }
+        var ids = new HashSet<long>(snapshot.Codes.Select(code => code.CodeId));
+        return ids.Count == snapshot.Codes.Count ? ids : null;
+    }
+
     private static NetherActionOutcome EvaluateBattleSettlement(
         NetherPlannedAction action,
         NetherSnapshot before,
@@ -435,10 +574,29 @@ internal static class NetherActionReconcilePolicy
         }
         try
         {
-            int beforeTotal = before.Characters.Where(character => character.IsActive).Sum(character => character.HpPermille);
-            int afterTotal = after.Characters.Where(character => character.IsActive).Sum(character => character.HpPermille);
-            return afterTotal == checked(beforeTotal + expectedDelta)
-                && !string.Equals(before.CharacterHpHash, after.CharacterHpHash, StringComparison.Ordinal);
+            var afterByCharacterId = new Dictionary<long, NetherCharacterState>();
+            foreach (NetherCharacterState character in after.Characters)
+            {
+                if (!afterByCharacterId.TryAdd(character.CharacterId, character))
+                    return false;
+            }
+
+            foreach (NetherCharacterState character in before.Characters)
+            {
+                if (!afterByCharacterId.TryGetValue(character.CharacterId, out NetherCharacterState observed)
+                    || observed.IsActive != character.IsActive)
+                {
+                    return false;
+                }
+
+                int expectedHp = character.IsActive
+                    ? checked(character.HpPermille + expectedDelta)
+                    : character.HpPermille;
+                if (observed.HpPermille != expectedHp)
+                    return false;
+            }
+
+            return !string.Equals(before.CharacterHpHash, after.CharacterHpHash, StringComparison.Ordinal);
         }
         catch (OverflowException)
         {

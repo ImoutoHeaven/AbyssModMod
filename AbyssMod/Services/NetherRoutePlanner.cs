@@ -17,6 +17,7 @@ internal sealed record NetherRouteSafetyContext
     public IReadOnlyDictionary<long, int> SafeCodeOpportunityByFloorId { get; init; } = new Dictionary<long, int>();
     public IReadOnlyDictionary<long, int> ProjectedErosionDeltaByFloorId { get; init; } = new Dictionary<long, int>();
     public IReadOnlyDictionary<long, int> ProjectedHpDeltaByFloorId { get; init; } = new Dictionary<long, int>();
+    public IReadOnlyDictionary<long, string> UnknownDetailByFloorId { get; init; } = new Dictionary<long, string>();
 
     public bool IsHpSafe(long floorId) => !HpSafeByFloorId.TryGetValue(floorId, out bool safe) || safe;
     public bool IsKnown(long floorId) => !KnownNodeByFloorId.TryGetValue(floorId, out bool known) || known;
@@ -25,9 +26,26 @@ internal sealed record NetherRouteSafetyContext
     public int SafeCodeOpportunity(long floorId) => SafeCodeOpportunityByFloorId.TryGetValue(floorId, out int value) ? value : 0;
     public int ProjectedErosionDelta(long floorId) => ProjectedErosionDeltaByFloorId.TryGetValue(floorId, out int value) ? value : 0;
     public int ProjectedHpDelta(long floorId) => ProjectedHpDeltaByFloorId.TryGetValue(floorId, out int value) ? value : 0;
+    public string UnknownDetail(long floorId) => UnknownDetailByFloorId.TryGetValue(floorId, out string? value)
+        ? value
+        : "missing-context-entry";
+
+    public string DiagnosticDetail(long floorId)
+    {
+        if (!KnownNodeByFloorId.TryGetValue(floorId, out bool known))
+            return "missing-context-entry";
+        if (!known)
+            return UnknownDetail(floorId);
+        if (!HardSafeByFloorId.TryGetValue(floorId, out bool hardSafe))
+            return "missing-hard-safety-entry";
+        return hardSafe ? "known-terminal-path" : "known-no-terminal-path";
+    }
 }
 
-internal readonly record struct NetherRouteCandidateAudit(long FloorId, string Reason);
+internal readonly record struct NetherRouteCandidateAudit(long FloorId, string Reason)
+{
+    public string Detail { get; init; } = string.Empty;
+}
 
 internal sealed record NetherRoutePlan
 {
@@ -50,7 +68,8 @@ internal sealed class NetherRoutePlanner
         var audit = new List<NetherRouteCandidateAudit>();
         if (!TryCreateNodeIndex(snapshot.Floors, out Dictionary<long, NetherFloorNode>? nodes, out string indexError))
             return Pause(NetherPauseReason.InvalidGraph, indexError, audit);
-        if (!nodes.TryGetValue(snapshot.CurrentFloorId, out NetherFloorNode? current))
+        long currentNodeId = snapshot.CurrentNodeId > 0 ? snapshot.CurrentNodeId : snapshot.CurrentFloorId;
+        if (!nodes.TryGetValue(currentNodeId, out NetherFloorNode? current))
             return Pause(NetherPauseReason.InvalidGraph, "missing-current-floor", audit);
         if (!HasOnlyKnownPredecessors(nodes, out string predecessorError))
             return Pause(NetherPauseReason.InvalidGraph, predecessorError, audit);
@@ -60,7 +79,7 @@ internal sealed class NetherRoutePlanner
             return Pause(NetherPauseReason.InvalidGraph, "missing-segment-terminal", audit);
 
         List<NetherFloorNode> candidates = nodes.Values
-            .Where(node => node.FloorId != current.FloorId && node.PreviousFloorIds.Contains(current.FloorId))
+            .Where(node => node.NodeId != current.NodeId && node.PreviousFloorIds.Contains(current.NodeId))
             .ToList();
         if (candidates.Count == 0)
             return Pause(NetherPauseReason.NoSafeRoute, "no-current-frontier", audit);
@@ -69,7 +88,7 @@ internal sealed class NetherRoutePlanner
         {
             if (candidate.NodeType is NetherFloorNodeType.Unknown or NetherFloorNodeType.Default)
             {
-                audit.Add(new NetherRouteCandidateAudit(candidate.FloorId, "unknown-floor"));
+                audit.Add(new NetherRouteCandidateAudit(candidate.NodeId, "unknown-floor"));
                 return Pause(NetherPauseReason.UnknownFloor, "unknown-frontier-floor", audit);
             }
         }
@@ -79,37 +98,40 @@ internal sealed class NetherRoutePlanner
         {
             if (candidate.FloorLevel > context.MaximumFloorLevel)
             {
-                audit.Add(new NetherRouteCandidateAudit(candidate.FloorId, "above-target-depth"));
+                audit.Add(new NetherRouteCandidateAudit(candidate.NodeId, "above-target-depth"));
                 continue;
             }
             if (!candidate.IsUnlocked)
             {
-                audit.Add(new NetherRouteCandidateAudit(candidate.FloorId, "locked"));
+                audit.Add(new NetherRouteCandidateAudit(candidate.NodeId, "locked"));
                 continue;
             }
-            if (!terminalReachable.Contains(candidate.FloorId))
+            if (!terminalReachable.Contains(candidate.NodeId))
             {
-                audit.Add(new NetherRouteCandidateAudit(candidate.FloorId, "dead-end"));
+                audit.Add(new NetherRouteCandidateAudit(candidate.NodeId, "dead-end"));
                 continue;
             }
-            if (!context.IsKnown(candidate.FloorId))
+            if (!context.IsKnown(candidate.NodeId))
             {
-                audit.Add(new NetherRouteCandidateAudit(candidate.FloorId, "unknown-node"));
+                audit.Add(new NetherRouteCandidateAudit(candidate.NodeId, "unknown-node")
+                {
+                    Detail = context.UnknownDetail(candidate.NodeId),
+                });
                 continue;
             }
-            if (!context.IsHardSafe(candidate.FloorId))
+            if (!context.IsHardSafe(candidate.NodeId))
             {
-                audit.Add(new NetherRouteCandidateAudit(candidate.FloorId, "unsafe"));
+                audit.Add(new NetherRouteCandidateAudit(candidate.NodeId, "unsafe"));
                 continue;
             }
-            if (!context.IsHpSafe(candidate.FloorId))
+            if (!context.IsHpSafe(candidate.NodeId))
             {
-                audit.Add(new NetherRouteCandidateAudit(candidate.FloorId, "unsafe-hp"));
+                audit.Add(new NetherRouteCandidateAudit(candidate.NodeId, "unsafe-hp"));
                 continue;
             }
-            if (!IsBelowHardErosionLimit(snapshot.ErosionPoint, context.MinimumWorstCaseErosion(candidate.FloorId)))
+            if (!IsBelowHardErosionLimit(snapshot.ErosionPoint, context.MinimumWorstCaseErosion(candidate.NodeId)))
             {
-                audit.Add(new NetherRouteCandidateAudit(candidate.FloorId, "terminal-erosion-100"));
+                audit.Add(new NetherRouteCandidateAudit(candidate.NodeId, "terminal-erosion-100"));
                 continue;
             }
 
@@ -117,9 +139,9 @@ internal sealed class NetherRoutePlanner
                 candidate,
                 true,
                 true,
-                context.ProjectedErosionDelta(candidate.FloorId),
-                context.ProjectedHpDelta(candidate.FloorId),
-                context.SafeCodeOpportunity(candidate.FloorId)
+                context.ProjectedErosionDelta(candidate.NodeId),
+                context.ProjectedHpDelta(candidate.NodeId),
+                context.SafeCodeOpportunity(candidate.NodeId)
             ));
         }
 
@@ -147,9 +169,10 @@ internal sealed class NetherRoutePlanner
             .ThenBy(candidate => candidate.Node.OptionalCombatCount)
             .ThenBy(candidate => candidate.Node.FloorIndex)
             .ThenBy(candidate => candidate.Node.FloorId)
+            .ThenBy(candidate => candidate.Node.NodeId)
             .First();
 
-        audit.Add(new NetherRouteCandidateAudit(selected.Node.FloorId, "selected"));
+        audit.Add(new NetherRouteCandidateAudit(selected.Node.NodeId, "selected"));
         return new NetherRoutePlan { SelectedNode = selected.Node, Audit = audit };
     }
 
@@ -169,7 +192,7 @@ internal sealed class NetherRoutePlanner
 
         foreach (NetherFloorNode node in floors)
         {
-            if (node.FloorId <= 0 || !nodes.TryAdd(node.FloorId, node))
+            if (node.FloorId <= 0 || node.NodeId <= 0 || !nodes.TryAdd(node.NodeId, node))
             {
                 error = "duplicate-or-invalid-floor-id";
                 return false;
@@ -204,8 +227,8 @@ internal sealed class NetherRoutePlanner
         var pending = new Stack<long>();
         foreach (NetherFloorNode terminal in nodes.Values.Where(node => node.NodeType == NetherFloorNodeType.Boss))
         {
-            if (reachable.Add(terminal.FloorId))
-                pending.Push(terminal.FloorId);
+            if (reachable.Add(terminal.NodeId))
+                pending.Push(terminal.NodeId);
         }
 
         while (pending.Count > 0)

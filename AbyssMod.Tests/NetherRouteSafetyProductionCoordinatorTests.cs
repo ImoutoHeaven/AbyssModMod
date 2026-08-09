@@ -11,10 +11,10 @@ namespace AbyssMod.Tests;
 public class NetherRouteSafetyProductionCoordinatorTests
 {
     [Theory]
-    [InlineData(0, 40)]
-    [InlineData(5, 45)]
-    [InlineData(10, 50)]
-    public void CombatRoute_UsesExactMasterBoundsForZeroFiveAndTen(int maximumErosion, int expectedProjectedMaximum)
+    [InlineData(0)]
+    [InlineData(5)]
+    [InlineData(10)]
+    public void Map_generation_ranges_do_not_change_the_battle_base_cost(int maximumErosion)
     {
         NetherProductionRouteSafetyPlan plan = Plan(
             erosion: 40,
@@ -26,7 +26,28 @@ public class NetherRouteSafetyProductionCoordinatorTests
         );
 
         Assert.Equal(2, Assert.IsType<NetherFloorNode>(plan.Route.SelectedNode).FloorId);
-        Assert.Equal(expectedProjectedMaximum, plan.BattleProjectionByFloorId[2].ProjectedMaximumErosion);
+        Assert.Equal(45, plan.BattleProjectionByFloorId[2].ProjectedMaximumErosion);
+    }
+
+    [Fact]
+    public void Map_generation_erosion_range_does_not_replace_the_battle_base_cost()
+    {
+        NetherProductionRouteSafetyPlan plan = Plan(
+            erosion: 0,
+            bounds: new Dictionary<long, NetherFloorMasterBounds>
+            {
+                [2] = Bounds(2, 0, 100),
+                [3] = Bounds(3, 0, 100),
+            }
+        );
+
+        Assert.True(plan.Route.HasSelection, plan.Route.PauseReason + ":" + plan.Route.PauseDetail);
+        Assert.Equal(2, Assert.IsType<NetherFloorNode>(plan.Route.SelectedNode).FloorId);
+        NetherBattleProjectionPayload payload = plan.BattleProjectionByFloorId[2];
+        Assert.Equal(5, payload.FloorMinimumErosion);
+        Assert.Equal(5, payload.FloorMaximumErosion);
+        Assert.Equal(5, payload.ProjectedMinimumErosion);
+        Assert.Equal(5, payload.ProjectedMaximumErosion);
     }
 
     [Fact]
@@ -122,13 +143,16 @@ public class NetherRouteSafetyProductionCoordinatorTests
         Assert.False(missingMaster.Route.HasSelection);
         Assert.False(unknownCode.Route.HasSelection);
         Assert.False(unknownHp.Route.HasSelection);
+        Assert.Contains("bounds:missing-runtime-node", UnknownCandidateDetail(missingMaster));
+        Assert.Contains("codes:unknown", UnknownCandidateDetail(unknownCode));
+        Assert.Contains("hp:unknown", UnknownCandidateDetail(unknownHp));
     }
 
     [Fact]
-    public void NecessaryBoss_CanUseHardLimitWithoutRelaxingTheHundredHardStop()
+    public void NecessaryBoss_CanUseHeadroomBelowTheHundredHardStop()
     {
         NetherSnapshot snapshot = Snapshot(
-            erosion: 95,
+            erosion: 94,
             Floor(1, 1, NetherFloorNodeType.Recovery),
             Floor(2, 2, NetherFloorNodeType.Boss, 1)
         );
@@ -143,7 +167,7 @@ public class NetherRouteSafetyProductionCoordinatorTests
         );
 
         Assert.Equal(2, Assert.IsType<NetherFloorNode>(plan.Route.SelectedNode).FloorId);
-        Assert.Equal(96, plan.BattleProjectionByFloorId[2].ProjectedMaximumErosion);
+        Assert.Equal(99, plan.BattleProjectionByFloorId[2].ProjectedMaximumErosion);
     }
 
     [Fact]
@@ -199,11 +223,46 @@ public class NetherRouteSafetyProductionCoordinatorTests
         Assert.Equal(2, payload.FloorId);
         Assert.Equal(40, payload.PreBattleErosion);
         Assert.Equal(5, payload.FloorMinimumErosion);
-        Assert.Equal(10, payload.FloorMaximumErosion);
+        Assert.Equal(5, payload.FloorMaximumErosion);
         Assert.Equal(47, payload.ProjectedMinimumErosion);
-        Assert.Equal(52, payload.ProjectedMaximumErosion);
+        Assert.Equal(47, payload.ProjectedMaximumErosion);
         Assert.Equal("active:60001:6:2", payload.CodeHash);
-        Assert.Equal("route-battle:2:1:40:5:10:active:60001:6:2", payload.ProjectionIdentity);
+        Assert.Equal("route-battle:2:1:40:5:5:active:60001:6:2", payload.ProjectionIdentity);
+    }
+
+    [Fact]
+    public void Production_safety_maps_are_keyed_by_runtime_node_when_master_id_is_reused()
+    {
+        NetherFloorNode current = Floor(3, 3, NetherFloorNodeType.Recovery, previous: Array.Empty<long>()) with { NodeId = 100 };
+        NetherFloorNode next = Floor(3, 4, NetherFloorNodeType.Battle, previous: new long[] { 100 }) with { NodeId = 200 };
+        NetherFloorNode terminal = Floor(9, 5, NetherFloorNodeType.Boss, previous: new long[] { 200 }) with { NodeId = 300 };
+        NetherSnapshot snapshot = Snapshot(40, current, next, terminal) with
+        {
+            CurrentFloorId = 3,
+            CurrentNodeId = 100,
+        };
+
+        NetherProductionRouteSafetyPlan plan = new NetherRouteSafetyProductionCoordinator().Plan(
+            snapshot,
+            130,
+            Settings(),
+            Runtime(bounds: new Dictionary<long, NetherFloorMasterBounds>
+            {
+                [200] = Bounds(3, 0, 0),
+                [300] = Bounds(9, 0, 0),
+            })
+        );
+
+        Assert.True(
+            plan.Route.HasSelection,
+            plan.Route.PauseReason + ":" + plan.Route.PauseDetail + ":"
+                + string.Join("|", plan.Route.Audit.Select(item => item.FloorId + ":" + item.Reason))
+        );
+        NetherFloorNode selected = Assert.IsType<NetherFloorNode>(plan.Route.SelectedNode);
+        Assert.Equal(3, selected.FloorId);
+        Assert.Equal(200, selected.NodeId);
+        Assert.True(plan.BattleProjectionByFloorId.ContainsKey(200));
+        Assert.False(plan.BattleProjectionByFloorId.ContainsKey(3));
     }
 
     private static NetherProductionRouteSafetyPlan Plan(
@@ -223,6 +282,9 @@ public class NetherRouteSafetyProductionCoordinatorTests
         Settings(),
         Runtime(hpPermille, hp, bounds, code)
     );
+
+    private static string UnknownCandidateDetail(NetherProductionRouteSafetyPlan plan) =>
+        Assert.Single(plan.Route.Audit.Where(audit => audit.Reason == "unknown-node")).Detail;
 
     private static NetherRuntimeRouteSafetyData Runtime(
         int hpPermille = 500,

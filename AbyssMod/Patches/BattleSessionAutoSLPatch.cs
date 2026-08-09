@@ -23,7 +23,7 @@ public static class BattleSessionAutoSLPatch
         ref UniTask<BattleSessionStatusResponseEntity> __result
     )
     {
-        if (!Config.BattleSessionAutoSL.Value || __instance?._apiService == null)
+        if (__instance?._apiService == null)
             return;
 
         // StartDungeon awaits this wrapper immediately before InitModelsForDungeon.
@@ -31,18 +31,29 @@ public static class BattleSessionAutoSLPatch
         NetherAPIService netherApiService = __instance._apiService.TryCast<NetherAPIService>();
         if (netherApiService != null)
         {
-            Logger.Info(
-                "[F11][NetherAutoSL] pre-model response intercepted; source=preserved"
-            );
-            __result = BattleSessionAutoSL.RunNether(
-                __instance._apiService,
-                netherApiService,
-                __result,
-                ct,
-                "preserved"
-            );
+            if (Config.BattleSessionAutoSL.Value)
+            {
+                Logger.Info(
+                    "[F11][NetherAutoSL] pre-model response intercepted; source=preserved"
+                );
+                __result = BattleSessionAutoSL.RunNether(
+                    __instance._apiService,
+                    netherApiService,
+                    __result,
+                    ct,
+                    "preserved"
+                );
+            }
+
+            // This outer task is the exact battle-scene request result (or the final F11
+            // reroll task).  Capturing here keeps the F12 ingress transaction intact without
+            // Harmony rewriting the crash-prone concrete NetherAPIService async method.
+            NetherRuntimeBridge.ObserveBattleStartTask(__result);
             return;
         }
+
+        if (!Config.BattleSessionAutoSL.Value)
+            return;
 
         if (
             !BattleSessionAutoSLRoutingPolicy.ShouldInterceptExploration(

@@ -385,6 +385,94 @@ internal sealed class NetherAutoClimbStateMachine
     }
 
     /// <summary>
+    /// The clear response is authoritative, but the native battle-result page still owns the
+    /// transition back to FloorSelection. Keep the settlement contract until that exact Next
+    /// callback has produced a strictly newer map owner.
+    /// </summary>
+    public bool BeginBattleResultContinuation()
+    {
+        if (_pendingAction?.Kind != NetherActionKind.BattleSettlement
+            || Phase != NetherAutoClimbPhase.AwaitingBattleSettlement)
+        {
+            return false;
+        }
+
+        Phase = NetherAutoClimbPhase.AwaitingBattleResultContinuation;
+        return true;
+    }
+
+    /// <summary>
+    /// Allows an explicit F12 press on a proven Nether battle-result controller to recover
+    /// automation even when it was not enabled on the preceding map.
+    /// </summary>
+    public bool EnableFromBattleResult()
+    {
+        if (IsEnabled || _pendingAction != null || IsDrainPhase(Phase))
+            return false;
+
+        IsEnabled = true;
+        Phase = NetherAutoClimbPhase.AwaitingBattleResultContinuation;
+        PauseReason = NetherPauseReason.None;
+        PauseDetail = string.Empty;
+        return true;
+    }
+
+    public bool CompleteBattleResultContinuation(NetherSnapshotFingerprint fingerprint)
+    {
+        if (Phase != NetherAutoClimbPhase.AwaitingBattleResultContinuation)
+            return false;
+
+        if (_pendingAction?.Kind == NetherActionKind.BattleSettlement)
+        {
+            ObserveActionResult(fingerprint, NetherActionOutcome.Applied);
+            return Phase != NetherAutoClimbPhase.AwaitingBattleResultContinuation;
+        }
+
+        if (_pendingAction != null || !IsEnabled)
+            return false;
+
+        ObserveStable(fingerprint);
+        return Phase != NetherAutoClimbPhase.AwaitingBattleResultContinuation;
+    }
+
+    public bool CancelBattleResultContinuationBeforeInvoke()
+    {
+        if (Phase != NetherAutoClimbPhase.AwaitingBattleResultContinuation || IsEnabled)
+            return false;
+
+        _pendingAction = null;
+        _preActionFingerprint = null;
+        _preActionSnapshot = null;
+        Phase = NetherAutoClimbPhase.Disabled;
+        PauseReason = NetherPauseReason.UserDisabled;
+        PauseDetail = "user-disabled-before-battle-result-next";
+        return true;
+    }
+
+    /// <summary>
+    /// A direct combat SelectFloor parent ends after scheduling the native scene change; the
+    /// exact StartQuest task is created later by the new battle scene.  Preserve the original
+    /// selection evidence across that expected FloorSelection teardown.
+    /// </summary>
+    public bool BeginBattleSceneHandoff()
+    {
+        if (_pendingAction is not NetherPlannedAction action
+            || action.Kind != NetherActionKind.SelectFloor
+            || action.BattleProjection == null
+            || action.ExpectedAfterStatus != NetherSessionStatus.Battle
+            || Phase is not (
+                NetherAutoClimbPhase.ExecutingNativeAction
+                or NetherAutoClimbPhase.AwaitingBattleSceneHandoff
+            ))
+        {
+            return false;
+        }
+
+        Phase = NetherAutoClimbPhase.AwaitingBattleSceneHandoff;
+        return true;
+    }
+
+    /// <summary>
     /// Continue has a parent task whose terminal state intentionally tears the old
     /// FloorSelection down before a new NetherTop runtime is registered.  Preserve the pending
     /// action through that expected absence; it remains a drain phase until exact GET-only
@@ -438,14 +526,19 @@ internal sealed class NetherAutoClimbStateMachine
         status == NetherSessionStatus.Clear;
 
     private bool HasDrainEvidence() => _pendingAction != null
-        || Phase is NetherAutoClimbPhase.AwaitingSceneChange or NetherAutoClimbPhase.AwaitingContinueSceneHandoff;
+        || Phase is NetherAutoClimbPhase.AwaitingSceneChange
+            or NetherAutoClimbPhase.AwaitingBattleResultContinuation
+            or NetherAutoClimbPhase.AwaitingContinueSceneHandoff
+            or NetherAutoClimbPhase.AwaitingBattleSceneHandoff;
 
     private static bool IsDrainPhase(NetherAutoClimbPhase phase) => phase is
         NetherAutoClimbPhase.ExecutingNativeAction or
+        NetherAutoClimbPhase.AwaitingBattleSceneHandoff or
         NetherAutoClimbPhase.AwaitingContinueSceneHandoff or
         NetherAutoClimbPhase.Reconciling or
         NetherAutoClimbPhase.AwaitingF11 or
         NetherAutoClimbPhase.AwaitingBattle or
         NetherAutoClimbPhase.AwaitingBattleSettlement or
+        NetherAutoClimbPhase.AwaitingBattleResultContinuation or
         NetherAutoClimbPhase.AwaitingSceneChange;
 }

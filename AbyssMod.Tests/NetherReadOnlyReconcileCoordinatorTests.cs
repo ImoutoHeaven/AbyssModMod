@@ -79,7 +79,7 @@ public class NetherReadOnlyReconcileCoordinatorTests
 
         Assert.Equal("SyncNetherDataAsync", descriptor.Name);
         Assert.Equal("Cysharp.Threading.Tasks.UniTask", descriptor.ReturnTypeName);
-        Assert.Equal(new[] { "System.Threading.CancellationToken" }, descriptor.ParameterTypeNames);
+        Assert.Equal(new[] { "Il2CppSystem.Threading.CancellationToken" }, descriptor.ParameterTypeNames);
     }
 
     private static NetherSnapshot Snapshot(NetherSessionStatus status, long mapId = 2, long floorId = 10) => new()

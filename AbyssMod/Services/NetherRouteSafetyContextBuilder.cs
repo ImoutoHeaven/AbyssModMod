@@ -15,7 +15,11 @@ internal sealed record NetherRouteSafetyFloorInput(
     NetherFloorSafetyInput EvaluationInput,
     int? ProjectedHpDelta,
     int? SafeCodeOpportunity
-);
+)
+{
+    /// <summary>Bounded component-level evidence used only when this floor remains unknown.</summary>
+    public string Detail { get; init; } = string.Empty;
+}
 
 /// <summary>
 /// Immutable server/master snapshot for one route decision.  The terminal set is deliberately
@@ -49,19 +53,19 @@ internal sealed class NetherRouteSafetyContextBuilder
         var duplicateOrInvalidIds = new HashSet<long>();
         foreach (NetherRouteSafetyFloorInput floor in floors)
         {
-            if (floor == null || floor.ServerNode == null || floor.ServerNode.FloorId <= 0)
+            if (floor == null || floor.ServerNode == null || floor.ServerNode.NodeId <= 0)
             {
                 if (floor?.ServerNode != null)
-                    duplicateOrInvalidIds.Add(floor.ServerNode.FloorId);
+                    duplicateOrInvalidIds.Add(floor.ServerNode.NodeId);
                 continue;
             }
-            if (!nodes.TryAdd(floor.ServerNode.FloorId, floor))
-                duplicateOrInvalidIds.Add(floor.ServerNode.FloorId);
+            if (!nodes.TryAdd(floor.ServerNode.NodeId, floor))
+                duplicateOrInvalidIds.Add(floor.ServerNode.NodeId);
         }
 
         var context = new MutableContext(input.MaximumFloorLevel);
         foreach ((long floorId, NetherRouteSafetyFloorInput floor) in nodes)
-            context.AddUnknown(floorId);
+            context.AddUnknown(floorId, "not-evaluated");
 
         if (nodes.Count == 0)
             return context.ToImmutable();
@@ -98,7 +102,19 @@ internal sealed class NetherRouteSafetyContextBuilder
             int projectedErosion = TryGetProjectedDelta(floor.EvaluationInput.CurrentErosion, evaluation);
             if (!locallyKnown)
             {
-                context.SetUnsafe(floorId);
+                context.SetUnsafe(
+                    floorId,
+                    BuildUnknownDetail(
+                        floor,
+                        exitKnown,
+                        terminalKindMatches,
+                        hasProjectedMetadata,
+                        evaluationKnown,
+                        evaluation.PauseReason,
+                        graphInvalid.Contains(floorId),
+                        duplicateOrInvalidIds.Contains(floorId)
+                    )
+                );
                 states[floorId] = new FloorState(false, false, UnknownErosion);
                 continue;
             }
@@ -160,6 +176,35 @@ internal sealed class NetherRouteSafetyContextBuilder
         }
 
         return context.ToImmutable();
+    }
+
+    private static string BuildUnknownDetail(
+        NetherRouteSafetyFloorInput floor,
+        bool exitKnown,
+        bool terminalKindMatches,
+        bool hasProjectedMetadata,
+        bool evaluationKnown,
+        NetherPauseReason evaluationPauseReason,
+        bool graphInvalid,
+        bool duplicateOrInvalidId
+    )
+    {
+        var reasons = new List<string>();
+        if (!string.IsNullOrWhiteSpace(floor.Detail))
+            reasons.Add(floor.Detail);
+        if (!exitKnown)
+            reasons.Add("safe-exit:unknown");
+        if (!terminalKindMatches)
+            reasons.Add("terminal-kind:mismatch");
+        if (!hasProjectedMetadata)
+            reasons.Add("projection-metadata:missing");
+        if (!evaluationKnown)
+            reasons.Add("evaluation:" + evaluationPauseReason);
+        if (graphInvalid)
+            reasons.Add("graph:invalid-predecessor");
+        if (duplicateOrInvalidId)
+            reasons.Add("graph:duplicate-or-invalid-node-id");
+        return reasons.Count == 0 ? "unknown-without-component-detail" : string.Join("|", reasons);
     }
 
     private static Dictionary<long, List<long>> CreateSuccessorIndex(
@@ -402,11 +447,12 @@ internal sealed class NetherRouteSafetyContextBuilder
         private readonly Dictionary<long, int> _safeCodeOpportunity = new();
         private readonly Dictionary<long, int> _projectedErosion = new();
         private readonly Dictionary<long, int> _projectedHp = new();
+        private readonly Dictionary<long, string> _unknownDetail = new();
         private readonly int _maximumFloorLevel;
 
         public MutableContext(int maximumFloorLevel) => _maximumFloorLevel = maximumFloorLevel;
 
-        public void AddUnknown(long floorId)
+        public void AddUnknown(long floorId, string detail)
         {
             _minimumWorstCase[floorId] = UnknownErosion;
             _hpSafe[floorId] = false;
@@ -415,9 +461,10 @@ internal sealed class NetherRouteSafetyContextBuilder
             _safeCodeOpportunity[floorId] = UnknownScalar;
             _projectedErosion[floorId] = UnknownErosion;
             _projectedHp[floorId] = UnknownScalar;
+            _unknownDetail[floorId] = detail;
         }
 
-        public void SetUnsafe(long floorId) => AddUnknown(floorId);
+        public void SetUnsafe(long floorId, string detail) => AddUnknown(floorId, detail);
 
         public void SetKnown(
             long floorId,
@@ -433,6 +480,7 @@ internal sealed class NetherRouteSafetyContextBuilder
             _projectedErosion[floorId] = projectedErosion;
             _projectedHp[floorId] = projectedHp;
             _safeCodeOpportunity[floorId] = safeCodeOpportunity;
+            _unknownDetail.Remove(floorId);
         }
 
         public void SetTerminalCost(long floorId, int cost)
@@ -457,6 +505,7 @@ internal sealed class NetherRouteSafetyContextBuilder
             SafeCodeOpportunityByFloorId = _safeCodeOpportunity,
             ProjectedErosionDeltaByFloorId = _projectedErosion,
             ProjectedHpDeltaByFloorId = _projectedHp,
+            UnknownDetailByFloorId = _unknownDetail,
         };
     }
 }

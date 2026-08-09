@@ -20,7 +20,8 @@ internal readonly record struct NetherFloorMasterBoundsRow(
 }
 
 /// <summary>
-/// Nullable bounds distinguish a missing/ambiguous master mapping from a known zero-cost floor.
+/// Nullable bounds distinguish a missing/ambiguous master mapping from a validated map-row
+/// generation eligibility range. These values are not an action erosion cost.
 /// </summary>
 internal readonly record struct NetherFloorMasterBounds(
     long MasterFloorId,
@@ -31,8 +32,9 @@ internal readonly record struct NetherFloorMasterBounds(
 );
 
 /// <summary>
-/// Resolves a server floor's exact master ID against the complete MNetherMapFloors cache.  Any
+/// Resolves a server floor's exact master ID against the complete MNetherMapFloors cache. Any
 /// malformed or ambiguous cache row is unsafe: this mapper never picks an arbitrary duplicate.
+/// The min/max erosion fields are retained only as map-generation metadata.
 /// </summary>
 internal sealed class NetherFloorMasterBoundsMapper
 {

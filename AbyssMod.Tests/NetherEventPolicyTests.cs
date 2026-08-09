@@ -59,12 +59,12 @@ public class NetherEventPolicyTests
     }
 
     [Fact]
-    public void Hp_heal_beats_code_change_when_character_is_below_soft_hp()
+    public void Hp_heal_beats_code_offer_when_character_is_below_soft_hp()
     {
         NetherEventDecision decision = EventPolicy().DecideEvent(
             Snapshot(hp: 100),
             [
-                Option(1, new NetherEffect(NetherEffectKind.AbyssCodeChanged, 0) { ReplacementCodeId = 30024 }),
+                Option(1, new NetherEffect(NetherEffectKind.AbyssCodeOffer, 1)),
                 Option(2, new NetherEffect(NetherEffectKind.Heal, 250)),
             ],
             Settings()

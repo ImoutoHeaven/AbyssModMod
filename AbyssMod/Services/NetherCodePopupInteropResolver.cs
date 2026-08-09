@@ -231,11 +231,7 @@ internal static class NetherCodePopupInteropResolver
 
         for (int index = 0; index < parameters.Length; index++)
         {
-            if (!string.Equals(
-                    TypeName(parameters[index].ParameterType),
-                    binding.ParameterTypeNames[index],
-                    StringComparison.Ordinal
-                ))
+            if (!MatchesType(parameters[index].ParameterType, binding.ParameterTypeNames[index]))
             {
                 return false;
             }
@@ -273,4 +269,23 @@ internal static class NetherCodePopupInteropResolver
     }
 
     private static string TypeName(Type type) => type.FullName ?? type.Name;
+
+    private static bool MatchesType(Type actual, string expected)
+    {
+        if (string.Equals(TypeName(actual), expected, StringComparison.Ordinal))
+            return true;
+
+        // Type.FullName embeds assembly-qualified generic arguments and therefore changes with
+        // the host CoreLib version.  This one canonical spelling still requires the exact
+        // Il2Cpp Action<T> generic definition and exact System.Boolean argument.
+        return string.Equals(expected, "Il2CppSystem.Action<System.Boolean>", StringComparison.Ordinal)
+            && actual.IsGenericType
+            && string.Equals(
+                actual.GetGenericTypeDefinition().FullName,
+                "Il2CppSystem.Action`1",
+                StringComparison.Ordinal
+            )
+            && actual.GetGenericArguments().Length == 1
+            && actual.GetGenericArguments()[0] == typeof(bool);
+    }
 }

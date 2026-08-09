@@ -51,6 +51,11 @@ internal sealed record NetherProductionRouteSafetyPlan
 internal sealed class NetherRouteSafetyProductionCoordinator
 {
     private const int HardErosionLimit = 100;
+    // Server battle settlement currently starts from +5 erosion. Active Nether-code
+    // addition/rate effects are applied by NetherErosionPolicy, so the effective result can
+    // still be 0, 10, or another value. MNetherMapFloors.min/max_erosion_point are map-row
+    // generation eligibility bounds and must never replace this battle cost.
+    private const int BattleBaseErosionIncrease = 5;
     private readonly NetherBattleRouteProjectionBuilder _battleProjectionBuilder = new();
     private readonly NetherFloorMasterBoundsMapper _floorBoundsMapper = new();
     private readonly NetherRouteSafetyContextBuilder _contextBuilder = new();
@@ -79,10 +84,10 @@ internal sealed class NetherRouteSafetyProductionCoordinator
 
         foreach (NetherFloorNode floor in serverFloors)
         {
-            if (floor == null || floor.FloorId <= 0)
+            if (floor == null || floor.FloorId <= 0 || floor.NodeId <= 0)
                 continue;
 
-            bool necessaryTerminal = necessaryTerminalIds.Contains(floor.FloorId);
+            bool necessaryTerminal = necessaryTerminalIds.Contains(floor.NodeId);
             if (!IsCombat(floor.NodeType))
             {
                 if (TryBuildInteractiveSafetyInput(
@@ -102,8 +107,11 @@ internal sealed class NetherRouteSafetyProductionCoordinator
                         // mutates state, so this aggregate never replaces identity evidence.
                         ProjectedHpDelta: interactiveProjection.HpDelta,
                         SafeCodeOpportunity: 0
-                    ));
-                    safeExitKnown[floor.FloorId] = true;
+                    )
+                    {
+                        Detail = "interactive:known",
+                    });
+                    safeExitKnown[floor.NodeId] = true;
                 }
                 else
                 {
@@ -112,8 +120,11 @@ internal sealed class NetherRouteSafetyProductionCoordinator
                         UnknownInput(snapshot, floor, necessaryTerminal),
                         ProjectedHpDelta: null,
                         SafeCodeOpportunity: null
-                    ));
-                    safeExitKnown[floor.FloorId] = false;
+                    )
+                    {
+                        Detail = DescribeInteractiveFailure(floor, interactivePreEntry),
+                    });
+                    safeExitKnown[floor.NodeId] = false;
                 }
                 continue;
             }
@@ -134,12 +145,15 @@ internal sealed class NetherRouteSafetyProductionCoordinator
                 // asserts only the exact pre-entry minimum HP and never invents a future heal.
                 ProjectedHpDelta: projection.EvaluatorInput == null ? null : 0,
                 SafeCodeOpportunity: projection.EvaluatorInput == null ? null : 0
-            ));
-            safeExitKnown[floor.FloorId] = projection.EvaluatorInput != null;
+            )
+            {
+                Detail = DescribeCombatInputs(floor, runtime, projection),
+            });
+            safeExitKnown[floor.NodeId] = projection.EvaluatorInput != null;
 
             if (projection.IsSafe)
             {
-                payloads[floor.FloorId] = CreatePayload(
+                payloads[floor.NodeId] = CreatePayload(
                     snapshot,
                     floor,
                     projection,
@@ -163,6 +177,70 @@ internal sealed class NetherRouteSafetyProductionCoordinator
         };
     }
 
+    private static string DescribeCombatInputs(
+        NetherFloorNode floor,
+        NetherRuntimeRouteSafetyData runtime,
+        NetherBattleRouteProjection projection
+    )
+    {
+        string bounds = runtime.FloorBoundsByFloorId == null
+            || !runtime.FloorBoundsByFloorId.TryGetValue(floor.NodeId, out NetherFloorMasterBounds mapped)
+                ? "bounds:missing-runtime-node"
+                : mapped.IsKnown
+                    ? "bounds:known"
+                    : "bounds:" + (string.IsNullOrEmpty(mapped.Detail) ? "unknown" : mapped.Detail);
+        string hp = runtime.ActivePartyHp.IsKnown && runtime.ActivePartyHp.MinimumHpPermille.HasValue
+            ? "hp:known"
+            : "hp:" + (string.IsNullOrEmpty(runtime.ActivePartyHp.Detail) ? "unknown" : runtime.ActivePartyHp.Detail);
+        NetherActiveCodeErosionProjection? code = runtime.ActiveCodeErosion;
+        string codes = code != null && code.ErosionProjectionKnown
+            ? "codes:known"
+            : "codes:" + (string.IsNullOrEmpty(code?.Detail) ? "unknown" : code.Detail);
+        string projectionDetail = projection.EvaluatorInput.HasValue
+            ? "projection:known"
+            : "projection:unknown";
+        return string.Join("|", bounds, hp, codes, projectionDetail);
+    }
+
+    private static string DescribeInteractiveFailure(
+        NetherFloorNode floor,
+        NetherRuntimeInteractivePreEntryInputsResult? interactivePreEntry
+    )
+    {
+        if (interactivePreEntry == null)
+            return "interactive:missing-preentry-capture";
+        if (!interactivePreEntry.IsSuccess)
+            return "interactive:capture:" + (
+                string.IsNullOrEmpty(interactivePreEntry.Detail)
+                    ? "failed-without-detail"
+                    : interactivePreEntry.Detail
+            );
+        if (interactivePreEntry.ByFloorNodeId == null
+            || !interactivePreEntry.ByFloorNodeId.TryGetValue(
+                floor.NodeId,
+                out NetherRuntimeInteractivePreEntryCaptureResult? capture
+            ))
+        {
+            return "interactive:missing-node-capture";
+        }
+        if (!capture.IsCaptured || capture.Input == null)
+        {
+            return "interactive:node-capture:" + (
+                string.IsNullOrEmpty(capture.Detail) ? "invalid" : capture.Detail
+            );
+        }
+        if (!capture.Safety.IsSafe)
+        {
+            return "interactive:safety:"
+                + capture.Safety.PauseReason
+                + ":"
+                + (string.IsNullOrEmpty(capture.Safety.Detail)
+                    ? "rejected-without-detail"
+                    : capture.Safety.Detail);
+        }
+        return "interactive:captured-but-runtime-mismatch";
+    }
+
     private NetherBattleRouteProjection BuildCombatProjection(
         NetherSnapshot snapshot,
         NetherFloorNode floor,
@@ -173,7 +251,7 @@ internal sealed class NetherRouteSafetyProductionCoordinator
     {
         NetherFloorMasterBounds bounds = default;
         bool hasBounds = runtime.FloorBoundsByFloorId != null
-            && runtime.FloorBoundsByFloorId.TryGetValue(floor.FloorId, out bounds)
+            && runtime.FloorBoundsByFloorId.TryGetValue(floor.NodeId, out bounds)
             && bounds.IsKnown
             && bounds.MinimumErosionPoint.HasValue
             && bounds.MaximumErosionPoint.HasValue;
@@ -192,8 +270,8 @@ internal sealed class NetherRouteSafetyProductionCoordinator
         return _battleProjectionBuilder.Build(new NetherBattleRouteProjectionInput(
             FloorId: floor.FloorId,
             FloorKind: floor.NodeType,
-            MinimumErosionPoint: hasBounds ? bounds.MinimumErosionPoint : null,
-            MaximumErosionPoint: hasBounds ? bounds.MaximumErosionPoint : null,
+            MinimumErosionPoint: hasBounds ? BattleBaseErosionIncrease : null,
+            MaximumErosionPoint: hasBounds ? BattleBaseErosionIncrease : null,
             CurrentErosion: snapshot.ErosionPoint,
             ActiveHpPermille: hasHp
                 ? new[] { runtime.ActivePartyHp.MinimumHpPermille!.Value }
@@ -232,8 +310,8 @@ internal sealed class NetherRouteSafetyProductionCoordinator
         if (!IsInteractive(floor.NodeType)
             || interactivePreEntry == null
             || !interactivePreEntry.IsSuccess
-            || interactivePreEntry.ByFloorMasterId == null
-            || !interactivePreEntry.ByFloorMasterId.TryGetValue(floor.FloorId, out NetherRuntimeInteractivePreEntryCaptureResult? capture)
+            || interactivePreEntry.ByFloorNodeId == null
+            || !interactivePreEntry.ByFloorNodeId.TryGetValue(floor.NodeId, out NetherRuntimeInteractivePreEntryCaptureResult? capture)
             || !capture.IsCaptured
             || capture.Input == null
             || !capture.Safety.IsSafe
@@ -283,8 +361,11 @@ internal sealed class NetherRouteSafetyProductionCoordinator
 
         safetyInput = new NetherFloorSafetyInput(
             CurrentErosion: snapshot.ErosionPoint,
-            FloorMinimumErosion: bounds.MinimumErosionPoint.Value,
-            FloorMaximumErosion: bounds.MaximumErosionPoint.Value,
+            // Selecting an interactive floor has no generic erosion cost. Exact event-option
+            // effects are represented by KnownModifierDelta below. The map master min/max
+            // values only describe when a row may be generated.
+            FloorMinimumErosion: 0,
+            FloorMaximumErosion: 0,
             KnownModifierDelta: worstCaseProjection.ErosionDelta,
             Kind: NetherFloorSafetyKind.Optional,
             NodeType: floor.NodeType,
@@ -400,10 +481,10 @@ internal sealed class NetherRouteSafetyProductionCoordinator
         }
         return floors
             .Where(floor => floor != null
-                && floor.FloorId > 0
+                && floor.NodeId > 0
                 && floor.NodeType == NetherFloorNodeType.Boss
-                && !predecessorIds.Contains(floor.FloorId))
-            .Select(floor => floor.FloorId)
+                && !predecessorIds.Contains(floor.NodeId))
+            .Select(floor => floor.NodeId)
             .ToHashSet();
     }
 }

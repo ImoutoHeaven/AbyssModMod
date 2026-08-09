@@ -67,7 +67,7 @@ public class NetherCodeCategorySemanticsTests
     }
 
     [Fact]
-    public void Ordinary_category_candidates_pause_until_lane_coverage_and_research_semantics_are_proven()
+    public void Ordinary_category_candidates_rank_deterministically_without_fake_lane_semantics()
     {
         NetherCodeDecision decision = new NetherCodePolicy().Decide(
             new NetherCodePortfolio { Capacity = 3, ReloadCount = 1, IsMasterComplete = true },
@@ -79,17 +79,18 @@ public class NetherCodeCategorySemanticsTests
             new NetherAutoClimbSettings { CombatLane = NetherCombatLane.Auto, CodeReloadReserve = 1 }
         );
 
-        Assert.Equal(NetherCodeDecisionKind.Pause, decision.Kind);
-        Assert.Equal(NetherPauseReason.UnknownMasterData, decision.PauseReason);
+        Assert.Equal(NetherCodeDecisionKind.Select, decision.Kind);
+        Assert.Equal(51001, decision.SelectedCodeId);
+        Assert.Equal(NetherCombatLane.Auto, decision.LockedLane);
     }
 
     [Fact]
-    public void Unresolved_ordinary_offer_pauses_even_when_its_category_conflicts_with_the_current_pair()
+    public void Ordinary_offer_replaces_the_single_confirmed_paired_category_conflict()
     {
         NetherCodeDecision decision = new NetherCodePolicy().Decide(
             new NetherCodePortfolio
             {
-                Capacity = 2,
+                Capacity = 1,
                 ReloadCount = 1,
                 IsMasterComplete = true,
                 CurrentCodes = new[] { State(51010, NetherCodeCategory.Strength) },
@@ -98,8 +99,9 @@ public class NetherCodeCategorySemanticsTests
             new NetherAutoClimbSettings { CombatLane = NetherCombatLane.Auto, CodeReloadReserve = 1 }
         );
 
-        Assert.Equal(NetherCodeDecisionKind.Pause, decision.Kind);
-        Assert.Equal(NetherPauseReason.UnknownMasterData, decision.PauseReason);
+        Assert.Equal(NetherCodeDecisionKind.Select, decision.Kind);
+        Assert.Equal(51011, decision.SelectedCodeId);
+        Assert.Equal(51010, decision.RemoveCodeId);
     }
 
     [Fact]

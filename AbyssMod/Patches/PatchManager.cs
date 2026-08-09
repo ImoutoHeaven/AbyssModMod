@@ -22,9 +22,15 @@ public static class PatchManager
         Harmony.CreateAndPatchAll(typeof(BattleSettlementPayloadProbePatch));
         Harmony.CreateAndPatchAll(typeof(NetherAutoClimbPatch));
         Harmony.CreateAndPatchAll(typeof(NetherAutoClimbResultPatch));
-        Harmony.CreateAndPatchAll(typeof(NetherAutoClimbBattleLifecyclePatch));
+        Harmony.CreateAndPatchAll(typeof(NetherAutoClimbBattleResultLifecyclePatch));
+        Harmony.CreateAndPatchAll(typeof(NetherAutoClimbFloorEventSequenceLifecyclePatch));
         Harmony.CreateAndPatchAll(typeof(NetherAutoClimbCodeSelectionLifecyclePatch));
         Harmony.CreateAndPatchAll(typeof(NetherAutoClimbCodeKeepCancelLifecyclePatch));
+        Harmony.CreateAndPatchAll(typeof(NetherAutoClimbCodeTransformLifecyclePatch));
+        Services.NetherAutoClimbController.LogDiagnostic(
+            "patch-manager",
+            new Services.NetherAutoClimbDiagnosticField("outcome", "nether-patches-installed")
+        );
         Harmony.CreateAndPatchAll(typeof(GeneralTextPatch));
         Harmony.CreateAndPatchAll(typeof(MasterDataTranslationPatch));
 #if DEBUG

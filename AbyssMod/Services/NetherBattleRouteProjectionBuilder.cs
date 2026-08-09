@@ -22,8 +22,9 @@ internal readonly record struct NetherCodeEffect(
 }
 
 /// <summary>
-/// Authoritative inputs for one combat-shaped map floor.  Min/max are nullable so a missing
-/// MNetherMapFloors mapping is represented explicitly and cannot become a harmless zero.
+/// Authoritative inputs for one combat-shaped map floor. Min/max are the effective battle base
+/// erosion range before active Nether-code modifiers; production currently supplies the server
+/// baseline 5..5. They are nullable so missing battle authority cannot become a harmless zero.
 /// </summary>
 internal sealed record NetherBattleRouteProjectionInput(
     long FloorId,
@@ -60,7 +61,7 @@ internal sealed record NetherBattleRouteProjection
 }
 
 /// <summary>
-/// Converts the exact combat-related master values and active code semantics into one evaluator
+/// Converts the exact combat base range and active code semantics into one evaluator
 /// input.  It independently invokes <see cref="NetherErosionPolicy.ProjectBattle"/> for both
 /// bounds before invoking <see cref="NetherFloorSafetyEvaluator"/>; disagreement is unsafe.
 /// </summary>

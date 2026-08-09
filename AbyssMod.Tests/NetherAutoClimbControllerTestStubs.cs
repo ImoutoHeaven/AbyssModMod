@@ -33,9 +33,10 @@ internal readonly record struct NetherRuntimeCodeCandidatesResult(
 }
 
 internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherReadOnlyReconcileDriver,
-    INetherBattleSettlementDriver, INetherBattleProjectionSnapshotDriver, INetherContinueSceneDriver
+    INetherBattleIngressDriver, INetherBattleSettlementDriver, INetherBattleProjectionSnapshotDriver, INetherContinueSceneDriver
 {
     bool HasRegisteredFloorSelection { get; }
+    bool HasObservedNetherBattleResult { get; }
     bool IsBattleActive { get; }
     bool IsResultObserved { get; }
     NetherRuntimeSnapshotResult TryCaptureSnapshot();
@@ -61,6 +62,7 @@ internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherRea
     NetherNativeActionResult SelectReturnItems(IReadOnlyList<NetherRewardItem> items);
     bool TryConsumeResultSuccess();
     NetherNativeActionResult PollResultFlow();
+    NetherBattleResultContinuationStep PollBattleResultContinuation(bool allowInvoke);
     void ClearRegistrations();
 }
 
@@ -74,6 +76,7 @@ internal sealed class NetherRuntimeBridge
             NetherNativeActionResult.BindingUnavailable("test-unconfigured-" + operation);
 
         public bool HasRegisteredFloorSelection => false;
+        public bool HasObservedNetherBattleResult => false;
         public bool IsBattleActive => false;
         public bool IsResultObserved => false;
         public bool IsF11Busy => false;
@@ -108,11 +111,15 @@ internal sealed class NetherRuntimeBridge
         public NetherNativeActionResult SelectReturnItems(IReadOnlyList<NetherRewardItem> items) => Unavailable("return-items");
         public bool TryConsumeResultSuccess() => false;
         public NetherNativeActionResult PollResultFlow() => Unavailable("result");
+        public NetherBattleResultContinuationStep PollBattleResultContinuation(bool allowInvoke) =>
+            new(NetherBattleResultContinuationStepKind.BindingUnavailable, "test-unconfigured-battle-result");
         public void ClearRegistrations() { }
         public NetherNativeActionResult BeginGetOnlyRefresh() => Unavailable("get");
         public NetherNativeActionResult PollGetOnlyRefresh() => Unavailable("get-poll");
         public NetherReadOnlySnapshotResult TryCaptureAppliedSnapshot() => NetherReadOnlySnapshotResult.Failure("test-unconfigured-applied-snapshot");
         public NetherNativeActionResult PollBattleLifecycle() => Unavailable("battle");
+        public NetherNativeActionResult PollBattleStart() => Unavailable("battle-start");
+        public void CancelBattleStartObservation() { }
         public bool TryConsumeBattleClear() => false;
         public bool TryConsumeBattleClose() => false;
         public NetherActiveCodeErosionProjection TryCaptureActiveCodeErosionProjection() =>
