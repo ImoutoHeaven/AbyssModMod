@@ -47,7 +47,7 @@ public class Plugin : BasePlugin
         NetherAutoClimbController.LogDiagnostic(
             "build",
             new("version", MyPluginInfo.PLUGIN_VERSION),
-            new("profile", "autonether-party-hp-reconcile-v19")
+            new("profile", "autonether-start-status-state-machine-v23")
         );
 
         AddComponent<ToastUI>();

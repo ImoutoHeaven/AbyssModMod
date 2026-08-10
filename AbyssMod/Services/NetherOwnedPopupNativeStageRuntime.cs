@@ -6,7 +6,7 @@ namespace AbyssMod.Services;
 
 /// <summary>
 /// Common immutable identity for the three native child flows that may run beneath one
-/// SelectFloor parent.  It intentionally contains no Unity/IL2CPP objects, so the production
+/// SelectFloor parent or battle-result settlement owner.  It intentionally contains no Unity/IL2CPP objects, so the production
 /// ordering and owner validation can be characterized without reimplementing it in a fake
 /// bridge.
 /// </summary>
@@ -17,7 +17,11 @@ internal readonly record struct NetherOwnedPopupStageOwner(
     long DecisionEpoch
 )
 {
-    public bool IsValid => OwnerAction == NetherActionKind.SelectFloor
+    public bool IsValid => OwnerAction is (
+            NetherActionKind.SelectFloor
+            or NetherActionKind.BattleSettlement
+            or NetherActionKind.RecoveredCodeOffer
+        )
         && Generation > 0
         && Sequence > 0
         && DecisionEpoch >= 0;
@@ -57,6 +61,9 @@ internal interface INetherOwnedPopupNativeStagePort
     bool IsCurrentOwnedPopup(NetherRuntimePopupKind kind, NetherOwnedPopupStageOwner owner);
 
     NetherNativeActionResult InvokeShopPurchase(NetherOwnedPopupStageOwner owner, NetherPlannedAction action);
+
+    NetherNativeActionResult InvokeShopPurchaseConfirm(NetherShopPurchaseCloseOwner owner) =>
+        NetherNativeActionResult.BindingUnavailable("shop-purchase-confirm-unavailable");
 
     NetherNativeActionResult PollShopPurchaseTask(NetherShopPurchaseCloseOwner owner);
 
@@ -116,6 +123,7 @@ internal readonly record struct NetherOwnedPopupNativeStagePumpResult(
 internal sealed class NetherOwnedPopupNativeStageRuntime
 {
     private readonly INetherOwnedPopupNativeStagePort _port;
+    private readonly NetherShopPurchaseConfirmCoordinator _shopPurchaseConfirm;
     private readonly NetherShopPurchaseCloseCoordinator _shopPurchaseClose;
     private readonly NetherCodeReloadEpochCoordinator _codeReloadEpoch;
     private readonly NetherCodeKeepCancelCoordinator _codeKeepCancel;
@@ -127,6 +135,7 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
     )
     {
         _port = port ?? throw new ArgumentNullException(nameof(port));
+        _shopPurchaseConfirm = new NetherShopPurchaseConfirmCoordinator(maximumPendingPumps);
         _shopPurchaseClose = new NetherShopPurchaseCloseCoordinator(maximumPendingPumps);
         _codeReloadEpoch = new NetherCodeReloadEpochCoordinator(maximumPendingPumps);
         _codeKeepCancel = new NetherCodeKeepCancelCoordinator(maximumPendingPumps);
@@ -140,7 +149,9 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
 
     public NetherCodeTransformOwner? TransformOwner => _codeTransform.Owner;
 
-    public bool HasPendingMutation => _shopPurchaseClose.IsActive
+    public bool HasPendingMutation => _shopPurchaseConfirm.IsActive
+        || _shopPurchaseConfirm.Stage == NetherShopPurchaseConfirmStage.Faulted
+        || _shopPurchaseClose.IsActive
         || _shopPurchaseClose.Stage == NetherShopPurchaseCloseStage.Faulted
         || _codeReloadEpoch.IsActive
         || _codeReloadEpoch.Stage == NetherCodeReloadEpochStage.Faulted
@@ -182,7 +193,17 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
         NetherPlannedAction action
     )
     {
-        if (parent.Kind != NetherActionKind.SelectFloor
+        bool floorOwner = parent.Kind == NetherActionKind.SelectFloor;
+        bool resultCodeOwner = parent.Kind is (
+                NetherActionKind.BattleSettlement or NetherActionKind.RecoveredCodeOffer
+            )
+            && popup?.Kind == NetherRuntimePopupKind.CodeOffer
+            && action.Kind is (
+                NetherActionKind.SelectCode
+                or NetherActionKind.ReloadCode
+                or NetherActionKind.KeepCode
+            );
+        if ((!floorOwner && !resultCodeOwner)
             || popup == null
             || !TryCreateOwner(popup, out NetherOwnedPopupStageOwner owner)
             || !_port.IsCurrentOwnedPopup(popup.Kind, owner))
@@ -235,6 +256,30 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
     /// </summary>
     public NetherOwnedPopupNativeStagePumpResult Pump()
     {
+        if (_shopPurchaseConfirm.IsActive
+            || _shopPurchaseConfirm.Stage == NetherShopPurchaseConfirmStage.Faulted)
+        {
+            NetherNativeActionResult result = _shopPurchaseConfirm.Pump(
+                () => _shopPurchaseConfirm.Owner is NetherShopPurchaseCloseOwner owner
+                    ? _port.InvokeShopPurchaseConfirm(owner)
+                    : NetherNativeActionResult.BindingUnavailable(
+                        "shop-purchase-confirm-missing-owner"
+                    )
+            );
+            return result.Kind switch
+            {
+                NetherNativeActionResultKind.Started => new(
+                    NetherOwnedPopupNativeStagePumpKind.Pending,
+                    result
+                ),
+                NetherNativeActionResultKind.Completed => new(
+                    NetherOwnedPopupNativeStagePumpKind.Pending,
+                    NetherNativeActionResult.Started("shop-purchase-confirm-complete")
+                ),
+                _ => new(NetherOwnedPopupNativeStagePumpKind.Faulted, result),
+            };
+        }
+
         if (_shopPurchaseClose.IsActive || _shopPurchaseClose.Stage == NetherShopPurchaseCloseStage.Faulted)
         {
             NetherNativeActionResult result = _shopPurchaseClose.Pump(
@@ -296,6 +341,7 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
 
     public void Reset()
     {
+        _shopPurchaseConfirm.Reset();
         _shopPurchaseClose.Reset();
         _codeReloadEpoch.Reset();
         _codeKeepCancel.Reset();
@@ -324,13 +370,19 @@ internal sealed class NetherOwnedPopupNativeStageRuntime
             action.ContentAmount,
             action.GoldCost
         );
-        if (!_shopPurchaseClose.Begin(purchaseOwner))
+        if (!_shopPurchaseConfirm.Begin(purchaseOwner)
+            || !_shopPurchaseClose.Begin(purchaseOwner))
+        {
+            _shopPurchaseConfirm.Reset();
+            _shopPurchaseClose.Reset();
             return NetherNativeActionResult.BindingUnavailable("shop-purchase-stage-already-active");
+        }
 
         NetherNativeActionResult invoked = _port.InvokeShopPurchase(owner, action);
         if (invoked.Kind == NetherNativeActionResultKind.Started)
             return invoked;
 
+        _shopPurchaseConfirm.Reset();
         _shopPurchaseClose.Reset();
         return invoked;
     }

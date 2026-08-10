@@ -19,6 +19,66 @@ public sealed class NetherControllerRuntimeCollection
 public class NetherAutoClimbControllerEndToEndTests
 {
     [Fact]
+    public void Production_controller_finishes_recovered_code_parent_before_any_floor_route()
+    {
+        var bridge = new ScriptedRuntimeBridge
+        {
+            HasRecoveredCodeOffer = true,
+            RecoveredCodePopup = new NetherRuntimePopupContext
+            {
+                Kind = NetherRuntimePopupKind.CodeOffer,
+                OwnerAction = NetherActionKind.RecoveredCodeOffer,
+                OwnerGeneration = 17,
+                Sequence = 23,
+            },
+            CodeCandidates = SafeCodeCandidates(30024),
+        };
+        bridge.RecoveredCodeNativeSteps.Enqueue(
+            NetherBattleResultCodeNativeStep.Completed("scripted-recovered-code-terminal")
+        );
+        bridge.RecoveredCodeParentSteps.Enqueue(
+            NetherNativeActionResult.Completed("scripted-start-status-parent-terminal")
+        );
+        bridge.RecoveredCodeRefreshSteps.Enqueue(
+            NetherNativeActionResult.Completed("scripted-recovered-get-terminal")
+        );
+        var lease = new RecordingLeaseDriver();
+        var lifecycle = new NetherBattleSettingsLeaseControllerLifecycle(lease, retryIntervalUpdates: 1);
+        using IDisposable scope = NetherAutoClimbController.PushRuntimeBridgeForTests(bridge, lifecycle);
+
+        try
+        {
+            NetherAutoClimbController.Initialize();
+            NetherAutoClimbController.Toggle();
+
+            NetherAutoClimbController.Update();
+            Assert.Equal(NetherActionKind.SelectCode, Assert.Single(bridge.RecoveredCodeActions).Kind);
+            Assert.Equal(0, bridge.BeginFloorParentCount);
+            Assert.Equal(0, bridge.RecoveredCodeParentPollCount);
+            Assert.Equal(0, bridge.GetOnlyBeginCount);
+
+            NetherAutoClimbController.Update();
+            Assert.Equal(0, bridge.RecoveredCodeParentPollCount);
+            Assert.Equal(0, bridge.BeginFloorParentCount);
+
+            NetherAutoClimbController.Update();
+            Assert.Equal(1, bridge.RecoveredCodeParentPollCount);
+            Assert.Equal(1, bridge.GetOnlyBeginCount);
+            Assert.Equal(0, bridge.BeginFloorParentCount);
+
+            NetherAutoClimbController.Update();
+            Assert.False(bridge.HasRecoveredCodeOffer);
+            Assert.Equal(1, bridge.RecoveredCodeCompletedCount);
+            Assert.Equal(0, bridge.BeginFloorParentCount);
+            Assert.Equal(NetherAutoClimbPhase.Stable, NetherAutoClimbController.Phase);
+        }
+        finally
+        {
+            NetherAutoClimbController.OnPluginUnload();
+        }
+    }
+
+    [Fact]
     public void F12_hotkey_logs_request_and_enabled_outcome_when_detailed_logging_is_off()
     {
         var bridge = new ScriptedRuntimeBridge();
@@ -661,7 +721,7 @@ public class NetherAutoClimbControllerEndToEndTests
     }
 
     [Fact]
-    public void Production_controller_clicks_battle_result_next_once_then_selects_rebound_code_offer()
+    public void Production_controller_selects_battle_result_code_before_clicking_next_once()
     {
         var bridge = new ScriptedRuntimeBridge
         {
@@ -669,7 +729,20 @@ public class NetherAutoClimbControllerEndToEndTests
             BattleResultRebound = false,
             BattleResultReboundSnapshot = null,
             CodeCandidates = SafeCodeCandidates(30024),
+            BattleResultCodePopup = new NetherRuntimePopupContext
+            {
+                Kind = NetherRuntimePopupKind.CodeOffer,
+                OwnerAction = NetherActionKind.BattleSettlement,
+                OwnerGeneration = 9,
+                Sequence = 20,
+            },
         };
+        bridge.BattleResultCodeNativeSteps.Enqueue(
+            NetherBattleResultCodeNativeStep.Pending("scripted-code-confirm-pending")
+        );
+        bridge.BattleResultCodeNativeSteps.Enqueue(
+            NetherBattleResultCodeNativeStep.Completed("scripted-code-confirm-terminal")
+        );
         var lease = new RecordingLeaseDriver();
         var lifecycle = new NetherBattleSettingsLeaseControllerLifecycle(lease, retryIntervalUpdates: 1);
         using IDisposable scope = NetherAutoClimbController.PushRuntimeBridgeForTests(bridge, lifecycle);
@@ -691,36 +764,25 @@ public class NetherAutoClimbControllerEndToEndTests
                 NetherAutoClimbPhase.AwaitingBattleResultContinuation,
                 NetherAutoClimbController.Phase
             );
-            Assert.Equal(1, bridge.BattleResultNextInvokeCount);
+            Assert.Equal(0, bridge.BattleResultNextInvokeCount);
+            Assert.Equal(
+                new[] { NetherActionKind.SelectCode },
+                bridge.BattleResultCodeActions.Select(action => action.Kind)
+            );
             Assert.False(bridge.HasRegisteredFloorSelection);
 
-            NetherAutoClimbController.Update(); // still waiting; must not click twice
+            NetherAutoClimbController.Update(); // exact code confirmation is still pending
+            Assert.Equal(0, bridge.BattleResultNextInvokeCount);
+            NetherAutoClimbController.Update(); // exact code confirmation reaches terminal; Next may now run
             Assert.Equal(1, bridge.BattleResultNextInvokeCount);
 
-            bridge.BattleResultReboundSnapshot = bridge.AfterBattle with
-            {
-                Status = NetherSessionStatus.Wait,
-                MapHash = "battle-result-code-wait",
-            };
+            bridge.BattleResultReboundSnapshot = bridge.AfterBattle;
             bridge.BattleResultRebound = true;
 
-            NetherAutoClimbController.Update(); // floor is back, but modal is not registered yet
-            Assert.Equal(
-                NetherAutoClimbPhase.AwaitingBattleResultContinuation,
-                NetherAutoClimbController.Phase
-            );
-            Assert.Equal(1, bridge.BattleResultNextInvokeCount);
-
-            bridge.BattleResultReboundPopup = new NetherRuntimePopupContext
-            {
-                Kind = NetherRuntimePopupKind.CodeOffer,
-            };
-            NetherAutoClimbController.Update(); // fresh floor snapshot and its Wait modal are ready
+            NetherAutoClimbController.Update(); // fresh floor snapshot is ready
             Assert.Equal(NetherAutoClimbPhase.Stable, NetherAutoClimbController.Phase);
             Assert.True(bridge.HasRegisteredFloorSelection);
-
-            NetherAutoClimbController.Update(); // direct Wait code policy
-            Assert.Equal(1, bridge.Invocations.Count(kind => kind == NetherActionKind.SelectCode));
+            Assert.Single(bridge.BattleResultCodeActions);
             Assert.Equal(1, bridge.BattleResultNextInvokeCount);
         }
         finally
@@ -1907,7 +1969,7 @@ public class NetherAutoClimbControllerEndToEndTests
             {
                 NetherAutoClimbController.Initialize();
                 NetherAutoClimbController.Toggle();
-                Pump(3); // SelectFloor -> Buy child -> child terminal fault.
+                Pump(4); // SelectFloor -> confirm purchase -> Buy child -> child terminal fault.
 
                 Assert.Equal(NetherAutoClimbPhase.Paused, NetherAutoClimbController.Phase);
                 Assert.Equal(0, bridge.ShopCloseInvokeCount);
@@ -2405,7 +2467,7 @@ public class NetherAutoClimbControllerEndToEndTests
         {
             NetherAutoClimbController.Initialize();
             NetherAutoClimbController.Toggle();
-            Pump(expectedChild == NetherActionKind.BuyShopItem ? 7 : 5);
+            Pump(expectedChild == NetherActionKind.BuyShopItem ? 8 : 5);
 
             Assert.Equal(NetherAutoClimbPhase.Stable, NetherAutoClimbController.Phase);
             Assert.Single(bridge.Invocations.Where(action => action == NetherActionKind.SelectFloor));
@@ -2515,8 +2577,11 @@ public class NetherAutoClimbControllerEndToEndTests
         public NetherSnapshot? CodeReloadAfterSnapshot { get; set; }
         public NetherRuntimeRouteSafetyData? RouteSafetyOverride { get; set; }
         public Func<NetherSnapshot, NetherAutoClimbSettings, NetherRuntimeInteractivePreEntryInputsResult>? InteractivePreEntryFactory { get; set; }
-        public NetherRuntimeCodeCandidatesResult CodeCandidates { get; set; } =
-            NetherRuntimeCodeCandidatesResult.Failure("e2e-no-code-popup");
+        public NetherRuntimeCodeCandidatesResult CodeCandidates { get; set; } = new(
+            Array.Empty<NetherCodeCandidate>(),
+            IsMasterComplete: true,
+            Detail: string.Empty
+        );
         public NetherRuntimeCodeCandidatesResult ReloadCodeCandidates { get; set; } =
             NetherRuntimeCodeCandidatesResult.Failure("e2e-no-reloaded-code-popup");
         public List<NetherActionKind> Invocations { get; } = new();
@@ -2569,6 +2634,17 @@ public class NetherAutoClimbControllerEndToEndTests
         public bool BattleResultRebound { get; set; } = true;
         public NetherSnapshot? BattleResultReboundSnapshot { get; set; }
         public NetherRuntimePopupContext? BattleResultReboundPopup { get; set; }
+        public NetherRuntimePopupContext? BattleResultCodePopup { get; set; }
+        public List<NetherPlannedAction> BattleResultCodeActions { get; } = new();
+        public Queue<NetherBattleResultCodeNativeStep> BattleResultCodeNativeSteps { get; } = new();
+        public bool HasRecoveredCodeOffer { get; set; }
+        public NetherRuntimePopupContext? RecoveredCodePopup { get; set; }
+        public List<NetherPlannedAction> RecoveredCodeActions { get; } = new();
+        public Queue<NetherBattleResultCodeNativeStep> RecoveredCodeNativeSteps { get; } = new();
+        public Queue<NetherNativeActionResult> RecoveredCodeParentSteps { get; } = new();
+        public Queue<NetherNativeActionResult> RecoveredCodeRefreshSteps { get; } = new();
+        public int RecoveredCodeParentPollCount { get; private set; }
+        public int RecoveredCodeCompletedCount { get; private set; }
 
         private readonly Queue<NetherRuntimePopupContext> _queuedOwnedPopups = new();
         private readonly Queue<NetherSnapshot?> _queuedOwnedPopupSnapshots = new();
@@ -2601,6 +2677,83 @@ public class NetherAutoClimbControllerEndToEndTests
 
         public NetherRuntimeCodeCandidatesResult TryGetCodeCandidates() => CodeCandidates;
 
+        public NetherRuntimeSnapshotResult TryCaptureBattleResultCodeSnapshot() =>
+            NetherRuntimeSnapshotResult.Success(CurrentSnapshot);
+
+        public NetherRuntimePopupResult TryGetBattleResultCodePopup() =>
+            BattleResultCodePopup == null
+                ? NetherRuntimePopupResult.Failure("scripted-result-code-popup-missing")
+                : NetherRuntimePopupResult.Success(BattleResultCodePopup);
+
+        public NetherNativeActionResult InvokeBattleResultCode(
+            NetherRuntimePopupContext popup,
+            NetherPlannedAction action
+        )
+        {
+            BattleResultCodeActions.Add(action);
+            return NetherNativeActionResult.Started("scripted-result-code-invoked");
+        }
+
+        public NetherBattleResultCodeNativeStep PollBattleResultCodeNative() =>
+            BattleResultCodeNativeSteps.Count == 0
+                ? NetherBattleResultCodeNativeStep.Pending("scripted-result-code-pending")
+                : BattleResultCodeNativeSteps.Dequeue();
+
+        public NetherRuntimeSnapshotResult TryCaptureRecoveredCodeSnapshot() =>
+            NetherRuntimeSnapshotResult.Success(CurrentSnapshot);
+
+        public NetherRuntimeCodeCandidatesResult TryGetRecoveredCodeCandidates() => CodeCandidates;
+
+        public NetherRuntimePopupResult TryGetRecoveredCodePopup() => RecoveredCodePopup == null
+            ? NetherRuntimePopupResult.Failure("scripted-recovered-code-popup-missing")
+            : NetherRuntimePopupResult.Success(RecoveredCodePopup);
+
+        public NetherNativeActionResult InvokeRecoveredCode(
+            NetherRuntimePopupContext popup,
+            NetherPlannedAction action
+        )
+        {
+            RecoveredCodeActions.Add(action);
+            return NetherNativeActionResult.Started("scripted-recovered-code-invoked");
+        }
+
+        public NetherBattleResultCodeNativeStep PollRecoveredCodeNative() =>
+            RecoveredCodeNativeSteps.Count == 0
+                ? NetherBattleResultCodeNativeStep.Pending("scripted-recovered-code-pending")
+                : RecoveredCodeNativeSteps.Dequeue();
+
+        public NetherNativeActionResult PollRecoveredCodeParent()
+        {
+            RecoveredCodeParentPollCount++;
+            return RecoveredCodeParentSteps.Count == 0
+                ? NetherNativeActionResult.Started("scripted-recovered-parent-pending")
+                : RecoveredCodeParentSteps.Dequeue();
+        }
+
+        public NetherNativeActionResult BeginRecoveredCodeRefresh()
+        {
+            GetOnlyBeginCount++;
+            return NetherNativeActionResult.Started("scripted-recovered-get-started");
+        }
+
+        public NetherNativeActionResult PollRecoveredCodeRefresh()
+        {
+            GetOnlyPollCount++;
+            return RecoveredCodeRefreshSteps.Count == 0
+                ? NetherNativeActionResult.Started("scripted-recovered-get-pending")
+                : RecoveredCodeRefreshSteps.Dequeue();
+        }
+
+        public NetherRuntimeSnapshotResult TryCaptureRecoveredCodeAppliedSnapshot() =>
+            NetherRuntimeSnapshotResult.Success(CurrentSnapshot);
+
+        public void CompleteRecoveredCodeOffer()
+        {
+            HasRecoveredCodeOffer = false;
+            RecoveredCodePopup = null;
+            RecoveredCodeCompletedCount++;
+        }
+
         public NetherRuntimePopupResult TryGetActivePopup() => ActivePopup == null
             ? NetherRuntimePopupResult.Failure("no-live-popup")
             : NetherRuntimePopupResult.Success(ActivePopup);
@@ -2627,7 +2780,7 @@ public class NetherAutoClimbControllerEndToEndTests
                 return NetherRuntimePopupResult.Success(popup);
             }
             return _queuedOwnedPopups.Count == 0
-                ? NetherRuntimePopupResult.Failure("no-owned-popup")
+                ? NetherRuntimePopupResult.Failure("missing-owned-floor-popup")
                 : NetherRuntimePopupResult.Success(_queuedOwnedPopups.Peek());
         }
 
@@ -2781,6 +2934,10 @@ public class NetherAutoClimbControllerEndToEndTests
             return result;
         }
 
+        NetherNativeActionResult INetherOwnedPopupNativeStagePort.InvokeShopPurchaseConfirm(
+            NetherShopPurchaseCloseOwner owner
+        ) => NetherNativeActionResult.Completed("scripted-shop-confirm-invoked");
+
         NetherNativeActionResult INetherOwnedPopupNativeStagePort.InvokeExactShopClose(
             NetherShopPurchaseCloseOwner owner
         )
@@ -2918,6 +3075,12 @@ public class NetherAutoClimbControllerEndToEndTests
             if (HoldBattleOpen)
                 return NetherNativeActionResult.Completed("native-battle-active");
             CurrentSnapshot = AfterBattle;
+            // The real FloorSelection owner is torn down before the battle-result view and its
+            // code popup are presented.  Keep the production E2E seam faithful to that lifecycle
+            // so the result-owned flow cannot accidentally depend on a stale map controller.
+            HasRegisteredFloorSelection = false;
+            _battleResultNextInvoked = false;
+            _battleResultContinuationCompleted = false;
             _battleClearAvailable = true;
             return NetherNativeActionResult.Completed("native-battle-clear-terminal");
         }
@@ -3066,6 +3229,9 @@ public class NetherAutoClimbControllerEndToEndTests
             _floorParentPending = false;
             _battleResultNextInvoked = false;
             _battleResultContinuationCompleted = false;
+            BattleResultCodePopup = null;
+            BattleResultCodeActions.Clear();
+            BattleResultCodeNativeSteps.Clear();
         }
 
         internal static NetherSnapshot InteractiveRouteSnapshot(NetherSessionStatus status, long floorId, int gold) => new()

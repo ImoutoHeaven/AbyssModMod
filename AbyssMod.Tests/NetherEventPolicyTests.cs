@@ -180,6 +180,22 @@ public class NetherEventPolicyTests
     }
 
     [Fact]
+    public void EquipmentBags_ignores_valid_non_item_shop_rows_with_no_content_id()
+    {
+        NetherShopDecision decision = EventPolicy().DecideShop(
+            Snapshot(gold: 15),
+            [
+                new NetherShopContent(10, 0, 0, NetherRewardRarity.NoEffect, 30, usesNetherGold: true),
+                new NetherShopContent(11, 0, 0, NetherRewardRarity.NoEffect, 100, usesNetherGold: true),
+            ],
+            Settings(shopMode: NetherShopMode.EquipmentBags)
+        );
+
+        Assert.Equal(NetherShopDecisionKind.Leave, decision.Kind);
+        Assert.Equal(0, decision.ContentId);
+    }
+
+    [Fact]
     public void Recovery_prefers_erosion_heal_over_neutral_choice()
     {
         NetherEventDecision decision = EventPolicy().DecideRecovery(

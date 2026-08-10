@@ -58,7 +58,17 @@ internal abstract class NetherOwnedPopupStageBridgeAdapter
         NetherPlannedAction action
     )
     {
-        if (parent.Kind != NetherActionKind.SelectFloor || popup == null)
+        bool floorOwner = parent.Kind == NetherActionKind.SelectFloor;
+        bool resultCodeOwner = parent.Kind is (
+                NetherActionKind.BattleSettlement or NetherActionKind.RecoveredCodeOffer
+            )
+            && popup?.Kind == NetherRuntimePopupKind.CodeOffer
+            && action.Kind is (
+                NetherActionKind.SelectCode
+                or NetherActionKind.ReloadCode
+                or NetherActionKind.KeepCode
+            );
+        if ((!floorOwner && !resultCodeOwner) || popup == null)
             return NetherNativeActionResult.BindingUnavailable("invalid-owned-popup-parent");
         if (!HasMatchingOwnedPopup(parent, popup))
             return NetherNativeActionResult.BindingUnavailable("missing-matching-owned-popup");

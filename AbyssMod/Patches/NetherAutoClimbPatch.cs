@@ -112,6 +112,44 @@ internal static class NetherAutoClimbResultPatch
 }
 
 /// <summary>
+/// Captures the actual generated FloorSelection startup/resume state machine. Native OnEntered
+/// invokes MoveNext directly and therefore bypasses the public async wrapper. The prefix owns
+/// popups created during MoveNext; the postfix exposes the builder's pollable parent UniTask.
+/// </summary>
+[HarmonyPatch]
+internal static class NetherAutoClimbStartStatusLifecyclePatch
+{
+    private static MethodBase? TargetMethod() =>
+        NetherRuntimeBridge.GetStartStatusStateMachinePatchTarget();
+
+    [HarmonyPrefix]
+    private static void Prefix(object __instance)
+    {
+        try
+        {
+            NetherRuntimeBridge.ObserveStartStatusStateMachineEnter(__instance);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[F12][NetherClimb] start-status state-machine enter observation failed: " + ex);
+        }
+    }
+
+    [HarmonyPostfix]
+    private static void Postfix(object __instance)
+    {
+        try
+        {
+            NetherRuntimeBridge.ObserveStartStatusStateMachineExit(__instance);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[F12][NetherClimb] start-status state-machine exit observation failed: " + ex);
+        }
+    }
+}
+
+/// <summary>
 /// Captures the exact result-view initialization task that installs the visible Next button.
 /// The main-thread coordinator waits for this task, invokes the game's generated Next callback
 /// once, and then waits for a strictly newer FloorSelection owner before resuming automation.

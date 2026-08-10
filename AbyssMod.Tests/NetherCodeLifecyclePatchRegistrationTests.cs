@@ -28,6 +28,21 @@ public class NetherCodeLifecyclePatchRegistrationTests
     }
 
     [Fact]
+    public void Patch_manager_registers_exact_start_status_state_machine_observer()
+    {
+        string root = FindRepositoryRoot();
+        string manager = File.ReadAllText(Path.Combine(root, "AbyssMod", "Patches", "PatchManager.cs"));
+        string patch = File.ReadAllText(Path.Combine(root, "AbyssMod", "Patches", "NetherAutoClimbPatch.cs"));
+
+        const string registration =
+            "Harmony.CreateAndPatchAll(typeof(NetherAutoClimbStartStatusLifecyclePatch));";
+        Assert.Single(Regex.Matches(manager, Regex.Escape(registration)).Cast<Match>());
+        Assert.Contains("GetStartStatusStateMachinePatchTarget()", patch);
+        Assert.Contains("ObserveStartStatusStateMachineEnter(__instance)", patch);
+        Assert.Contains("ObserveStartStatusStateMachineExit(__instance)", patch);
+    }
+
+    [Fact]
     public void Lifecycle_patch_targets_delegate_to_the_same_versioned_packaged_bindings()
     {
         string root = FindRepositoryRoot();

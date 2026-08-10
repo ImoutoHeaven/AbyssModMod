@@ -21,6 +21,7 @@ public static class PatchManager
         Harmony.CreateAndPatchAll(typeof(BattleSessionAutoSLPatch));
         Harmony.CreateAndPatchAll(typeof(BattleSettlementPayloadProbePatch));
         Harmony.CreateAndPatchAll(typeof(NetherAutoClimbPatch));
+        Harmony.CreateAndPatchAll(typeof(NetherAutoClimbStartStatusLifecyclePatch));
         Harmony.CreateAndPatchAll(typeof(NetherAutoClimbResultPatch));
         Harmony.CreateAndPatchAll(typeof(NetherAutoClimbBattleResultLifecyclePatch));
         Harmony.CreateAndPatchAll(typeof(NetherAutoClimbFloorEventSequenceLifecyclePatch));

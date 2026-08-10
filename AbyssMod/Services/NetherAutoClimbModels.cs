@@ -68,6 +68,11 @@ internal enum NetherActionKind
     SelectReturnItems,
     AwaitNativeFlow,
     BattleSettlement,
+    /// <summary>
+    /// A foreground code offer owned by the exact
+    /// FloorSelection.HandleStartEventByStatusAsync task captured after resume/restart.
+    /// </summary>
+    RecoveredCodeOffer,
     RestoreBattleSettings,
     /// <summary>Native floor-event Abyss-code conversion: remove one current code and receive one server-selected code.</summary>
     TransformCode,

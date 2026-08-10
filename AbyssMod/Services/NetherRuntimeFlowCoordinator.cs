@@ -75,6 +75,8 @@ internal sealed class NetherRuntimeFlowCoordinator
 
         bool dispatchedOwnedPopup = false;
         NetherRuntimePopupResult popup = _driver.TryGetOwnedPopup(_parent.Value);
+        if (!popup.IsSuccess && popup.Detail != "missing-owned-floor-popup")
+            return Fail("owned-popup-unavailable:" + popup.Detail);
         if (popup.IsSuccess)
         {
             NetherRuntimePopupContext context = popup.Popup!;

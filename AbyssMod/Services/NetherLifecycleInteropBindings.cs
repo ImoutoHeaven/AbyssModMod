@@ -27,6 +27,22 @@ internal static class NetherLifecycleInteropBindings
     private const BindingFlags InstanceFlags =
         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
+    public static NetherInteropPatchBinding StartStatusTask { get; } = Instance(
+        "Project.Nether.FloorSelection.SubViewController",
+        "HandleStartEventByStatusAsync",
+        new[] { "System.Boolean" },
+        UniTaskTypeName
+    );
+
+    // The native OnEntered UniTaskVoid constructs this state machine directly and calls
+    // MoveNext, bypassing the public HandleStartEventByStatusAsync interop wrapper.
+    public static NetherInteropPatchBinding StartStatusStateMachineMoveNext { get; } = Instance(
+        "Project.Nether.FloorSelection.SubViewController+_HandleStartEventByStatusAsync_d__37",
+        "MoveNext",
+        Array.Empty<string>(),
+        "System.Void"
+    );
+
     public static IReadOnlyList<NetherInteropPatchBinding> All { get; } = new[]
     {
         Instance(
@@ -59,12 +75,6 @@ internal static class NetherLifecycleInteropBindings
         ),
         Instance(
             "Project.Nether.FloorSelection.SubViewController",
-            "HandleStartEventByStatusAsync",
-            new[] { "System.Boolean" },
-            UniTaskTypeName
-        ),
-        Instance(
-            "Project.Nether.FloorSelection.SubViewController",
             "Project_ISubService_Terminate",
             Array.Empty<string>(),
             "System.Void"
@@ -94,6 +104,10 @@ internal static class NetherLifecycleInteropBindings
         Popup(
             "Project.Nether.NetherShopPopup.NetherShopPopupController",
             "Project.Nether.NetherShopPopup.NetherShopPopup"
+        ),
+        Popup(
+            "Project.Nether.NetherShopConfirmPopup.NetherShopConfirmPopupController",
+            "Project.Nether.NetherShopConfirmPopup.NetherShopConfirmPopup"
         ),
         Popup(
             "Project.Nether.AbyssCodeSelectPopup.AbyssCodeSelectPopupController",
@@ -149,6 +163,17 @@ internal static class NetherLifecycleInteropBindings
         "_SetupPopupEvent_b__16_0",
         "<SetupPopupEvent>b__16_0",
         new[] { UnitTypeName, Il2CppActionTypeName },
+        "System.Void"
+    ) { IsStatic = false };
+
+    public static NetherCodePopupInteropMethodBinding ShopPurchaseConfirmCallback { get; } = new(
+        "_SetupPopupEvent_b__5_1",
+        "<SetupPopupEvent>b__5_1",
+        new[]
+        {
+            UnitTypeName,
+            "Project.Nether.NetherShopConfirmPopup.NetherShopConfirmPopupController",
+        },
         "System.Void"
     ) { IsStatic = false };
 

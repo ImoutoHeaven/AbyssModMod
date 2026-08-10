@@ -1,6 +1,7 @@
 using Absf;
 using AbyssMod.Services;
 using HarmonyLib;
+using Il2CppInterop.Runtime.InteropTypes;
 using Project.Api;
 using Project.BattleResult;
 using Project.Ingame;
@@ -50,6 +51,21 @@ public static class BattleSettlementPayloadProbePatch
             battleQuestType,
             (int)resultType
         );
+        // IL2CPP interop does not expose NetherClearBattleResponseEntity as a CLR
+        // implementation of IFinishQuestResponseEntity even though the native type implements
+        // it.  Cast the native object pointer through TryCast instead of using a CLR pattern.
+        NetherClearBattleResponseEntity clearResponse = terminal == NetherBattleTerminalKind.Clear
+            ? entity?.TryCast<NetherClearBattleResponseEntity>()
+            : null;
+        if (clearResponse?.t_nether_characters != null)
+        {
+            // The FloorSelection party model no longer exists at this point.  Preserve the
+            // exact clear-response HP ratios before signalling settlement so the subsequent
+            // GET-only snapshot can calibrate the battle without a stale pre-battle party.
+            NetherRuntimeBridge.ObserveBattleResultCharacters(
+                clearResponse.t_nether_characters
+            );
+        }
         switch (terminal)
         {
             case NetherBattleTerminalKind.Clear:

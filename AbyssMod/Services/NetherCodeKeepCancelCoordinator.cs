@@ -54,7 +54,11 @@ internal sealed class NetherCodeKeepCancelCoordinator
 
     public bool Begin(NetherCodeKeepCancelOwner owner)
     {
-        if (owner.OwnerAction != NetherActionKind.SelectFloor
+        if (owner.OwnerAction is not (
+                NetherActionKind.SelectFloor
+                or NetherActionKind.BattleSettlement
+                or NetherActionKind.RecoveredCodeOffer
+            )
             || owner.Generation <= 0
             || owner.Sequence <= 0
             || owner.DecisionEpoch < 0

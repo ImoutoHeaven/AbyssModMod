@@ -32,6 +32,8 @@ public class NetherOwnedPopupNativeStageRuntimeTests
         Assert.True(port.PopupLive);
         Assert.Equal(0, port.ParentPolls);
 
+        Assert.Equal(NetherOwnedPopupNativeStagePumpKind.Pending, runtime.Pump().Kind); // confirm popup → exact confirm
+        Assert.Equal(1, port.ConfirmInvocations);
         Assert.Equal(NetherOwnedPopupNativeStagePumpKind.Pending, runtime.Pump().Kind); // child terminal → close pending
         Assert.True(port.PopupLive);
         Assert.Equal(0, port.CloseInvocations);
@@ -156,6 +158,7 @@ public class NetherOwnedPopupNativeStageRuntimeTests
         public bool PopupLive { get; set; } = true;
         public bool AutoObserveKeep { get; set; } = true;
         public int BuyInvocations { get; private set; }
+        public int ConfirmInvocations { get; private set; }
         public int CloseInvocations { get; private set; }
         public int ReloadInvocations { get; private set; }
         public int KeepInvocations { get; private set; }
@@ -186,6 +189,12 @@ public class NetherOwnedPopupNativeStageRuntimeTests
 
         public NetherNativeActionResult PollShopPurchaseTask(NetherShopPurchaseCloseOwner owner) =>
             NetherNativeActionResult.Completed("fake-shop-child-terminal");
+
+        public NetherNativeActionResult InvokeShopPurchaseConfirm(NetherShopPurchaseCloseOwner owner)
+        {
+            ConfirmInvocations++;
+            return NetherNativeActionResult.Completed("fake-shop-confirm");
+        }
 
         public NetherNativeActionResult InvokeExactShopClose(NetherShopPurchaseCloseOwner owner)
         {

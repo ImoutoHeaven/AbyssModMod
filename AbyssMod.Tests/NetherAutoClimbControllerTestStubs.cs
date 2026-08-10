@@ -33,7 +33,8 @@ internal readonly record struct NetherRuntimeCodeCandidatesResult(
 }
 
 internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherReadOnlyReconcileDriver,
-    INetherBattleIngressDriver, INetherBattleSettlementDriver, INetherBattleProjectionSnapshotDriver, INetherContinueSceneDriver
+    INetherBattleIngressDriver, INetherBattleSettlementDriver, INetherBattleProjectionSnapshotDriver,
+    INetherContinueSceneDriver, INetherBattleResultCodeDriver, INetherRecoveredCodeOfferDriver
 {
     bool HasRegisteredFloorSelection { get; }
     bool HasObservedNetherBattleResult { get; }
@@ -45,7 +46,6 @@ internal interface INetherRuntimeBridge : INetherRuntimeParentDriver, INetherRea
         NetherSnapshot snapshot,
         NetherAutoClimbSettings settings
     );
-    NetherRuntimeCodeCandidatesResult TryGetCodeCandidates();
     NetherRuntimePopupResult TryGetActivePopup();
     bool BeginFloorParent(NetherPlannedAction action, long generation);
     NetherNativeActionResult InvokeOwnedPopup(
@@ -88,8 +88,18 @@ internal sealed class NetherRuntimeBridge
         public NetherRuntimeInteractivePreEntryInputsResult TryCaptureInteractivePreEntryInputs(NetherSnapshot snapshot, NetherAutoClimbSettings settings) =>
             NetherRuntimeInteractivePreEntryInputsResult.Failure("test-unconfigured-interactive");
         public NetherRuntimeCodeCandidatesResult TryGetCodeCandidates() => NetherRuntimeCodeCandidatesResult.Failure("test-unconfigured-codes");
+        public NetherRuntimeSnapshotResult TryCaptureBattleResultCodeSnapshot() =>
+            NetherRuntimeSnapshotResult.Failure("test-unconfigured-battle-result-code-snapshot");
+        public NetherRuntimePopupResult TryGetBattleResultCodePopup() =>
+            NetherRuntimePopupResult.Failure("test-unconfigured-battle-result-code-popup");
+        public NetherNativeActionResult InvokeBattleResultCode(
+            NetherRuntimePopupContext popup,
+            NetherPlannedAction action
+        ) => Unavailable("battle-result-code");
+        public NetherBattleResultCodeNativeStep PollBattleResultCodeNative() =>
+            NetherBattleResultCodeNativeStep.BindingUnavailable("test-unconfigured-battle-result-code-native");
         public NetherRuntimePopupResult TryGetActivePopup() => NetherRuntimePopupResult.Failure("test-unconfigured-popup");
-        public NetherRuntimePopupResult TryGetOwnedPopup(NetherPlannedAction parent) => NetherRuntimePopupResult.Failure("test-unconfigured-owned-popup");
+        public NetherRuntimePopupResult TryGetOwnedPopup(NetherPlannedAction parent) => NetherRuntimePopupResult.Failure("missing-owned-floor-popup");
         public bool BeginFloorParent(NetherPlannedAction action, long generation) => false;
         public void TerminateFloorParent() { }
         public NetherNativeActionResult InvokeOwnedPopup(NetherPlannedAction parent, NetherRuntimePopupContext popup, NetherPlannedAction action) => Unavailable("owned-popup");

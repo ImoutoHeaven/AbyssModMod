@@ -136,10 +136,14 @@ internal sealed class NetherEventPolicy
             throw new ArgumentNullException(nameof(settings));
         if (settings.ShopMode == NetherShopMode.Off)
             return new NetherShopDecision { Kind = NetherShopDecisionKind.Leave };
-        if (contents.Any(content => !content.Known || content.ContentId <= 0 || content.ItemId <= 0 || content.Amount <= 0 || content.Price < 0))
+        // The native shop mixes MItems with valid ID-less products (keys, code effects, etc.).
+        // EquipmentBags ignores those known non-item rows; ItemId is required only for an
+        // actual equipment candidate, never as a blanket validity condition for the popup.
+        if (contents.Any(content => !content.Known || content.ContentId <= 0 || content.Amount <= 0 || content.Price < 0))
             return new NetherShopDecision { Kind = NetherShopDecisionKind.Pause, PauseReason = NetherPauseReason.UnknownMasterData, Detail = "invalid-shop-content" };
 
         NetherShopContent? selected = contents
+            .Where(content => content.ItemId > 0)
             .Where(content => content.ItemType == 91)
             .Where(content => content.Rarity >= NetherRewardRarity.Gold)
             .Where(content => content.UsesNetherGold)

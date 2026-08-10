@@ -70,6 +70,7 @@
     <Compile Include="..\AbyssMod\Services\NetherCodePolicy.cs" Link="NetherCodePolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCodePolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodeTransformPolicy.cs" Link="NetherCodeTransformPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeTransformPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherEventPolicy.cs" Link="NetherEventPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherEventPolicy.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherShopContentMapper.cs" Link="NetherShopContentMapper.cs" Condition="Exists('..\AbyssMod\Services\NetherShopContentMapper.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCheckpointPolicy.cs" Link="NetherCheckpointPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherCheckpointPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherReturnItemPolicy.cs" Link="NetherReturnItemPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherReturnItemPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherBattleSettingsLeaseState.cs" Link="NetherBattleSettingsLeaseState.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleSettingsLeaseState.cs')" />
@@ -79,6 +80,7 @@
     <Compile Include="..\AbyssMod\Services\NetherActionReconcilePolicy.cs" Link="NetherActionReconcilePolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherActionReconcilePolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherFloorActionTransactionComposer.cs" Link="NetherFloorActionTransactionComposer.cs" Condition="Exists('..\AbyssMod\Services\NetherFloorActionTransactionComposer.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherShopPurchaseCloseCoordinator.cs" Link="NetherShopPurchaseCloseCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherShopPurchaseCloseCoordinator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherShopPurchaseConfirmCoordinator.cs" Link="NetherShopPurchaseConfirmCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherShopPurchaseConfirmCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodeReloadEpochCoordinator.cs" Link="NetherCodeReloadEpochCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeReloadEpochCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodeKeepCancelCoordinator.cs" Link="NetherCodeKeepCancelCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeKeepCancelCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodeTransformNativeFlow.cs" Link="NetherCodeTransformNativeFlow.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeTransformNativeFlow.cs')" />
@@ -100,6 +102,10 @@
     <Compile Include="..\AbyssMod\Services\NetherBattleSettlementCoordinator.cs" Link="NetherBattleSettlementCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleSettlementCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherBattleTerminalObservationPolicy.cs" Link="NetherBattleTerminalObservationPolicy.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleTerminalObservationPolicy.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherBattleResultContinuationFlow.cs" Link="NetherBattleResultContinuationFlow.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleResultContinuationFlow.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherBattleResultCodeCoordinator.cs" Link="NetherBattleResultCodeCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleResultCodeCoordinator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherRecoveredCodeOfferCoordinator.cs" Link="NetherRecoveredCodeOfferCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherRecoveredCodeOfferCoordinator.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherStartStatusParentCapture.cs" Link="NetherStartStatusParentCapture.cs" Condition="Exists('..\AbyssMod\Services\NetherStartStatusParentCapture.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherTransitionSnapshotCache.cs" Link="NetherTransitionSnapshotCache.cs" Condition="Exists('..\AbyssMod\Services\NetherTransitionSnapshotCache.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherBattleResultNextNativeBinding.cs" Link="NetherBattleResultNextNativeBinding.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleResultNextNativeBinding.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherBattleResultReboundReadiness.cs" Link="NetherBattleResultReboundReadiness.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleResultReboundReadiness.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherBattleIngressCoordinator.cs" Link="NetherBattleIngressCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherBattleIngressCoordinator.cs')" />

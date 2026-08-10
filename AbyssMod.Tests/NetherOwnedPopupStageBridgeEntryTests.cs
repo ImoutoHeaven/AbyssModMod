@@ -31,6 +31,7 @@ public class NetherOwnedPopupStageBridgeEntryTests
         Assert.Equal(NetherNativeActionResultKind.Started, started.Kind);
         Assert.Equal(1, port.BuyInvocations);
 
+        Assert.False(entry.PumpBeforeParent().MayPollParent); // exact purchase confirmation
         Assert.False(entry.PumpBeforeParent().MayPollParent); // child terminal -> close pending
         Assert.False(entry.PumpBeforeParent().MayPollParent); // exact close once
         Assert.Equal(1, port.CloseInvocations);
@@ -53,6 +54,7 @@ public class NetherOwnedPopupStageBridgeEntryTests
 
         Assert.Equal(NetherNativeActionResultKind.Started, port.DispatchViaAdapter(parent, popup, buy).Kind);
         Assert.Equal(1, port.BuyInvocations);
+        Assert.False(port.PumpViaAdapter().MayPollParent);
         Assert.False(port.PumpViaAdapter().MayPollParent);
         Assert.False(port.PumpViaAdapter().MayPollParent);
         Assert.True(port.PumpViaAdapter().MayPollParent);
@@ -134,6 +136,106 @@ public class NetherOwnedPopupStageBridgeEntryTests
         Assert.Equal(0, port.KeepInvocations);
     }
 
+    [Fact]
+    public void Battle_result_owner_can_select_code_through_the_same_terminal_gate()
+    {
+        var port = new EntryPort(
+            NetherRuntimePopupKind.CodeOffer,
+            NetherActionKind.BattleSettlement
+        );
+        NetherPlannedAction parent = new(NetherActionKind.BattleSettlement);
+        NetherRuntimePopupContext popup = Popup(NetherRuntimePopupKind.CodeOffer) with
+        {
+            OwnerAction = NetherActionKind.BattleSettlement,
+        };
+
+        NetherNativeActionResult result = port.DispatchViaAdapter(
+            parent,
+            popup,
+            new NetherPlannedAction(NetherActionKind.SelectCode) { CodeId = 30024 }
+        );
+
+        Assert.Equal(NetherNativeActionResultKind.Started, result.Kind);
+    }
+
+    [Fact]
+    public void Recovered_start_status_owner_can_select_code_through_the_same_terminal_gate()
+    {
+        var port = new EntryPort(
+            NetherRuntimePopupKind.CodeOffer,
+            NetherActionKind.RecoveredCodeOffer
+        );
+        NetherPlannedAction parent = new(NetherActionKind.RecoveredCodeOffer);
+        NetherRuntimePopupContext popup = Popup(NetherRuntimePopupKind.CodeOffer) with
+        {
+            OwnerAction = NetherActionKind.RecoveredCodeOffer,
+        };
+
+        NetherNativeActionResult result = port.DispatchViaAdapter(
+            parent,
+            popup,
+            new NetherPlannedAction(NetherActionKind.SelectCode) { CodeId = 30024 }
+        );
+
+        Assert.Equal(NetherNativeActionResultKind.Started, result.Kind);
+    }
+
+    [Fact]
+    public void Battle_result_owner_can_reroll_then_keep_without_a_floor_parent()
+    {
+        var port = new EntryPort(
+            NetherRuntimePopupKind.CodeOffer,
+            NetherActionKind.BattleSettlement
+        )
+        {
+            ReloadStart = new NetherOwnedPopupCodeReloadStart(2, Candidates(40024), string.Empty),
+            FreshReload = new NetherCodeReloadEpochRefresh(
+                new NetherCodeReloadEpochOwner(NetherActionKind.BattleSettlement, 4, 8),
+                1,
+                Candidates(30024)
+            ),
+        };
+        var entry = new NetherOwnedPopupStageBridgeEntry(port, maximumPendingPumps: 2);
+        port.ObserveKeep = owner => entry.ObserveKeepCancelTask(owner);
+        NetherPlannedAction parent = new(NetherActionKind.BattleSettlement);
+        NetherRuntimePopupContext epoch0 = Popup(NetherRuntimePopupKind.CodeOffer) with
+        {
+            OwnerAction = NetherActionKind.BattleSettlement,
+        };
+
+        Assert.Equal(
+            NetherNativeActionResultKind.Started,
+            entry.Dispatch(
+                parent,
+                epoch0,
+                new NetherPlannedAction(NetherActionKind.ReloadCode),
+                RejectEvent,
+                RejectLeave,
+                RejectCode
+            ).Kind
+        );
+        Assert.False(entry.PumpBeforeParent().MayPollParent);
+        Assert.Equal(
+            "code-reload-fresh-offer-ready",
+            entry.PumpBeforeParent().Native.Detail
+        );
+
+        Assert.Equal(
+            NetherNativeActionResultKind.Started,
+            entry.Dispatch(
+                parent,
+                epoch0 with { DecisionEpoch = 1 },
+                new NetherPlannedAction(NetherActionKind.KeepCode),
+                RejectEvent,
+                RejectLeave,
+                RejectCode
+            ).Kind
+        );
+        Assert.True(entry.PumpBeforeParent().MayPollParent);
+        Assert.Equal(1, port.ReloadInvocations);
+        Assert.Equal(1, port.KeepInvocations);
+    }
+
     private static NetherNativeActionResult RejectEvent(NetherPlannedAction action) =>
         NetherNativeActionResult.BindingUnavailable("unexpected-event:" + action.Kind);
 
@@ -176,7 +278,16 @@ public class NetherOwnedPopupStageBridgeEntryTests
     {
         private readonly NetherRuntimePopupKind _kind;
 
-        public EntryPort(NetherRuntimePopupKind kind) => _kind = kind;
+        private readonly NetherActionKind _ownerAction;
+
+        public EntryPort(
+            NetherRuntimePopupKind kind,
+            NetherActionKind ownerAction = NetherActionKind.SelectFloor
+        )
+        {
+            _kind = kind;
+            _ownerAction = ownerAction;
+        }
 
         public int BuyInvocations { get; private set; }
         public int CloseInvocations { get; private set; }
@@ -202,7 +313,7 @@ public class NetherOwnedPopupStageBridgeEntryTests
         protected override bool HasMatchingOwnedPopup(
             NetherPlannedAction parent,
             NetherRuntimePopupContext popup
-        ) => parent.Kind == NetherActionKind.SelectFloor
+        ) => parent.Kind == _ownerAction
             && IsCurrentOwnedPopup(popup.Kind, new NetherOwnedPopupStageOwner(
                 popup.OwnerAction,
                 popup.OwnerGeneration,
@@ -221,7 +332,7 @@ public class NetherOwnedPopupStageBridgeEntryTests
 
         public bool IsCurrentOwnedPopup(NetherRuntimePopupKind kind, NetherOwnedPopupStageOwner owner) =>
             kind == _kind
-            && owner.OwnerAction == NetherActionKind.SelectFloor
+            && owner.OwnerAction == _ownerAction
             && owner.Generation == 4
             && owner.Sequence == 8;
 
@@ -233,6 +344,10 @@ public class NetherOwnedPopupStageBridgeEntryTests
 
         public NetherNativeActionResult PollShopPurchaseTask(NetherShopPurchaseCloseOwner owner) =>
             NetherNativeActionResult.Completed("entry-shop-child");
+
+        public NetherNativeActionResult InvokeShopPurchaseConfirm(
+            NetherShopPurchaseCloseOwner owner
+        ) => NetherNativeActionResult.Completed("entry-shop-confirm");
 
         public NetherNativeActionResult InvokeExactShopClose(NetherShopPurchaseCloseOwner owner)
         {

@@ -92,6 +92,70 @@ public sealed class NetherLifecycleInteropBindingsTests
     }
 
     [Fact]
+    public void Packaged_floor_selection_exposes_exact_start_status_parent_task()
+    {
+        using var packaged = PackagedProjectAssembly.Load();
+        Type controller = packaged.RequireType(
+            NetherLifecycleInteropBindings.StartStatusTask.TypeName
+        );
+
+        Assert.True(
+            NetherLifecycleInteropBindings.TryResolveExactMethod(
+                controller,
+                NetherLifecycleInteropBindings.StartStatusTask.Method,
+                NetherLifecycleInteropBindings.StartStatusTask.Flags,
+                out string error,
+                out MethodInfo? method
+            ),
+            error
+        );
+        Assert.NotNull(method);
+        Assert.Equal("HandleStartEventByStatusAsync", method!.Name);
+        Assert.Equal(new[] { "System.Boolean" }, method.GetParameters()
+            .Select(parameter => parameter.ParameterType.FullName)
+            .ToArray());
+        Assert.Equal("Cysharp.Threading.Tasks.UniTask", method.ReturnType.FullName);
+    }
+
+    [Fact]
+    public void Packaged_floor_selection_exposes_the_actual_start_status_state_machine_seam()
+    {
+        using var packaged = PackagedProjectAssembly.Load();
+        NetherInteropPatchBinding binding = NetherLifecycleInteropBindings.StartStatusStateMachineMoveNext;
+        Type stateMachine = packaged.RequireType(binding.TypeName);
+
+        Assert.True(
+            NetherLifecycleInteropBindings.TryResolveExactMethod(
+                stateMachine,
+                binding.Method,
+                binding.Flags,
+                out string error,
+                out MethodInfo? moveNext
+            ),
+            error
+        );
+        Assert.NotNull(moveNext);
+        Assert.Empty(moveNext!.GetParameters());
+        Assert.Equal(typeof(void), moveNext.ReturnType);
+
+        PropertyInfo controller = Assert.Single(
+            stateMachine.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic),
+            property => property.Name == "__4__this"
+        );
+        PropertyInfo builder = Assert.Single(
+            stateMachine.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic),
+            property => property.Name == "__t__builder"
+        );
+        PropertyInfo parentTask = Assert.Single(
+            builder.PropertyType.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic),
+            property => property.Name == "Task"
+        );
+
+        Assert.Equal(NetherLifecycleInteropBindings.StartStatusTask.TypeName, controller.PropertyType.FullName);
+        Assert.Equal("Cysharp.Threading.Tasks.UniTask", parentTask.PropertyType.FullName);
+    }
+
+    [Fact]
     public void Packaged_preserve_service_exposes_exact_start_clear_and_close_task_seams()
     {
         using var packaged = PackagedProjectAssembly.Load();
@@ -154,7 +218,7 @@ public sealed class NetherLifecycleInteropBindingsTests
         Assert.Equal(24, bindings.Length);
         Assert.Empty(failures);
         Assert.Contains("Project_ISubService_Terminate", resolvedNames);
-        Assert.Equal(13, bindings.Count(binding => binding.Method.Name == "SetupPopupEvent"));
+        Assert.Equal(14, bindings.Count(binding => binding.Method.Name == "SetupPopupEvent"));
         Assert.Equal(
             new[] { "OnEntered", "OnInitializeAsync", "OnRefreshAsync" },
             bindings
@@ -335,6 +399,41 @@ public sealed class NetherLifecycleInteropBindingsTests
         );
         Assert.NotNull(singleton);
         Assert.Equal("_SetupPopupEvent_b__16_0", callback!.Name);
+    }
+
+    [Fact]
+    public void Packaged_shop_purchase_confirm_popup_and_exact_confirm_callback_resolve()
+    {
+        using var packaged = PackagedProjectAssembly.Load();
+        Type controller = packaged.RequireType(
+            "Project.Nether.NetherShopConfirmPopup.NetherShopConfirmPopupController"
+        );
+
+        NetherInteropPatchBinding setup = Assert.Single(
+            NetherLifecycleInteropBindings.All,
+            binding => binding.TypeName == controller.FullName
+                && binding.Method.Name == "SetupPopupEvent"
+        );
+        Assert.Equal(
+            new[]
+            {
+                "Project.Nether.NetherShopConfirmPopup.NetherShopConfirmPopup",
+                "Il2CppSystem.Action",
+            },
+            setup.Method.ParameterTypeNames
+        );
+        Assert.True(
+            NetherCodePopupInteropResolver.TryResolveGeneratedCallbackTarget(
+                controller,
+                NetherLifecycleInteropBindings.ShopPurchaseConfirmCallback,
+                out string error,
+                out MemberInfo? singleton,
+                out MethodInfo? callback
+            ),
+            error
+        );
+        Assert.NotNull(singleton);
+        Assert.Equal("_SetupPopupEvent_b__5_1", callback!.Name);
     }
 
     [Fact]

@@ -182,14 +182,39 @@ public class NetherRuntimeFlowCoordinatorTests
         Assert.Equal(1, keepDispatches);
     }
 
+    [Fact]
+    public void Registered_popup_mapping_failure_is_terminal_and_preserves_the_exact_reason()
+    {
+        var driver = new FakeDriver
+        {
+            PopupFailure = "invalid-native-shop-content:content-id-zero",
+            ParentPoll = NetherNativeActionResult.Started("parent-pending"),
+        };
+        var coordinator = new NetherRuntimeFlowCoordinator(driver);
+        var floor = new NetherPlannedAction(NetherActionKind.SelectFloor) { FloorId = 18, FloorLevel = 5 };
+
+        Assert.True(coordinator.BeginFloorParent(floor));
+        NetherRuntimeParentPollResult result = coordinator.Poll(
+            _ => throw new Xunit.Sdk.XunitException("unmappable popup must not dispatch")
+        );
+
+        Assert.Equal(NetherRuntimeParentPollKind.Faulted, result.Kind);
+        Assert.Equal(
+            "owned-popup-unavailable:invalid-native-shop-content:content-id-zero",
+            result.Detail
+        );
+        Assert.False(coordinator.HasPendingParent);
+    }
+
     private sealed class FakeDriver : INetherRuntimeParentDriver
     {
         public NetherRuntimePopupContext? Popup { get; set; }
+        public string PopupFailure { get; set; } = "missing-owned-floor-popup";
         public NetherNativeActionResult ParentPoll { get; set; } = NetherNativeActionResult.Started("pending");
         public int DispatchCount { get; private set; }
 
         public NetherRuntimePopupResult TryGetOwnedPopup(NetherPlannedAction parent) => Popup == null
-            ? NetherRuntimePopupResult.Failure("no-popup")
+            ? NetherRuntimePopupResult.Failure(PopupFailure)
             : NetherRuntimePopupResult.Success(Popup);
 
         public NetherNativeActionResult PollFloorParent() => ParentPoll;

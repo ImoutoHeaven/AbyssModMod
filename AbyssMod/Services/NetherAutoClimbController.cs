@@ -30,6 +30,8 @@ internal static class NetherAutoClimbController
     private static NetherReadOnlyReconcileCoordinator ReadOnlyReconcileFlow = new(_bridge);
     private static NetherBattleIngressCoordinator BattleIngressFlow = new(_bridge, _bridge);
     private static NetherBattleSettlementCoordinator BattleSettlementFlow = new(_bridge, _bridge, _bridge);
+    private static NetherBattleResultCodeCoordinator BattleResultCodeFlow = new();
+    private static NetherRecoveredCodeOfferCoordinator RecoveredCodeFlow = new();
     private static NetherContinueSceneRuntimeCoordinator ContinueSceneFlow = new(State, _bridge);
     private static readonly NetherDetailedAuditLogger DetailedAudit = new(message =>
         Logger.Info("[F12][NetherClimb] " + message)
@@ -85,6 +87,8 @@ internal static class NetherAutoClimbController
             ReadOnlyReconcileFlow,
             BattleIngressFlow,
             BattleSettlementFlow,
+            BattleResultCodeFlow,
+            RecoveredCodeFlow,
             ContinueSceneFlow,
             BattleSettingsLifecycle,
             _initialized,
@@ -100,6 +104,8 @@ internal static class NetherAutoClimbController
         ReadOnlyReconcileFlow = new NetherReadOnlyReconcileCoordinator(bridge);
         BattleIngressFlow = new NetherBattleIngressCoordinator(bridge, bridge);
         BattleSettlementFlow = new NetherBattleSettlementCoordinator(bridge, bridge, bridge);
+        BattleResultCodeFlow = new NetherBattleResultCodeCoordinator();
+        RecoveredCodeFlow = new NetherRecoveredCodeOfferCoordinator();
         ContinueSceneFlow = new NetherContinueSceneRuntimeCoordinator(State, bridge);
         BattleSettingsLifecycle = battleSettingsLifecycle;
         _initialized = false;
@@ -191,6 +197,7 @@ internal static class NetherAutoClimbController
             // Next callback instead of rejecting the user as outside Nether.
             if (_bridge.HasObservedNetherBattleResult && State.EnableFromBattleResult())
             {
+                BattleResultCodeFlow.Reset();
                 _lockedCombatLane = null;
                 _pendingBattleProjection = null;
                 NetherAutoClimbSettings resultSettings = BuildSettings();
@@ -278,6 +285,15 @@ internal static class NetherAutoClimbController
             return;
 
         PumpBattleSettingsLeaseRetry();
+
+        // A startup/resume code popup can predate F12 and keeps the game's exact
+        // HandleStartEventByStatusAsync parent pending.  Once automation has invoked its child,
+        // continue draining that exact child/parent/GET chain even if F12 is switched off.
+        if (RecoveredCodeFlow.IsActive)
+        {
+            ObserveRecoveredCodeOffer();
+            return;
+        }
 
         if (State.Phase == NetherAutoClimbPhase.Completed)
             return;
@@ -414,6 +430,8 @@ internal static class NetherAutoClimbController
         ReadOnlyReconcileFlow.Reset();
         BattleIngressFlow.Reset();
         BattleSettlementFlow.TerminateForSceneLoss();
+        BattleResultCodeFlow.Reset();
+        RecoveredCodeFlow.Reset();
         ContinueSceneFlow.Reset();
         _initialized = false;
         _lockedCombatLane = null;
@@ -625,6 +643,7 @@ internal static class NetherAutoClimbController
                 // as named evidence for the user to recover manually.
                 if (result.Detail.StartsWith("shop-purchase-", StringComparison.Ordinal)
                     || result.Detail.StartsWith("owned-popup:shop-purchase-", StringComparison.Ordinal)
+                    || result.Detail.StartsWith("owned-popup-unavailable:", StringComparison.Ordinal)
                     || result.Detail.StartsWith("code-reload-", StringComparison.Ordinal)
                     || result.Detail.StartsWith("owned-popup:code-reload-", StringComparison.Ordinal)
                     || result.Detail.StartsWith("code-keep-", StringComparison.Ordinal)
@@ -965,6 +984,7 @@ internal static class NetherAutoClimbController
                     FailClosedTerminal(NetherPauseReason.BattleSettlementWrongTarget, "battle-settlement-missing-authoritative-snapshot");
                     return;
                 }
+                BattleResultCodeFlow.Reset();
                 if (!State.BeginBattleResultContinuation())
                 {
                     FailClosedTerminal(
@@ -1010,8 +1030,146 @@ internal static class NetherAutoClimbController
         }
     }
 
+    private static void ObserveRecoveredCodeOffer(NetherAutoClimbSettings? capturedSettings = null)
+    {
+        NetherRecoveredCodeOfferStep step = RecoveredCodeFlow.Pump(
+            _bridge,
+            capturedSettings ?? BuildSettings(),
+            _lockedCombatLane,
+            allowInvoke: State.IsEnabled
+        );
+        Audit(
+            NetherDetailedAuditKind.Interactive,
+            "recovered-code:" + step.Kind + ":" + step.Detail,
+            new NetherDetailedAuditField("step", step.Kind.ToString()),
+            new NetherDetailedAuditField("detail", step.Detail),
+            new NetherDetailedAuditField("enabled", State.IsEnabled.ToString()),
+            new NetherDetailedAuditField("action", step.Action?.Kind.ToString() ?? "none"),
+            new NetherDetailedAuditField("codeId", step.Action?.CodeId.ToString() ?? "0"),
+            new NetherDetailedAuditField("replaceCodeId", step.Action?.ReplaceCodeId.ToString() ?? "0"),
+            new NetherDetailedAuditField("lane", step.LockedLane?.ToString() ?? "none")
+        );
+        LogDiagnostic(
+            "recovered-code",
+            new("step", step.Kind.ToString()),
+            new("detail", step.Detail),
+            new("enabled", State.IsEnabled.ToString()),
+            new("phase", State.Phase.ToString()),
+            new("action", step.Action?.Kind.ToString() ?? "none"),
+            new("codeId", step.Action?.CodeId.ToString() ?? "0"),
+            new("replaceCodeId", step.Action?.ReplaceCodeId.ToString() ?? "0"),
+            new("lane", step.LockedLane?.ToString() ?? "none"),
+            new("hasSnapshot", (step.Snapshot != null).ToString())
+        );
+
+        switch (step.Kind)
+        {
+            case NetherRecoveredCodeOfferStepKind.NoOffer:
+            case NetherRecoveredCodeOfferStepKind.AwaitingPopup:
+            case NetherRecoveredCodeOfferStepKind.AwaitingNative:
+            case NetherRecoveredCodeOfferStepKind.ReloadReady:
+            case NetherRecoveredCodeOfferStepKind.AwaitingParent:
+            case NetherRecoveredCodeOfferStepKind.AwaitingRefresh:
+                return;
+            case NetherRecoveredCodeOfferStepKind.Completed:
+                if (step.Snapshot == null)
+                {
+                    FailClosed(
+                        NetherPauseReason.BindingUnavailable,
+                        "recovered-code-completed-without-snapshot"
+                    );
+                    return;
+                }
+                _lockedCombatLane = step.LockedLane ?? _lockedCombatLane;
+                AuditSnapshot(step.Snapshot, "recovered-code-completed");
+                LogSnapshotDiagnostic(step.Snapshot, "recovered-code-completed");
+                State.ObserveStable(step.Snapshot.Fingerprint);
+                LogTransition("RECOVERED_CODE completed parent-terminal-and-get");
+                return;
+            case NetherRecoveredCodeOfferStepKind.CanceledBeforeInvoke:
+                LogTransition("OFF recovered-code-canceled-before-invoke");
+                return;
+            case NetherRecoveredCodeOfferStepKind.CanceledAfterDrain:
+                LogTransition("OFF recovered-code-canceled-after-native-drain");
+                return;
+            case NetherRecoveredCodeOfferStepKind.BindingUnavailable:
+                FailClosed(
+                    NetherPauseReason.BindingUnavailable,
+                    "recovered-code-binding:" + step.Detail
+                );
+                return;
+            default:
+                FailClosed(
+                    NetherPauseReason.ContinueLifecycleFault,
+                    "recovered-code-fault:" + step.Detail
+                );
+                return;
+        }
+    }
+
     private static void ObserveBattleResultContinuation()
     {
+        NetherBattleResultCodeStep codeStep = BattleResultCodeFlow.Pump(
+            _bridge,
+            BuildSettings(),
+            _lockedCombatLane,
+            allowInvoke: State.IsEnabled
+        );
+        Audit(
+            NetherDetailedAuditKind.Interactive,
+            "battle-result-code:" + codeStep.Kind + ":" + codeStep.Detail,
+            new NetherDetailedAuditField("step", codeStep.Kind.ToString()),
+            new NetherDetailedAuditField("detail", codeStep.Detail),
+            new NetherDetailedAuditField("enabled", State.IsEnabled.ToString()),
+            new NetherDetailedAuditField("action", codeStep.Action?.Kind.ToString() ?? "none"),
+            new NetherDetailedAuditField("codeId", codeStep.Action?.CodeId.ToString() ?? "0"),
+            new NetherDetailedAuditField("replaceCodeId", codeStep.Action?.ReplaceCodeId.ToString() ?? "0"),
+            new NetherDetailedAuditField("lane", codeStep.LockedLane?.ToString() ?? "none")
+        );
+        LogDiagnostic(
+            "battle-result-code",
+            new("step", codeStep.Kind.ToString()),
+            new("detail", codeStep.Detail),
+            new("enabled", State.IsEnabled.ToString()),
+            new("action", codeStep.Action?.Kind.ToString() ?? "none"),
+            new("codeId", codeStep.Action?.CodeId.ToString() ?? "0"),
+            new("replaceCodeId", codeStep.Action?.ReplaceCodeId.ToString() ?? "0"),
+            new("lane", codeStep.LockedLane?.ToString() ?? "none")
+        );
+        switch (codeStep.Kind)
+        {
+            case NetherBattleResultCodeStepKind.AwaitingPopup:
+            case NetherBattleResultCodeStepKind.AwaitingNative:
+            case NetherBattleResultCodeStepKind.ReloadReady:
+                return;
+            case NetherBattleResultCodeStepKind.Completed:
+                _lockedCombatLane = codeStep.LockedLane ?? _lockedCombatLane;
+                break;
+            case NetherBattleResultCodeStepKind.CanceledBeforeInvoke:
+                if (!State.CancelBattleResultContinuationBeforeInvoke())
+                {
+                    FailClosedTerminal(
+                        NetherPauseReason.BattleLifecycleCanceled,
+                        "battle-result-code-cancel-state-mismatch:" + codeStep.Detail
+                    );
+                    return;
+                }
+                LogTransition("OFF battle-result-code-canceled-before-next");
+                return;
+            case NetherBattleResultCodeStepKind.BindingUnavailable:
+                FailClosedTerminal(
+                    NetherPauseReason.BindingUnavailable,
+                    "battle-result-code-binding:" + codeStep.Detail
+                );
+                return;
+            default:
+                FailClosedTerminal(
+                    NetherPauseReason.BattleLifecycleFault,
+                    "battle-result-code-fault:" + codeStep.Detail
+                );
+                return;
+        }
+
         NetherBattleResultContinuationStep step = _bridge.PollBattleResultContinuation(
             allowInvoke: State.IsEnabled
         );
@@ -1058,6 +1216,7 @@ internal static class NetherAutoClimbController
                     return;
                 }
                 _pendingBattleProjection = null;
+                BattleResultCodeFlow.Reset();
                 BattleAccessorWait.Clear();
                 LogTransition("BATTLE_RESULT_NEXT completed floor-rebound");
                 return;
@@ -1071,6 +1230,7 @@ internal static class NetherAutoClimbController
                     return;
                 }
                 LogTransition("OFF battle-result-next-canceled-before-invoke");
+                BattleResultCodeFlow.Reset();
                 return;
             case NetherBattleResultContinuationStepKind.BindingUnavailable:
                 FailClosedTerminal(
@@ -1272,6 +1432,12 @@ internal static class NetherAutoClimbController
             return;
         }
 
+        if (_bridge.HasRecoveredCodeOffer)
+        {
+            ObserveRecoveredCodeOffer(settings);
+            return;
+        }
+
         NetherCheckpointDecision checkpoint = CheckpointPolicy.Decide(snapshot, settings);
         switch (checkpoint.Kind)
         {
@@ -1310,6 +1476,19 @@ internal static class NetherAutoClimbController
 
         if (snapshot.Status == NetherSessionStatus.Play)
         {
+            NetherRuntimePopupResult foreground = _bridge.TryGetActivePopup();
+            if (foreground.IsSuccess)
+            {
+                NetherRuntimePopupContext popup = foreground.Popup!;
+                FailClosed(
+                    NetherPauseReason.UnsupportedPopup,
+                    "foreground-popup-blocks-play-route:"
+                        + popup.Kind + ":owner=" + popup.OwnerAction
+                        + ":generation=" + popup.OwnerGeneration
+                        + ":sequence=" + popup.Sequence
+                );
+                return;
+            }
             PlanRoute(snapshot, settings, checkpoint.EffectiveMaxDepth);
             return;
         }
@@ -2353,6 +2532,8 @@ internal static class NetherAutoClimbController
         private readonly NetherReadOnlyReconcileCoordinator _readOnlyReconcileFlow;
         private readonly NetherBattleIngressCoordinator _battleIngressFlow;
         private readonly NetherBattleSettlementCoordinator _battleSettlementFlow;
+        private readonly NetherBattleResultCodeCoordinator _battleResultCodeFlow;
+        private readonly NetherRecoveredCodeOfferCoordinator _recoveredCodeFlow;
         private readonly NetherContinueSceneRuntimeCoordinator _continueSceneFlow;
         private readonly NetherBattleSettingsLeaseControllerLifecycle _battleSettingsLifecycle;
         private readonly bool _initialized;
@@ -2370,6 +2551,8 @@ internal static class NetherAutoClimbController
             NetherReadOnlyReconcileCoordinator readOnlyReconcileFlow,
             NetherBattleIngressCoordinator battleIngressFlow,
             NetherBattleSettlementCoordinator battleSettlementFlow,
+            NetherBattleResultCodeCoordinator battleResultCodeFlow,
+            NetherRecoveredCodeOfferCoordinator recoveredCodeFlow,
             NetherContinueSceneRuntimeCoordinator continueSceneFlow,
             NetherBattleSettingsLeaseControllerLifecycle battleSettingsLifecycle,
             bool initialized,
@@ -2386,6 +2569,8 @@ internal static class NetherAutoClimbController
             _readOnlyReconcileFlow = readOnlyReconcileFlow;
             _battleIngressFlow = battleIngressFlow;
             _battleSettlementFlow = battleSettlementFlow;
+            _battleResultCodeFlow = battleResultCodeFlow;
+            _recoveredCodeFlow = recoveredCodeFlow;
             _continueSceneFlow = continueSceneFlow;
             _battleSettingsLifecycle = battleSettingsLifecycle;
             _initialized = initialized;
@@ -2407,6 +2592,8 @@ internal static class NetherAutoClimbController
             NetherAutoClimbController.ReadOnlyReconcileFlow = _readOnlyReconcileFlow;
             NetherAutoClimbController.BattleIngressFlow = _battleIngressFlow;
             NetherAutoClimbController.BattleSettlementFlow = _battleSettlementFlow;
+            NetherAutoClimbController.BattleResultCodeFlow = _battleResultCodeFlow;
+            NetherAutoClimbController.RecoveredCodeFlow = _recoveredCodeFlow;
             NetherAutoClimbController.ContinueSceneFlow = _continueSceneFlow;
             NetherAutoClimbController.BattleSettingsLifecycle = _battleSettingsLifecycle;
             NetherAutoClimbController._initialized = _initialized;
