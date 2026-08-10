@@ -272,30 +272,6 @@ internal static class NetherAutoClimbFloorEventSequenceLifecyclePatch
 }
 
 /// <summary>
-/// Captures the generated code-confirmation UniTask which starts from the native Receive
-/// callback.  That task awaits the optional replacement UI and the server-owned fix-code flow,
-/// so a main-thread F12 poll can distinguish a click from an actual completed mutation.
-/// </summary>
-[HarmonyPatch]
-internal static class NetherAutoClimbCodeSelectionLifecyclePatch
-{
-    private static MethodBase? TargetMethod() => NetherRuntimeBridge.GetCodeSelectionTaskPatchTarget();
-
-    [HarmonyPostfix]
-    private static void Postfix(ref UniTask __result)
-    {
-        try
-        {
-            NetherRuntimeBridge.ObserveCodeSelectionTask(__result);
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("[F12][NetherClimb] native code confirmation task observation failed: " + ex);
-        }
-    }
-}
-
-/// <summary>
 /// Observes the exact static generated cancel sequence used by code-offer b__12_0.  The
 /// callback itself is void/Forget, so the bridge correlates this UniTask to the live owned
 /// popup before allowing the original SelectFloor parent to reach reconciliation.

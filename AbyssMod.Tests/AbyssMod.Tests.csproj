@@ -96,6 +96,7 @@
     <Compile Include="..\AbyssMod\Services\NetherCodePopupNativeBinding.cs" Link="NetherCodePopupNativeBinding.cs" Condition="Exists('..\AbyssMod\Services\NetherCodePopupNativeBinding.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodeTransformNativeBinding.cs" Link="NetherCodeTransformNativeBinding.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeTransformNativeBinding.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherCodePopupInteropResolver.cs" Link="NetherCodePopupInteropResolver.cs" Condition="Exists('..\AbyssMod\Services\NetherCodePopupInteropResolver.cs')" />
+    <Compile Include="..\AbyssMod\Services\NetherCodeConfirmTaskInvoker.cs" Link="NetherCodeConfirmTaskInvoker.cs" Condition="Exists('..\AbyssMod\Services\NetherCodeConfirmTaskInvoker.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherLifecycleInteropBindings.cs" Link="NetherLifecycleInteropBindings.cs" Condition="Exists('..\AbyssMod\Services\NetherLifecycleInteropBindings.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherReadOnlyReconcileCoordinator.cs" Link="NetherReadOnlyReconcileCoordinator.cs" Condition="Exists('..\AbyssMod\Services\NetherReadOnlyReconcileCoordinator.cs')" />
     <Compile Include="..\AbyssMod\Services\NetherReadOnlyReconcileNativeBinding.cs" Link="NetherReadOnlyReconcileNativeBinding.cs" Condition="Exists('..\AbyssMod\Services\NetherReadOnlyReconcileNativeBinding.cs')" />

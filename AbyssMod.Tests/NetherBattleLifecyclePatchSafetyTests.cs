@@ -91,7 +91,7 @@ public sealed class NetherBattleLifecyclePatchSafetyTests
         );
         Assert.DoesNotContain("BattlePatchBindings", bridge);
         Assert.DoesNotContain("GetBattleTaskPatchTarget", bridge);
-        Assert.Contains("autonether-start-status-state-machine-v23", plugin);
+        Assert.Contains("autonether-direct-code-confirm-v24", plugin);
     }
 
     private static string FindRepositoryRoot()

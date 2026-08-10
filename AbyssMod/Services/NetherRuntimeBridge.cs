@@ -363,8 +363,6 @@ internal sealed class NetherRuntimeBridge : NetherOwnedPopupStageBridgeAdapter, 
     public static void ObserveStartStatusStateMachineExit(object stateMachine) =>
         Instance.ObserveStartStatusStateMachineExitCore(stateMachine);
 
-    public static void ObserveCodeSelectionTask(object resultTask) => Instance.ObserveCodeSelectionTaskCore(resultTask);
-
     /// <summary>
     /// Observes only the exact static generated UniTask spawned by the native code-offer
     /// cancel closure.  The controller argument is used to correlate that task to the live
@@ -476,36 +474,6 @@ internal sealed class NetherRuntimeBridge : NetherOwnedPopupStageBridgeAdapter, 
             new("detail", method != null ? "exact-signature" : error)
         );
         return method;
-    }
-
-    internal static MethodBase? GetCodeSelectionTaskPatchTarget()
-    {
-        Type? type = ResolveLoadedType(NetherUtilityTypeName);
-        if (type == null)
-        {
-            NetherAutoClimbController.LogDiagnostic(
-                "binding",
-                new("family", "code-confirm-task"),
-                new("outcome", "missing-type"),
-                new("type", NetherUtilityTypeName)
-            );
-            return null;
-        }
-        bool resolved = NetherCodePopupInteropResolver.TryResolveStaticMethod(
-            type,
-            NetherCodePopupNativeBinding.ConfirmTaskBinding(CodeSelectPopupControllerTypeName),
-            out string error,
-            out MethodInfo? method
-        );
-        NetherAutoClimbController.LogDiagnostic(
-            "binding",
-            new("family", "code-confirm-task"),
-            new("outcome", resolved ? "resolved" : "missing-method"),
-            new("type", NetherUtilityTypeName),
-            new("method", method?.Name ?? "confirm-generated-task"),
-            new("detail", error)
-        );
-        return resolved ? method : null;
     }
 
     internal static MethodBase? GetCodeKeepCancelTaskPatchTarget()
@@ -3624,21 +3592,6 @@ internal sealed class NetherRuntimeBridge : NetherOwnedPopupStageBridgeAdapter, 
         return true;
     }
 
-    private void ObserveCodeSelectionTaskCore(object resultTask)
-    {
-        if (resultTask == null)
-            return;
-        lock (_gate)
-        {
-            // Ignore a player-driven popup outside an F12 action.  In particular, do not let a
-            // stale native callback become a task for a later automatic offer.
-            if (!_codeSelectionFlow.ObserveConfirmationTask())
-                return;
-            _codeSelectionTask = resultTask;
-            _codeSelectionTaskWait.ObserveRegistration();
-        }
-    }
-
     private void ObserveCodeKeepCancelTaskCore(object controller, object resultTask)
     {
         if (controller == null || resultTask == null)
@@ -3973,21 +3926,66 @@ internal sealed class NetherRuntimeBridge : NetherOwnedPopupStageBridgeAdapter, 
             _codeReplacementPopupWait.Clear();
         }
 
-        // Packaged-game ISIL: b__12_0 invokes controller._onCancel; b__12_2 invokes
-        // controller._onConfirm(selectedId).  Detail selection above must therefore be
-        // followed by b__12_2, never the visually adjacent cancel callback.
-        NetherNativeActionResult confirm = TryInvokeVersionedGeneratedCallback(
-            registration.Value.Controller,
-            NetherCodePopupNativeBinding.ConfirmCallbackBinding(CodeSelectPopupControllerTypeName),
-            new object?[] { null, registration.Value.Controller },
-            "select-code-offer"
-        );
-        if (confirm.Kind != NetherNativeActionResultKind.Started)
+        // Start the exact full native continuation and retain its returned UniTask directly.
+        // Reflection-invoking b__12_2 here is unsafe: the callback synchronously enters this
+        // task through a Harmony DMD and nests IL2CPP runtime invokes on the same native stack.
+        Type? utilityType = ResolveLoadedType(NetherUtilityTypeName);
+        if (utilityType == null)
         {
             lock (_gate)
                 ClearCodeSelectionFlow();
+            return NetherNativeActionResult.BindingUnavailable(
+                "binding-unavailable:code-confirm:missing-nether-utility"
+            );
         }
-        return confirm;
+        NetherAutoClimbController.LogDiagnostic(
+            "native-code-confirm",
+            new("outcome", "direct-task-invoke-start"),
+            new("codeId", action.CodeId.ToString(CultureInfo.InvariantCulture)),
+            new("replaceCodeId", action.ReplaceCodeId.ToString(CultureInfo.InvariantCulture)),
+            new("controllerType", registration.Value.Controller.GetType().FullName ?? "unknown"),
+            new("method", NetherCodePopupNativeBinding.ConfirmTask)
+        );
+        if (!NetherCodeConfirmTaskInvoker.TryInvoke(
+                registration.Value.Controller,
+                utilityType,
+                action.CodeId,
+                NetherCodePopupNativeBinding.ConfirmTaskBinding(CodeSelectPopupControllerTypeName),
+                out object? confirmationTask,
+                out string confirmationError
+            ))
+        {
+            lock (_gate)
+                ClearCodeSelectionFlow();
+            NetherAutoClimbController.LogDiagnostic(
+                "native-code-confirm",
+                new("outcome", "direct-task-invoke-failed"),
+                new("codeId", action.CodeId.ToString(CultureInfo.InvariantCulture)),
+                new("detail", confirmationError)
+            );
+            return NetherNativeActionResult.BindingUnavailable(confirmationError);
+        }
+
+        lock (_gate)
+        {
+            _codeSelectionTask = confirmationTask;
+            _codeSelectionTaskWait.ObserveRegistration();
+            if (!_codeSelectionFlow.ObserveConfirmationTask())
+            {
+                ClearCodeSelectionFlow();
+                return NetherNativeActionResult.BindingUnavailable(
+                    "invalid-native-code-confirmation-sequence"
+                );
+            }
+        }
+        NetherAutoClimbController.LogDiagnostic(
+            "native-code-confirm",
+            new("outcome", "direct-task-started"),
+            new("codeId", action.CodeId.ToString(CultureInfo.InvariantCulture)),
+            new("replaceCodeId", action.ReplaceCodeId.ToString(CultureInfo.InvariantCulture)),
+            new("taskType", confirmationTask!.GetType().FullName ?? confirmationTask.GetType().Name)
+        );
+        return NetherNativeActionResult.Started("native-code-confirmation-task-started");
     }
 
     private NetherNativeActionResult PollCodeSelectionFlow()

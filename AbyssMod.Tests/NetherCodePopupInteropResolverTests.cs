@@ -166,6 +166,25 @@ public class NetherCodePopupInteropResolverTests
             "Method_Internal_Static_UniTask_AbyssCodeSelectPopupController_CancellationToken_0",
             cancelTask!.Name
         );
+        Assert.True(
+            NetherCodeConfirmTaskInvoker.TryResolve(
+                controller,
+                utility,
+                NetherCodePopupNativeBinding.ConfirmTaskBinding(controller.FullName!),
+                out string invocationError,
+                out MethodInfo? invocationTask,
+                out MemberInfo? partyMember,
+                out MemberInfo? cancellationTokenMember
+            ),
+            invocationError
+        );
+        Assert.Same(confirmTask, invocationTask);
+        PropertyInfo partyProperty = Assert.IsAssignableFrom<PropertyInfo>(partyMember);
+        Assert.Equal("_partyModel", partyProperty.Name);
+        Assert.Equal("Project.Nether.NetherPartyModel", partyProperty.PropertyType.FullName);
+        PropertyInfo tokenProperty = Assert.IsAssignableFrom<PropertyInfo>(cancellationTokenMember);
+        Assert.Equal("_cancellationToken", tokenProperty.Name);
+        Assert.Equal("Il2CppSystem.Threading.CancellationToken", tokenProperty.PropertyType.FullName);
         Assert.DoesNotContain(confirm.CustomAttributes, attribute =>
             string.Equals(attribute.AttributeType.Name, "ObfuscatedNameAttribute", StringComparison.Ordinal)
         );
