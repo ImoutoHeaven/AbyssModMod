@@ -33,10 +33,14 @@ internal sealed class NetherCheckpointPolicy
             throw new ArgumentNullException(nameof(settings));
         if (settings.MaxDepth < 1)
             return Pause(NetherPauseReason.InvalidConfiguration, "invalid-max-depth");
-        if (snapshot.MaxFloorLevel < 1 || snapshot.MasterMaxFloorLevel < 1 || snapshot.FloorLevel < 0)
-            return Pause(NetherPauseReason.UnknownMasterData, "invalid-server-or-master-depth");
+        if (snapshot.MaxFloorLevel < 0 || snapshot.MasterMaxFloorLevel < 1 || snapshot.FloorLevel < 0)
+            return Pause(NetherPauseReason.UnknownMasterData, "invalid-floor-record-or-master-depth");
 
-        int target = Math.Min(settings.MaxDepth, Math.Min(snapshot.MaxFloorLevel, snapshot.MasterMaxFloorLevel));
+        // NetherEntity.max_floor_level is the account/session reached-floor record.  It can
+        // legitimately equal the current floor (or be zero for a fresh account), so treating
+        // it as a climb cap makes automation stop as soon as it reaches the previous record.
+        // MNetherMaps.max_floor_num is the authoritative map cap; cfg may only lower it.
+        int target = Math.Min(settings.MaxDepth, snapshot.MasterMaxFloorLevel);
         if (snapshot.Status == NetherSessionStatus.Clear)
             return new NetherCheckpointDecision { Kind = NetherCheckpointDecisionKind.AwaitResult, EffectiveMaxDepth = target };
         if (snapshot.Status == NetherSessionStatus.Lose)
@@ -71,7 +75,12 @@ internal sealed class NetherCheckpointPolicy
                 Kind = NetherCheckpointDecisionKind.PauseAtNonCheckpointTarget,
                 EffectiveMaxDepth = target,
                 PauseReason = NetherPauseReason.TargetReachedOutsideCheckpoint,
-                Detail = "target-reached-outside-sleep",
+                Detail = "target-reached-outside-sleep"
+                    + ":current=" + snapshot.FloorLevel
+                    + ":effective=" + target
+                    + ":configured=" + settings.MaxDepth
+                    + ":serverRecord=" + snapshot.MaxFloorLevel
+                    + ":master=" + snapshot.MasterMaxFloorLevel,
             };
         }
 

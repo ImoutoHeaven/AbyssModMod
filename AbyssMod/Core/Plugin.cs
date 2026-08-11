@@ -47,7 +47,7 @@ public class Plugin : BasePlugin
         NetherAutoClimbController.LogDiagnostic(
             "build",
             new("version", MyPluginInfo.PLUGIN_VERSION),
-            new("profile", "autonether-unique-task-signature-v25")
+            new("profile", "autonether-session-depth-cap-v27")
         );
 
         AddComponent<ToastUI>();

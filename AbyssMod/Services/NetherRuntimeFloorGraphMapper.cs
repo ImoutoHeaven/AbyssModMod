@@ -25,8 +25,9 @@ internal sealed record NetherRuntimeFloorRaw(
 
 /// <summary>
 /// Projects reusable master IDs into unique runtime nodes and resolves native previous-master
-/// links only against the immediately preceding level, matching NetherMapModel's own graph
-/// construction.
+/// links against the immediately preceding runtime level. Master relations can name alternate
+/// predecessors omitted from this session's map subset, so the resulting edges are the same
+/// intersection that NetherMapModel builds from the floor models actually present.
 /// </summary>
 internal static class NetherRuntimeFloorGraphMapper
 {
@@ -91,11 +92,10 @@ internal static class NetherRuntimeFloorGraphMapper
                     .ToArray();
                 if (matches.Length == 0)
                 {
-                    error = "missing-prev-master-node:"
-                        + identities[raw].ToString(CultureInfo.InvariantCulture)
-                        + ":"
-                        + previousMasterId.ToString(CultureInfo.InvariantCulture);
-                    return false;
+                    // The master relation lists every possible predecessor. The server can omit
+                    // alternate branches from this runtime map; native NetherMapModel simply has
+                    // no edge for those absent models and continues with the remaining matches.
+                    continue;
                 }
                 previousNodeIds.AddRange(matches);
             }

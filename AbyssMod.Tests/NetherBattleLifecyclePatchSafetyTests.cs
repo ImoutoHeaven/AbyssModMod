@@ -91,7 +91,7 @@ public sealed class NetherBattleLifecyclePatchSafetyTests
         );
         Assert.DoesNotContain("BattlePatchBindings", bridge);
         Assert.DoesNotContain("GetBattleTaskPatchTarget", bridge);
-        Assert.Contains("autonether-unique-task-signature-v25", plugin);
+        Assert.Contains("autonether-session-depth-cap-v27", plugin);
     }
 
     private static string FindRepositoryRoot()

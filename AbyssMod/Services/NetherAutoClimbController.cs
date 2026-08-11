@@ -1439,6 +1439,18 @@ internal static class NetherAutoClimbController
         }
 
         NetherCheckpointDecision checkpoint = CheckpointPolicy.Decide(snapshot, settings);
+        Audit(
+            NetherDetailedAuditKind.Checkpoint,
+            "checkpoint-policy:" + snapshot.Fingerprint + ":" + settings.MaxDepth,
+            new NetherDetailedAuditField("status", snapshot.Status.ToString()),
+            new NetherDetailedAuditField("currentFloor", snapshot.FloorLevel.ToString()),
+            new NetherDetailedAuditField("configuredMaxDepth", settings.MaxDepth.ToString()),
+            new NetherDetailedAuditField("serverReachedFloor", snapshot.MaxFloorLevel.ToString()),
+            new NetherDetailedAuditField("masterMaxDepth", snapshot.MasterMaxFloorLevel.ToString()),
+            new NetherDetailedAuditField("effectiveMaxDepth", checkpoint.EffectiveMaxDepth.ToString()),
+            new NetherDetailedAuditField("decision", checkpoint.Kind.ToString()),
+            new NetherDetailedAuditField("detail", checkpoint.Detail)
+        );
         switch (checkpoint.Kind)
         {
             case NetherCheckpointDecisionKind.Pause:
@@ -2515,6 +2527,8 @@ internal static class NetherAutoClimbController
             new("currentNodeId", snapshot.CurrentNodeId.ToString()),
             new("floorLevel", snapshot.FloorLevel.ToString()),
             new("apiFloorIndex", snapshot.FloorIndex.ToString()),
+            new("serverReachedFloor", snapshot.MaxFloorLevel.ToString()),
+            new("masterMaxDepth", snapshot.MasterMaxFloorLevel.ToString()),
             new("nodeCount", floors.Count.ToString()),
             new("masterIdCount", floors.Select(floor => floor.FloorId).Distinct().Count().ToString()),
             new("reusedMasterIds", string.IsNullOrEmpty(reusedMasterIds) ? "none" : reusedMasterIds),

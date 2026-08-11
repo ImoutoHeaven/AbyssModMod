@@ -35,6 +35,29 @@ public sealed class NetherRuntimeFloorGraphMapperTests
     }
 
     [Fact]
+    public void Missing_alternative_previous_master_id_is_ignored_while_present_match_is_linked()
+    {
+        NetherRuntimeFloorRaw[] raw =
+        {
+            Floor(masterId: 87, level: 19, uiIndex: 0, apiIndex: 0),
+            Floor(
+                masterId: 90,
+                level: 20,
+                uiIndex: 1,
+                apiIndex: 1,
+                previousMasterIds: new long[] { 88, 87 }
+            ),
+        };
+
+        bool mapped = NetherRuntimeFloorGraphMapper.TryMap(raw, out IReadOnlyList<NetherFloorNode> nodes, out string error);
+
+        Assert.True(mapped, error);
+        NetherFloorNode previous = Assert.Single(nodes, node => node.FloorId == 87);
+        NetherFloorNode current = Assert.Single(nodes, node => node.FloorId == 90);
+        Assert.Equal(new long[] { previous.NodeId }, current.PreviousFloorIds);
+    }
+
+    [Fact]
     public void Duplicate_server_coordinate_is_rejected_even_when_master_ids_differ()
     {
         NetherRuntimeFloorRaw[] raw =

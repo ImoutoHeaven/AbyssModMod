@@ -6,9 +6,9 @@ namespace AbyssMod.Tests;
 public class NetherCheckpointPolicyTests
 {
     [Fact]
-    public void Effective_max_depth_is_minimum_of_config_server_and_master()
+    public void Effective_max_depth_is_minimum_of_config_and_master_cap()
     {
-        NetherCheckpointDecision decision = Decide(Snapshot(NetherSessionStatus.Play, floor: 10, max: 120, masterMax: 110), Settings(maxDepth: 130));
+        NetherCheckpointDecision decision = Decide(Snapshot(NetherSessionStatus.Play, floor: 10, max: 20, masterMax: 110), Settings(maxDepth: 130));
 
         Assert.Equal(110, decision.EffectiveMaxDepth);
     }
@@ -18,6 +18,19 @@ public class NetherCheckpointPolicyTests
     {
         NetherCheckpointDecision decision = Decide(
             Snapshot(NetherSessionStatus.Play, floor: 0, max: 130, masterMax: 130),
+            Settings(maxDepth: 130)
+        );
+
+        Assert.Equal(NetherCheckpointDecisionKind.None, decision.Kind);
+        Assert.Equal(NetherPauseReason.None, decision.PauseReason);
+        Assert.Equal(130, decision.EffectiveMaxDepth);
+    }
+
+    [Fact]
+    public void Reached_floor_record_does_not_cap_the_configured_master_depth()
+    {
+        NetherCheckpointDecision decision = Decide(
+            Snapshot(NetherSessionStatus.Play, floor: 30, max: 30, masterMax: 130),
             Settings(maxDepth: 130)
         );
 
