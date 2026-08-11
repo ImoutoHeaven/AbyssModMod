@@ -249,4 +249,131 @@ public class BattleSessionAutoSLPolicyTests
         Assert.Equal(4f, BattleSessionAutoSLPolicy.ClampCooldown(4f));
     }
 
+    [Fact]
+    public void Empty_exact_config_preserves_the_legacy_normal_policy()
+    {
+        var report = new BattleDropProbeReport(
+            [new BattleDropItem(1, 80, 23010440, 1, 0, false)],
+            0
+        );
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            report,
+            BattleSessionAutoSLStopMode.IsRare,
+            BattleSessionDropRarity.Gold,
+            BattleSessionNormalContentTypeFilter.Any,
+            "  "
+        );
+
+        Assert.True(evaluation.ShouldRetry);
+        Assert.Equal(
+            "isRare, contentTypes=Any",
+            BattleSessionAutoSLPolicy.DescribeNormalStopCondition(
+                BattleSessionAutoSLStopMode.IsRare,
+                BattleSessionDropRarity.Gold,
+                BattleSessionNormalContentTypeFilter.Any,
+                ""
+            )
+        );
+    }
+
+    [Fact]
+    public void Exact_mode_matches_content_type_and_content_id_not_sid()
+    {
+        var report = new BattleDropProbeReport(
+            [
+                new BattleDropItem(23010440, 80, 999, 1, 5, true),
+                new BattleDropItem(2, 80, 23010440, 1, 0, false),
+            ],
+            1
+        );
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            report,
+            BattleSessionAutoSLStopMode.Rarity,
+            BattleSessionDropRarity.UniqueWeapon,
+            BattleSessionNormalContentTypeFilter.Weapon,
+            "Armor:23010440"
+        );
+
+        BattleDropItem matched = Assert.Single(evaluation.Targets);
+        Assert.Equal(2, matched.Sid);
+        Assert.False(evaluation.ShouldRetry);
+    }
+
+    [Fact]
+    public void Exact_mode_does_not_stop_for_a_different_drop_that_matches_legacy_filters()
+    {
+        var report = new BattleDropProbeReport(
+            [new BattleDropItem(1, 80, 999, 1, 5, true)],
+            1
+        );
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            report,
+            BattleSessionAutoSLStopMode.IsRareOrRarity,
+            BattleSessionDropRarity.Red,
+            BattleSessionNormalContentTypeFilter.Armor,
+            "Armor:23010440"
+        );
+
+        Assert.True(evaluation.ShouldRetry);
+        Assert.Empty(evaluation.Targets);
+    }
+
+    [Fact]
+    public void Multiple_exact_targets_are_or_alternatives()
+    {
+        var report = new BattleDropProbeReport(
+            [new BattleDropItem(9, 90, 456, 1, 0, false)],
+            0
+        );
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            report,
+            BattleSessionAutoSLStopMode.IsRare,
+            BattleSessionDropRarity.Gold,
+            BattleSessionNormalContentTypeFilter.Any,
+            "Weapon:123, Armor:23010440, Accessory:456"
+        );
+
+        Assert.Equal(9, Assert.Single(evaluation.Targets).Sid);
+        Assert.Equal(
+            "exactTargets=Weapon:123,Armor:23010440,Accessory:456",
+            BattleSessionAutoSLPolicy.DescribeNormalStopCondition(
+                BattleSessionAutoSLStopMode.IsRare,
+                BattleSessionDropRarity.Gold,
+                BattleSessionNormalContentTypeFilter.Any,
+                "Weapon:123, Armor:23010440, Accessory:456"
+            )
+        );
+    }
+
+    [Fact]
+    public void Invalid_exact_config_fails_open_instead_of_retrying_forever()
+    {
+        var report = new BattleDropProbeReport([], 0);
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            report,
+            BattleSessionAutoSLStopMode.IsRare,
+            BattleSessionDropRarity.Gold,
+            BattleSessionNormalContentTypeFilter.Any,
+            "Armor:not-a-number"
+        );
+
+        Assert.False(evaluation.ShouldRetry);
+        Assert.Empty(evaluation.Targets);
+        Assert.StartsWith("invalid-normal-exact-target:", evaluation.Error);
+        Assert.StartsWith(
+            "exactTargets=invalid:",
+            BattleSessionAutoSLPolicy.DescribeNormalStopCondition(
+                BattleSessionAutoSLStopMode.IsRare,
+                BattleSessionDropRarity.Gold,
+                BattleSessionNormalContentTypeFilter.Any,
+                "Armor:not-a-number"
+            )
+        );
+    }
+
 }

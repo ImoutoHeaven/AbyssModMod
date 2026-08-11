@@ -20,6 +20,11 @@ public static class PatchManager
         Harmony.CreateAndPatchAll(typeof(ItemPatch));
         Harmony.CreateAndPatchAll(typeof(BattleSessionAutoSLPatch));
         Harmony.CreateAndPatchAll(typeof(BattleSettlementPayloadProbePatch));
+        Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback0Patch));
+        Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback1Patch));
+        Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback2Patch));
+        Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback3Patch));
+        Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentDropPopupPatch));
         Harmony.CreateAndPatchAll(typeof(GeneralTextPatch));
         Harmony.CreateAndPatchAll(typeof(MasterDataTranslationPatch));
 #if DEBUG

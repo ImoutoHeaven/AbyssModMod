@@ -96,6 +96,36 @@ public static class BattleSessionAutoSLPolicy
         return new BattleSessionDropEvaluation(targets);
     }
 
+    public static BattleSessionDropEvaluation EvaluateNormal(
+        BattleDropProbeReport report,
+        BattleSessionAutoSLStopMode stopMode,
+        BattleSessionDropRarity minimumRarity,
+        BattleSessionNormalContentTypeFilter contentTypes,
+        string normalExactTargets
+    )
+    {
+        NormalExactDropTargetParseResult exact = NormalExactDropTargetParser.Parse(
+            normalExactTargets
+        );
+        if (exact.Mode == NormalExactDropTargetMode.Invalid)
+            return Error(exact.Error);
+        if (exact.Mode == NormalExactDropTargetMode.Disabled)
+            return Evaluate(report, stopMode, minimumRarity, contentTypes);
+        if (report == null)
+            return Error("missing-report");
+        if (report.Error.Length != 0)
+            return Error(report.Error);
+
+        var configured = new HashSet<NormalExactDropTarget>(exact.Targets);
+        var targets = new List<BattleDropItem>();
+        foreach (BattleDropItem item in report.Items)
+        {
+            if (configured.Contains(new NormalExactDropTarget(item.ContentType, item.ContentId)))
+                targets.Add(item);
+        }
+        return new BattleSessionDropEvaluation(targets);
+    }
+
     public static bool Matches(
         BattleDropItem item,
         BattleSessionAutoSLStopMode stopMode,
@@ -137,6 +167,24 @@ public static class BattleSessionAutoSLPolicy
         BattleSessionNormalContentTypeFilter contentTypes
     ) => DescribeStopCondition(stopMode, minimumRarity)
         + $", contentTypes={DescribeNormalContentTypes(contentTypes)}";
+
+    public static string DescribeNormalStopCondition(
+        BattleSessionAutoSLStopMode stopMode,
+        BattleSessionDropRarity minimumRarity,
+        BattleSessionNormalContentTypeFilter contentTypes,
+        string normalExactTargets
+    )
+    {
+        NormalExactDropTargetParseResult exact = NormalExactDropTargetParser.Parse(
+            normalExactTargets
+        );
+        return exact.Mode switch
+        {
+            NormalExactDropTargetMode.Enabled => $"exactTargets={exact.Description}",
+            NormalExactDropTargetMode.Invalid => $"exactTargets={exact.Description}",
+            _ => DescribeNormalStopCondition(stopMode, minimumRarity, contentTypes),
+        };
+    }
 
     public static string DescribeNormalContentTypes(
         BattleSessionNormalContentTypeFilter contentTypes

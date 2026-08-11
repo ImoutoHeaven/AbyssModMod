@@ -3,6 +3,7 @@ using AbyssMod.Patches;
 using AbyssMod.Services;
 using BepInEx.Configuration;
 using UnityEngine;
+using Utility.Toast;
 
 namespace AbyssMod;
 
@@ -24,6 +25,27 @@ public class Hotkey : MonoBehaviour
     {
         ConfigAutoReload.Update(Time.unscaledTime);
         BattleSessionAutoSL.Update();
+
+        if (Input.GetKeyDown(KeyCode.F6) && CanTrigger(KeyCode.F6))
+        {
+            if (
+                PreviewEquipmentTargetInspector.Shared.TryGetActive(
+                    out PreviewEquipmentTargetSnapshot snapshot
+                )
+            )
+            {
+                Toast.Info("装备目标", snapshot.ToastBody);
+                Logger.Info($"[F6][EquipmentTarget] {snapshot.LogFields}");
+            }
+            else
+            {
+                const string hint = "请先在关卡掉落预览中打开武器、防具或饰品详情";
+                Toast.Info("装备目标", hint);
+                Logger.Info(
+                    "[F6][EquipmentTarget][Diag] event=hotkey outcome=no-active-supported-quest-preview"
+                );
+            }
+        }
 
         if (Input.GetKeyDown(KeyCode.F8) && CanTrigger(KeyCode.F8))
         {
@@ -54,7 +76,8 @@ public class Hotkey : MonoBehaviour
                         + BattleSessionAutoSLPolicy.DescribeNormalStopCondition(
                             Config.BattleSessionAutoSLNormalStopMode.Value,
                             Config.BattleSessionAutoSLNormalMinimumRarity.Value,
-                            Config.BattleSessionAutoSLNormalContentTypes.Value
+                            Config.BattleSessionAutoSLNormalContentTypes.Value,
+                            Config.BattleSessionAutoSLNormalExactTargets.Value
                         )
                         + ", netherBattle=" + Config.BattleSessionAutoSLNetherBattleStrategy.Value
                         + ", netherMiniBoss=" + Config.BattleSessionAutoSLNetherMiniBossStrategy.Value

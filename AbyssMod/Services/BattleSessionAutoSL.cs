@@ -238,11 +238,13 @@ public static class BattleSessionAutoSL
                 Config.BattleSessionAutoSLNormalMinimumRarity.Value;
             BattleSessionNormalContentTypeFilter contentTypes =
                 Config.BattleSessionAutoSLNormalContentTypes.Value;
-            BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.Evaluate(
+            string normalExactTargets = Config.BattleSessionAutoSLNormalExactTargets.Value;
+            BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
                 report,
                 stopMode,
                 minimumRarity,
-                contentTypes
+                contentTypes,
+                normalExactTargets
             );
             LogAttempt(
                 "exploration",
@@ -253,7 +255,8 @@ public static class BattleSessionAutoSL
                 evaluation,
                 stopMode,
                 minimumRarity,
-                contentTypes
+                contentTypes,
+                normalExactTargets
             );
             if (State.ObserveDecision(evaluation.ShouldRetry) == BattleSessionAutoSLTransition.Retry)
             {
@@ -320,11 +323,13 @@ public static class BattleSessionAutoSL
                 Config.BattleSessionAutoSLNormalMinimumRarity.Value;
             BattleSessionNormalContentTypeFilter contentTypes =
                 Config.BattleSessionAutoSLNormalContentTypes.Value;
-            BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.Evaluate(
+            string normalExactTargets = Config.BattleSessionAutoSLNormalExactTargets.Value;
+            BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
                 report,
                 stopMode,
                 minimumRarity,
-                contentTypes
+                contentTypes,
+                normalExactTargets
             );
             LogAttempt(
                 "disaster",
@@ -335,7 +340,8 @@ public static class BattleSessionAutoSL
                 evaluation,
                 stopMode,
                 minimumRarity,
-                contentTypes
+                contentTypes,
+                normalExactTargets
             );
             if (State.ObserveDecision(evaluation.ShouldRetry) == BattleSessionAutoSLTransition.Retry)
             {
@@ -593,7 +599,8 @@ public static class BattleSessionAutoSL
         BattleSessionDropEvaluation evaluation,
         BattleSessionAutoSLStopMode stopMode,
         BattleSessionDropRarity minimumRarity,
-        BattleSessionNormalContentTypeFilter contentTypes
+        BattleSessionNormalContentTypeFilter contentTypes,
+        string normalExactTargets
     )
     {
         string decision = evaluation.ShouldRetry
@@ -604,7 +611,12 @@ public static class BattleSessionAutoSL
         string condition = BattleSessionAutoSLPolicy.DescribeNormalStopCondition(
             stopMode,
             minimumRarity,
-            contentTypes
+            contentTypes,
+            normalExactTargets
+        );
+        string matchedExactTargets = FormatMatchedExactTargets(
+            evaluation,
+            normalExactTargets
         );
 
         Logger.Info(
@@ -612,8 +624,32 @@ public static class BattleSessionAutoSL
                 + $"retry={retryCount}, questId={response?.quest_id ?? 0}, "
                 + $"drops={report.DropCount}, rare={report.RareDropCount}, "
                 + $"targets={evaluation.Targets.Count}, decision={decision}, "
-                + $"condition={condition}, error={evaluation.Error}"
+                + $"condition={condition}, matchedExactTargets={matchedExactTargets}, "
+                + $"error={evaluation.Error}"
         );
         Logger.Info($"[F11][BattleAutoSL] items={report.FormatItemList()}");
+    }
+
+    private static string FormatMatchedExactTargets(
+        BattleSessionDropEvaluation evaluation,
+        string normalExactTargets
+    )
+    {
+        NormalExactDropTargetParseResult exact = NormalExactDropTargetParser.Parse(
+            normalExactTargets
+        );
+        if (exact.Mode != NormalExactDropTargetMode.Enabled)
+            return "none";
+
+        var tokens = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (BattleDropItem item in evaluation.Targets)
+        {
+            var target = new NormalExactDropTarget(item.ContentType, item.ContentId);
+            string token = target.Token;
+            if (seen.Add(token))
+                tokens.Add(token);
+        }
+        return tokens.Count == 0 ? "none" : string.Join("|", tokens);
     }
 }
