@@ -276,13 +276,19 @@ public static class QuestPreviewEquipmentDropPopupPatch
         long groupNo = model.ThumbnailModel?.GroupNo ?? 0;
         string visibleName = popup._nameText?.text;
         string name = string.IsNullOrWhiteSpace(visibleName) ? model.Name : visibleName;
+        NormalEquipmentMasterIndex familyMaster = null;
+        string familyError = string.Empty;
+        if (!NormalEquipmentMasterCatalog.TryGet(out familyMaster, out familyError))
+            familyMaster = null;
         return new PreviewEquipmentTargetSnapshot(
             contentType,
             contentId,
             name,
             groupNo,
             model.Rank,
-            rarities
+            rarities,
+            familyMaster,
+            familyError
         );
     }
 

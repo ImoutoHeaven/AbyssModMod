@@ -239,7 +239,7 @@ public static class BattleSessionAutoSL
             BattleSessionNormalContentTypeFilter contentTypes =
                 Config.BattleSessionAutoSLNormalContentTypes.Value;
             string normalExactTargets = Config.BattleSessionAutoSLNormalExactTargets.Value;
-            BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            BattleSessionDropEvaluation evaluation = EvaluateNormalDrops(
                 report,
                 stopMode,
                 minimumRarity,
@@ -324,7 +324,7 @@ public static class BattleSessionAutoSL
             BattleSessionNormalContentTypeFilter contentTypes =
                 Config.BattleSessionAutoSLNormalContentTypes.Value;
             string normalExactTargets = Config.BattleSessionAutoSLNormalExactTargets.Value;
-            BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            BattleSessionDropEvaluation evaluation = EvaluateNormalDrops(
                 report,
                 stopMode,
                 minimumRarity,
@@ -614,42 +614,60 @@ public static class BattleSessionAutoSL
             contentTypes,
             normalExactTargets
         );
-        string matchedExactTargets = FormatMatchedExactTargets(
-            evaluation,
-            normalExactTargets
-        );
+        string matchedTargets = evaluation.MatchedTargetDetails.Count == 0
+            ? "none"
+            : string.Join("|", evaluation.MatchedTargetDetails);
 
         Logger.Info(
             $"[F11][BattleAutoSL] mode={mode}, source={source}, attempt={retryCount + 1}, "
                 + $"retry={retryCount}, questId={response?.quest_id ?? 0}, "
                 + $"drops={report.DropCount}, rare={report.RareDropCount}, "
                 + $"targets={evaluation.Targets.Count}, decision={decision}, "
-                + $"condition={condition}, matchedExactTargets={matchedExactTargets}, "
+                + $"condition={condition}, matchedTargets={matchedTargets}, "
                 + $"error={evaluation.Error}"
         );
         Logger.Info($"[F11][BattleAutoSL] items={report.FormatItemList()}");
     }
 
-    private static string FormatMatchedExactTargets(
-        BattleSessionDropEvaluation evaluation,
+    private static BattleSessionDropEvaluation EvaluateNormalDrops(
+        BattleDropProbeReport report,
+        BattleSessionAutoSLStopMode stopMode,
+        BattleSessionDropRarity minimumRarity,
+        BattleSessionNormalContentTypeFilter contentTypes,
         string normalExactTargets
     )
     {
-        NormalExactDropTargetParseResult exact = NormalExactDropTargetParser.Parse(
+        NormalExactDropTargetParseResult parsed = NormalExactDropTargetParser.Parse(
             normalExactTargets
         );
-        if (exact.Mode != NormalExactDropTargetMode.Enabled)
-            return "none";
-
-        var tokens = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (BattleDropItem item in evaluation.Targets)
+        bool requiresFamilyMaster = false;
+        foreach (NormalExactDropTarget target in parsed.Targets)
         {
-            var target = new NormalExactDropTarget(item.ContentType, item.ContentId);
-            string token = target.Token;
-            if (seen.Add(token))
-                tokens.Add(token);
+            if (target.MatchMode == NormalDropTargetMatchMode.FamilyAtOrAbove)
+            {
+                requiresFamilyMaster = true;
+                break;
+            }
         }
-        return tokens.Count == 0 ? "none" : string.Join("|", tokens);
+
+        NormalEquipmentMasterIndex master = null;
+        if (requiresFamilyMaster
+            && !NormalEquipmentMasterCatalog.TryGet(out master, out string masterError))
+        {
+            return new BattleSessionDropEvaluation(
+                Array.Empty<BattleDropItem>(),
+                $"normal-family-master-unavailable:{masterError}"
+            );
+        }
+
+        return BattleSessionAutoSLPolicy.EvaluateNormal(
+            report,
+            stopMode,
+            minimumRarity,
+            contentTypes,
+            normalExactTargets,
+            master
+        );
     }
+
 }

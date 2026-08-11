@@ -89,14 +89,31 @@ public sealed class PreviewEquipmentTargetSnapshot
     public long GroupNo { get; }
     public int Rank { get; }
     public IReadOnlyList<int> Rarities { get; }
+    public IReadOnlyList<NormalEquipmentMasterInfo> FamilyMembers { get; }
+    public long FamilyGroupNo { get; }
+    public int FamilyRarity { get; }
+    public int MinimumRank { get; }
+    public string FamilyError { get; }
     public NormalExactDropTarget Target => new(ContentType, ContentId);
     public string Token => Target.Token;
-    public string ToastBody => $"{Token}\n{Name} | Rank {Rank}";
+    public string RecommendedToken => FamilyMembers.Count == 0
+        ? Token
+        : new NormalExactDropTarget(
+            ContentType,
+            ContentId,
+            NormalDropTargetMatchMode.FamilyAtOrAbove
+        ).Token;
+    public string ToastBody => FamilyMembers.Count != 0
+        ? $"{RecommendedToken}\n{Name} | Rank {MinimumRank}+\n接受: {FormatToastMembers()}"
+        : FamilyError.Length != 0
+            ? $"{Token}\n{Name} | Rank {Rank}\n族系不可用: {FamilyError}"
+            : $"{Token}\n{Name} | Rank {Rank}";
     public string LogFields =>
         $"token={Token} contentType={ContentType} contentId={ContentId.ToString(CultureInfo.InvariantCulture)} "
         + $"groupNo={GroupNo.ToString(CultureInfo.InvariantCulture)} rank={Rank} "
         + $"rarities={(Rarities.Count == 0 ? "none" : string.Join("|", Rarities))} "
-        + $"name={SanitizeLogValue(Name)}";
+        + $"name={SanitizeLogValue(Name)}"
+        + FormatFamilyLogFields();
 
     public PreviewEquipmentTargetSnapshot(
         int contentType,
@@ -104,7 +121,9 @@ public sealed class PreviewEquipmentTargetSnapshot
         string name,
         long groupNo,
         int rank,
-        IEnumerable<int> rarities
+        IEnumerable<int> rarities,
+        NormalEquipmentMasterIndex? familyMaster = null,
+        string familyError = ""
     )
     {
         ContentType = contentType;
@@ -113,6 +132,56 @@ public sealed class PreviewEquipmentTargetSnapshot
         GroupNo = groupNo;
         Rank = rank;
         Rarities = (rarities ?? Array.Empty<int>()).ToArray();
+        FamilyMembers = Array.Empty<NormalEquipmentMasterInfo>();
+        FamilyError = familyError ?? string.Empty;
+
+        if (FamilyError.Length != 0 || familyMaster == null)
+            return;
+        if (!familyMaster.TryGet(contentType, contentId, out NormalEquipmentMasterInfo anchor))
+        {
+            FamilyError = $"missing-preview-equipment-master:{contentType}:{contentId}";
+            return;
+        }
+        if (anchor.GroupNo != groupNo || anchor.Rank != rank)
+        {
+            FamilyError = "preview-family-master-mismatch";
+            return;
+        }
+
+        IReadOnlyList<NormalEquipmentMasterInfo> members =
+            familyMaster.FindFamilyAtOrAbove(anchor);
+        if (members.Count == 0)
+        {
+            FamilyError = "empty-preview-equipment-family";
+            return;
+        }
+
+        FamilyGroupNo = anchor.GroupNo;
+        FamilyRarity = anchor.Rarity;
+        MinimumRank = anchor.Rank;
+        FamilyMembers = members;
+    }
+
+    private string FormatToastMembers() => string.Join(
+        ", ",
+        FamilyMembers.Select(member =>
+            $"R{member.Rank}={member.ContentId.ToString(CultureInfo.InvariantCulture)}")
+    );
+
+    private string FormatFamilyLogFields()
+    {
+        if (FamilyMembers.Count == 0)
+            return FamilyError.Length == 0
+                ? string.Empty
+                : $" familyError={SanitizeLogValue(FamilyError)}";
+
+        string members = string.Join(
+            "|",
+            FamilyMembers.Select(member =>
+                $"R{member.Rank}:{member.ContentId.ToString(CultureInfo.InvariantCulture)}")
+        );
+        return $" familyToken={RecommendedToken} familyGroupNo={FamilyGroupNo} "
+            + $"familyRarity={FamilyRarity} minimumRank={MinimumRank} members={members}";
     }
 
     private static string SanitizeLogValue(string value) =>

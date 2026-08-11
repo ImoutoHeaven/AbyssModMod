@@ -32,6 +32,7 @@
     <Compile Include="..\AbyssMod\Services\NetherFloorStrategy.cs" Link="NetherFloorStrategy.cs" />
     <Compile Include="..\AbyssMod\Services\BattleSessionAutoSLPolicy.cs" Link="BattleSessionAutoSLPolicy.cs" />
     <Compile Include="..\AbyssMod\Services\NormalExactDropTargets.cs" Link="NormalExactDropTargets.cs" />
+    <Compile Include="..\AbyssMod\Services\NormalEquipmentFamilies.cs" Link="NormalEquipmentFamilies.cs" />
     <Compile Include="..\AbyssMod\Services\PreviewEquipmentTargetInspector.cs" Link="PreviewEquipmentTargetInspector.cs" />
     <Compile Include="..\AbyssMod\Services\BattleSessionAutoSLStateMachine.cs" Link="BattleSessionAutoSLStateMachine.cs" />
     <Compile Include="..\AbyssMod\Services\ConfigAutoReloadState.cs" Link="ConfigAutoReloadState.cs" />

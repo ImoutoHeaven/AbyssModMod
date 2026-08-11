@@ -376,4 +376,146 @@ public class BattleSessionAutoSLPolicyTests
         );
     }
 
+    [Theory]
+    [InlineData(23010340, true)]
+    [InlineData(23010440, false)]
+    [InlineData(23010540, false)]
+    public void Family_target_accepts_the_preview_rank_or_better(
+        long contentId,
+        bool shouldRetry
+    )
+    {
+        NormalEquipmentMasterIndex index = ForestCloakIndex();
+        var report = new BattleDropProbeReport(
+            [new BattleDropItem(1, 80, contentId, 1, 4, true)],
+            1
+        );
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            report,
+            BattleSessionAutoSLStopMode.IsRare,
+            BattleSessionDropRarity.Gold,
+            BattleSessionNormalContentTypeFilter.Any,
+            "Armor:23010440+",
+            index
+        );
+
+        Assert.Equal(shouldRetry, evaluation.ShouldRetry);
+        Assert.Equal(shouldRetry ? 0 : 1, evaluation.Targets.Count);
+    }
+
+    [Fact]
+    public void Rank_five_family_match_reports_the_anchor_and_actual_member_metadata()
+    {
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            new BattleDropProbeReport(
+                [new BattleDropItem(7, 80, 23010540, 1, 4, true)],
+                1
+            ),
+            BattleSessionAutoSLStopMode.IsRare,
+            BattleSessionDropRarity.Gold,
+            BattleSessionNormalContentTypeFilter.Any,
+            "Armor:23010440+",
+            ForestCloakIndex()
+        );
+
+        Assert.Equal(
+            "Armor:23010440+=>Armor:23010540(group=3004,rank=5,rarity=4)",
+            Assert.Single(evaluation.MatchedTargetDetails)
+        );
+    }
+
+    [Fact]
+    public void Family_target_rejects_same_group_and_rank_with_another_master_rarity()
+    {
+        var index = new NormalEquipmentMasterIndex(
+            [
+                new(80, 21010430, 1001, 4, 3, "轻甲"),
+                new(80, 21010410, 1001, 4, 1, "轻甲"),
+            ]
+        );
+        var report = new BattleDropProbeReport(
+            [new BattleDropItem(1, 80, 21010410, 1, 1, false)],
+            0
+        );
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            report,
+            BattleSessionAutoSLStopMode.IsRareOrRarity,
+            BattleSessionDropRarity.NoEffect,
+            BattleSessionNormalContentTypeFilter.Any,
+            "Armor:21010430+",
+            index
+        );
+
+        Assert.True(evaluation.ShouldRetry);
+        Assert.Empty(evaluation.Targets);
+    }
+
+    [Fact]
+    public void Exact_and_family_targets_are_or_alternatives()
+    {
+        NormalEquipmentMasterIndex index = ForestCloakIndex();
+        var report = new BattleDropProbeReport(
+            [new BattleDropItem(9, 90, 456, 1, 0, false)],
+            0
+        );
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            report,
+            BattleSessionAutoSLStopMode.IsRare,
+            BattleSessionDropRarity.UniqueWeapon,
+            BattleSessionNormalContentTypeFilter.Weapon,
+            "Armor:23010440+,Accessory:456",
+            index
+        );
+
+        Assert.Equal(9, Assert.Single(evaluation.Targets).Sid);
+    }
+
+    [Fact]
+    public void Family_target_without_a_master_catalog_fails_open()
+    {
+        var report = new BattleDropProbeReport([], 0);
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            report,
+            BattleSessionAutoSLStopMode.IsRare,
+            BattleSessionDropRarity.Gold,
+            BattleSessionNormalContentTypeFilter.Any,
+            "Armor:23010440+"
+        );
+
+        Assert.False(evaluation.ShouldRetry);
+        Assert.Equal("normal-family-master-unavailable", evaluation.Error);
+    }
+
+    [Fact]
+    public void Missing_family_anchor_fails_open_with_the_configured_token()
+    {
+        var index = new NormalEquipmentMasterIndex(
+            [new NormalEquipmentMasterInfo(80, 999, 1, 4, 4, "Other")]
+        );
+
+        BattleSessionDropEvaluation evaluation = BattleSessionAutoSLPolicy.EvaluateNormal(
+            new BattleDropProbeReport([], 0),
+            BattleSessionAutoSLStopMode.IsRare,
+            BattleSessionDropRarity.Gold,
+            BattleSessionNormalContentTypeFilter.Any,
+            "Armor:23010440+",
+            index
+        );
+
+        Assert.False(evaluation.ShouldRetry);
+        Assert.Equal("missing-normal-family-anchor:Armor:23010440+", evaluation.Error);
+    }
+
+    private static NormalEquipmentMasterIndex ForestCloakIndex() => new(
+        [
+            new(80, 23010340, 3004, 3, 4, "森林披风"),
+            new(80, 23010440, 3004, 4, 4, "森林披风"),
+            new(80, 23010540, 3004, 5, 4, "森林披风"),
+        ]
+    );
+
 }

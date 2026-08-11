@@ -12,11 +12,25 @@ public enum NormalExactDropTargetMode
     Invalid = 2,
 }
 
-public readonly record struct NormalExactDropTarget(int ContentType, long ContentId)
+public enum NormalDropTargetMatchMode
+{
+    Exact = 0,
+    FamilyAtOrAbove = 1,
+}
+
+public readonly record struct NormalExactDropTarget(
+    int ContentType,
+    long ContentId,
+    NormalDropTargetMatchMode MatchMode = NormalDropTargetMatchMode.Exact
+)
 {
     public string Token => TryFormatTypeName(ContentType, out string typeName)
-        ? $"{typeName}:{ContentId.ToString(CultureInfo.InvariantCulture)}"
-        : $"Unknown({ContentType}):{ContentId.ToString(CultureInfo.InvariantCulture)}";
+        ? $"{typeName}:{ContentId.ToString(CultureInfo.InvariantCulture)}{Suffix}"
+        : $"Unknown({ContentType}):{ContentId.ToString(CultureInfo.InvariantCulture)}{Suffix}";
+
+    private string Suffix => MatchMode == NormalDropTargetMatchMode.FamilyAtOrAbove
+        ? "+"
+        : string.Empty;
 
     public static bool TryFormatTypeName(int contentType, out string typeName)
     {
@@ -79,11 +93,17 @@ public static class NormalExactDropTargetParser
             string idText = entry[(separator + 1)..].Trim();
             if (!TryParseContentType(typeText, out int contentType))
                 return Invalid(entry, $"unsupported-type:{typeText}");
+            NormalDropTargetMatchMode matchMode = NormalDropTargetMatchMode.Exact;
+            if (idText.EndsWith("+", StringComparison.Ordinal))
+            {
+                matchMode = NormalDropTargetMatchMode.FamilyAtOrAbove;
+                idText = idText[..^1];
+            }
             if (!long.TryParse(idText, NumberStyles.None, CultureInfo.InvariantCulture, out long id)
                 || id <= 0)
                 return Invalid(entry, $"invalid-id:{idText}");
 
-            var target = new NormalExactDropTarget(contentType, id);
+            var target = new NormalExactDropTarget(contentType, id, matchMode);
             if (seen.Add(target))
                 normalized.Add(target);
         }

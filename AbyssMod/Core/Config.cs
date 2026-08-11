@@ -212,12 +212,14 @@ namespace AbyssMod
                 "BattleSessionAutoSL.Targets",
                 "NormalExactTargets",
                 string.Empty,
-                "Normal/Disaster 精确掉落目标（默认空，空值保持旧 StopMode/Rarity/ContentTypes 行为）。\n"
-                    + "格式：Weapon:<MasterDataId>, Armor:<MasterDataId>, Accessory:<MasterDataId>；多个目标用英文逗号分隔，任意一个命中即停止。\n"
-                    + "非空时为严格 ExactOnly：只比较开战响应 drops 的 content_type + content_id，旧 rarity/is_rare/content-type 条件不会扩大或否决结果。\n"
-                    + "在支持的关卡掉落预览里点开装备详情并按 F6，可查看可直接复制到这里的目标 token。\n"
+                "Normal/Disaster 精确或族系掉落目标（默认空，空值保持旧 StopMode/Rarity/ContentTypes 行为）。\n"
+                    + "精确格式：Weapon:<MasterDataId>, Armor:<MasterDataId>, Accessory:<MasterDataId>。\n"
+                    + "在 ID 后加 + 表示同族且不低于预览 Rank，例如 Armor:23010440+ 会接受同 group_no、同 MasterData rarity、Rank>=4 的防具。\n"
+                    + "多个目标用英文逗号分隔，精确与 + 族系目标可混用，任意一个命中即停止。\n"
+                    + "非空时为严格 TargetOnly：旧 rarity/is_rare/content-type 条件不会扩大或否决结果。\n"
+                    + "在支持的关卡掉落预览里点开装备详情并按 F6，可查看推荐的 + token 以及当前 MasterData 解析出的同族 Rank/ID。\n"
                     + "这里填写的是武器/防具/饰品 MasterData ID，不是每次掉落的 sid，也不是已持有装备的 t_weapon_id/t_armor_id/t_accessory_id。\n"
-                    + "任意非法非空项会使整项配置 fail-open：放行当前响应并记录错误，避免无限重投。"
+                    + "任意非法项、族系锚点或实际装备无法从 MasterData 解析时会 fail-open：放行当前响应并记录错误，避免无限重投。"
             );
             BattleSessionAutoSLNetherBattleStrategy = Plugin.ConfigFile.Bind(
                 "BattleSessionAutoSL.Targets",

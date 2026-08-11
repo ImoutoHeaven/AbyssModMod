@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+
+#nullable enable
 
 namespace AbyssMod.Services;
 
@@ -34,6 +37,7 @@ public enum BattleSessionNormalContentTypeFilter
 public sealed class BattleSessionDropEvaluation
 {
     public IReadOnlyList<BattleDropItem> Targets { get; }
+    public IReadOnlyList<string> MatchedTargetDetails { get; }
     public string Error { get; }
     public bool ShouldRetry => Error.Length == 0 && Targets.Count == 0;
 
@@ -43,6 +47,18 @@ public sealed class BattleSessionDropEvaluation
     )
     {
         Targets = targets;
+        MatchedTargetDetails = Array.Empty<string>();
+        Error = error;
+    }
+
+    public BattleSessionDropEvaluation(
+        IReadOnlyList<BattleDropItem> targets,
+        IReadOnlyList<string> matchedTargetDetails,
+        string error = ""
+    )
+    {
+        Targets = targets;
+        MatchedTargetDetails = matchedTargetDetails;
         Error = error;
     }
 }
@@ -101,7 +117,8 @@ public static class BattleSessionAutoSLPolicy
         BattleSessionAutoSLStopMode stopMode,
         BattleSessionDropRarity minimumRarity,
         BattleSessionNormalContentTypeFilter contentTypes,
-        string normalExactTargets
+        string normalExactTargets,
+        NormalEquipmentMasterIndex? normalEquipmentMaster = null
     )
     {
         NormalExactDropTargetParseResult exact = NormalExactDropTargetParser.Parse(
@@ -116,14 +133,67 @@ public static class BattleSessionAutoSLPolicy
         if (report.Error.Length != 0)
             return Error(report.Error);
 
-        var configured = new HashSet<NormalExactDropTarget>(exact.Targets);
+        NormalExactDropTarget[] exactTargets = exact.Targets
+            .Where(target => target.MatchMode == NormalDropTargetMatchMode.Exact)
+            .ToArray();
+        NormalExactDropTarget[] familyTargets = exact.Targets
+            .Where(target => target.MatchMode == NormalDropTargetMatchMode.FamilyAtOrAbove)
+            .ToArray();
+        if (familyTargets.Length != 0 && normalEquipmentMaster == null)
+            return Error("normal-family-master-unavailable");
+
+        var configuredExact = new HashSet<NormalExactDropTarget>(exactTargets);
+        var familyAnchors = new List<(NormalExactDropTarget Target, NormalEquipmentMasterInfo Info)>();
+        foreach (NormalExactDropTarget target in familyTargets)
+        {
+            if (!normalEquipmentMaster!.TryGet(
+                    target.ContentType,
+                    target.ContentId,
+                    out NormalEquipmentMasterInfo anchor
+                ))
+                return Error($"missing-normal-family-anchor:{target.Token}");
+            familyAnchors.Add((target, anchor));
+        }
+
         var targets = new List<BattleDropItem>();
+        var matchedTargetDetails = new List<string>();
         foreach (BattleDropItem item in report.Items)
         {
-            if (configured.Contains(new NormalExactDropTarget(item.ContentType, item.ContentId)))
+            var actualTarget = new NormalExactDropTarget(item.ContentType, item.ContentId);
+            if (configuredExact.Contains(actualTarget))
+            {
                 targets.Add(item);
+                matchedTargetDetails.Add($"{actualTarget.Token}=>{actualTarget.Token}");
+                continue;
+            }
+
+            var applicableFamilies = familyAnchors
+                .Where(pair => pair.Target.ContentType == item.ContentType)
+                .ToArray();
+            if (applicableFamilies.Length == 0)
+                continue;
+            if (!normalEquipmentMaster!.TryGet(
+                    item.ContentType,
+                    item.ContentId,
+                    out NormalEquipmentMasterInfo candidate
+                ))
+            {
+                return Error(
+                    $"missing-normal-family-candidate:{item.ContentType}:{item.ContentId}"
+                );
+            }
+            var matchedFamily = applicableFamilies.FirstOrDefault(pair =>
+                normalEquipmentMaster!.IsSameFamilyAtOrAbove(pair.Info, candidate));
+            if (matchedFamily.Target.MatchMode == NormalDropTargetMatchMode.FamilyAtOrAbove)
+            {
+                targets.Add(item);
+                matchedTargetDetails.Add(
+                    $"{matchedFamily.Target.Token}=>{actualTarget.Token}"
+                        + $"(group={candidate.GroupNo},rank={candidate.Rank},rarity={candidate.Rarity})"
+                );
+            }
         }
-        return new BattleSessionDropEvaluation(targets);
+        return new BattleSessionDropEvaluation(targets, matchedTargetDetails);
     }
 
     public static bool Matches(

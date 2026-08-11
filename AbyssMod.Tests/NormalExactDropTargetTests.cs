@@ -86,6 +86,47 @@ public sealed class NormalExactDropTargetTests
     }
 
     [Fact]
+    public void Plus_suffix_parses_as_family_at_or_above_and_round_trips_canonically()
+    {
+        NormalExactDropTargetParseResult result = NormalExactDropTargetParser.Parse(
+            " armor : 23010440+ "
+        );
+
+        NormalExactDropTarget target = Assert.Single(result.Targets);
+        Assert.Equal(NormalDropTargetMatchMode.FamilyAtOrAbove, target.MatchMode);
+        Assert.Equal(BattleSessionAutoSLPolicy.ArmorContentType, target.ContentType);
+        Assert.Equal(23010440, target.ContentId);
+        Assert.Equal("Armor:23010440+", target.Token);
+        Assert.Equal("Armor:23010440+", result.Description);
+    }
+
+    [Fact]
+    public void Exact_and_family_versions_of_one_anchor_remain_distinct_or_targets()
+    {
+        NormalExactDropTargetParseResult result = NormalExactDropTargetParser.Parse(
+            "Armor:23010440,Armor:23010440+,Armor:23010440+"
+        );
+
+        Assert.Equal(
+            ["Armor:23010440", "Armor:23010440+"],
+            result.Targets.Select(target => target.Token)
+        );
+    }
+
+    [Theory]
+    [InlineData("Armor:+23010440")]
+    [InlineData("Armor:23010440++")]
+    [InlineData("Armor:+")]
+    public void Misplaced_or_repeated_family_suffix_invalidates_the_config(string raw)
+    {
+        NormalExactDropTargetParseResult result = NormalExactDropTargetParser.Parse(raw);
+
+        Assert.Equal(NormalExactDropTargetMode.Invalid, result.Mode);
+        Assert.Empty(result.Targets);
+        Assert.StartsWith("invalid-normal-exact-target:", result.Error);
+    }
+
+    [Fact]
     public void Unsupported_numeric_content_type_cannot_be_formatted()
     {
         Assert.False(NormalExactDropTarget.TryFormatTypeName(30, out string typeName));

@@ -29,6 +29,78 @@ public sealed class PreviewEquipmentTargetInspectorTests
     }
 
     [Fact]
+    public void Resolved_snapshot_recommends_family_at_or_above_and_lists_rank_four_and_five_ids()
+    {
+        var index = new NormalEquipmentMasterIndex(
+            [
+                new(80, 23010340, 3004, 3, 4, "森林披风"),
+                new(80, 23010440, 3004, 4, 4, "森林披风"),
+                new(80, 23010540, 3004, 5, 4, "森林披风"),
+            ]
+        );
+        var snapshot = new PreviewEquipmentTargetSnapshot(
+            80,
+            23010440,
+            "森林披风",
+            3004,
+            4,
+            [4],
+            index
+        );
+
+        Assert.Equal("Armor:23010440+", snapshot.RecommendedToken);
+        Assert.Equal(
+            "Armor:23010440+\n森林披风 | Rank 4+\n接受: R4=23010440, R5=23010540",
+            snapshot.ToastBody
+        );
+        Assert.Contains("familyToken=Armor:23010440+", snapshot.LogFields);
+        Assert.Contains("familyGroupNo=3004", snapshot.LogFields);
+        Assert.Contains("familyRarity=4", snapshot.LogFields);
+        Assert.Contains("minimumRank=4", snapshot.LogFields);
+        Assert.Contains("members=R4:23010440|R5:23010540", snapshot.LogFields);
+    }
+
+    [Fact]
+    public void Family_resolution_rejects_preview_metadata_that_disagrees_with_master_data()
+    {
+        var index = new NormalEquipmentMasterIndex(
+            [new NormalEquipmentMasterInfo(80, 23010440, 3004, 4, 4, "森林披风")]
+        );
+        var snapshot = new PreviewEquipmentTargetSnapshot(
+            80,
+            23010440,
+            "森林披风",
+            9999,
+            4,
+            [4],
+            index
+        );
+
+        Assert.Equal("Armor:23010440", snapshot.RecommendedToken);
+        Assert.Contains("familyError=preview-family-master-mismatch", snapshot.LogFields);
+        Assert.Contains("族系不可用: preview-family-master-mismatch", snapshot.ToastBody);
+    }
+
+    [Fact]
+    public void Explicit_catalog_failure_keeps_the_exact_token_and_surfaces_the_reason()
+    {
+        var snapshot = new PreviewEquipmentTargetSnapshot(
+            80,
+            23010440,
+            "森林披风",
+            3004,
+            4,
+            [4],
+            null,
+            "missing-m-armors-cache"
+        );
+
+        Assert.Equal("Armor:23010440", snapshot.RecommendedToken);
+        Assert.Contains("族系不可用: missing-m-armors-cache", snapshot.ToastBody);
+        Assert.Contains("familyError=missing-m-armors-cache", snapshot.LogFields);
+    }
+
+    [Fact]
     public void Matching_quest_preview_intent_registers_one_active_popup()
     {
         var inspector = new PreviewEquipmentTargetInspector();
