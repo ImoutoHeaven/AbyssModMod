@@ -94,6 +94,71 @@ public class NetherCodePopupInteropResolverTests
     }
 
     [Fact]
+    public void Resolver_uses_unique_full_signature_when_generated_static_wrapper_name_changes()
+    {
+        var expected = new NetherCodePopupInteropMethodBinding(
+            "OldGeneratedTaskName",
+            "<LogicalGeneratedTask>",
+            new[] { typeof(SanitizedController).FullName!, typeof(FakeCancellationToken).FullName! },
+            typeof(FakeUniTask).FullName!
+        ) { IsStatic = true };
+
+        bool resolved = NetherCodePopupInteropResolver.TryResolveStaticMethod(
+            typeof(RenamedTaskUtility),
+            expected,
+            out string error,
+            out MethodInfo? method
+        );
+
+        Assert.True(resolved, error);
+        Assert.Equal("NewGeneratedTaskName_PDM_0", method!.Name);
+    }
+
+    [Fact]
+    public void Resolver_rejects_ambiguous_full_signature_fallback()
+    {
+        var expected = new NetherCodePopupInteropMethodBinding(
+            "OldGeneratedTaskName",
+            "<LogicalGeneratedTask>",
+            new[] { typeof(SanitizedController).FullName!, typeof(FakeCancellationToken).FullName! },
+            typeof(FakeUniTask).FullName!
+        ) { IsStatic = true };
+
+        bool resolved = NetherCodePopupInteropResolver.TryResolveStaticMethod(
+            typeof(AmbiguousRenamedTaskUtility),
+            expected,
+            out string error,
+            out MethodInfo? method
+        );
+
+        Assert.False(resolved);
+        Assert.Null(method);
+        Assert.Contains("ambiguous-exact-signature-fallback", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Resolver_requires_a_logical_generated_name_before_signature_fallback()
+    {
+        var expected = new NetherCodePopupInteropMethodBinding(
+            "OldGeneratedTaskName",
+            null,
+            new[] { typeof(SanitizedController).FullName!, typeof(FakeCancellationToken).FullName! },
+            typeof(FakeUniTask).FullName!
+        ) { IsStatic = true };
+
+        bool resolved = NetherCodePopupInteropResolver.TryResolveStaticMethod(
+            typeof(RenamedTaskUtility),
+            expected,
+            out string error,
+            out MethodInfo? method
+        );
+
+        Assert.False(resolved);
+        Assert.Null(method);
+        Assert.Contains("no-exact", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Packaged_interop_has_one_public_sanitized_holder_callbacks_and_task_targets()
     {
         using var packaged = PackagedProjectAssembly.Load();
@@ -159,11 +224,11 @@ public class NetherCodePopupInteropResolverTests
             cancelTaskError
         );
         Assert.Equal(
-            "Method_Internal_Static_UniTask_AbyssCodeSelectPopupController_Int64_NetherPartyModel_CancellationToken_0",
+            "Method_Internal_Static_UniTask_AbyssCodeSelectPopupController_Int64_NetherPartyModel_CancellationToken_PDM_0",
             confirmTask!.Name
         );
         Assert.Equal(
-            "Method_Internal_Static_UniTask_AbyssCodeSelectPopupController_CancellationToken_0",
+            "Method_Internal_Static_UniTask_AbyssCodeSelectPopupController_CancellationToken_PDM_0",
             cancelTask!.Name
         );
         Assert.True(
@@ -254,6 +319,29 @@ public class NetherCodePopupInteropResolverTests
             System.Threading.CancellationToken token
         ) => new();
     }
+
+    public sealed class RenamedTaskUtility
+    {
+        public static FakeUniTask NewGeneratedTaskName_PDM_0(
+            SanitizedController controller,
+            FakeCancellationToken token
+        ) => new();
+    }
+
+    public sealed class AmbiguousRenamedTaskUtility
+    {
+        public static FakeUniTask FirstGeneratedTask(
+            SanitizedController controller,
+            FakeCancellationToken token
+        ) => new();
+
+        public static FakeUniTask SecondGeneratedTask(
+            SanitizedController controller,
+            FakeCancellationToken token
+        ) => new();
+    }
+
+    public readonly record struct FakeCancellationToken(int Value);
 
     public sealed class Unit
     {

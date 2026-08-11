@@ -26,8 +26,10 @@ internal sealed record NetherCodePopupInteropMethodBinding(
 /// Resolves the packaged generated Code-offer callbacks without assuming that cpp2il's source
 /// names survive BepInEx interop sanitization.  The current package exposes public
 /// <c>__c</c>/<c>__9</c> and underscore callback names; a future package may expose the exact
-/// original name only through an <c>ObfuscatedNameAttribute</c>.  Both cases are strict and
-/// unique, otherwise F12 remains fail-closed.
+/// original name only through an <c>ObfuscatedNameAttribute</c>.  Static generated task wrappers
+/// may also change only their interop suffix between game builds; after exact-name resolution
+/// fails, those logically identified tasks may bind by one unique full return/parameter
+/// signature.  Every path is strict and unique, otherwise F12 remains fail-closed.
 /// </summary>
 internal static class NetherCodePopupInteropResolver
 {
@@ -197,29 +199,73 @@ internal static class NetherCodePopupInteropResolver
             return false;
         }
 
-        MethodInfo[] candidates = type.GetMethods(flags)
+        MethodInfo[] allMethods = type.GetMethods(flags);
+        MethodInfo[] candidates = allMethods
             .Where(candidate => MatchesMethod(candidate, binding))
             .ToArray();
-        if (candidates.Length != 1)
+        if (candidates.Length == 1)
+        {
+            method = candidates[0];
+            error = string.Empty;
+            return true;
+        }
+        if (candidates.Length > 1)
         {
             error = "binding-unavailable:"
                 + (type.FullName ?? type.Name)
                 + ":"
                 + binding.ManagedName
-                + ":"
-                + (candidates.Length == 0 ? "no-exact-versioned-signature" : "ambiguous-exact-versioned-signature");
+                + ":ambiguous-exact-versioned-signature";
             return false;
         }
 
-        method = candidates[0];
-        error = string.Empty;
-        return true;
+        if (binding.IsStatic && !string.IsNullOrEmpty(binding.ObfuscatedName))
+        {
+            MethodInfo[] signatureCandidates = allMethods
+                .Where(candidate => MatchesSignature(candidate, binding))
+                .ToArray();
+            if (signatureCandidates.Length == 1)
+            {
+                method = signatureCandidates[0];
+                error = string.Empty;
+                return true;
+            }
+            if (signatureCandidates.Length > 1)
+            {
+                error = "binding-unavailable:"
+                    + (type.FullName ?? type.Name)
+                    + ":"
+                    + binding.ManagedName
+                    + ":ambiguous-exact-signature-fallback:"
+                    + string.Join(",", signatureCandidates.Select(candidate => candidate.Name).OrderBy(name => name));
+                return false;
+            }
+        }
+
+        error = "binding-unavailable:"
+            + (type.FullName ?? type.Name)
+            + ":"
+            + binding.ManagedName
+            + ":no-exact-versioned-signature";
+        return false;
     }
 
     private static bool MatchesMethod(MethodInfo candidate, NetherCodePopupInteropMethodBinding binding)
     {
+        if (!MatchesName(candidate, binding.ManagedName, binding.ObfuscatedName))
+        {
+            return false;
+        }
+
+        return MatchesSignature(candidate, binding);
+    }
+
+    private static bool MatchesSignature(
+        MethodInfo candidate,
+        NetherCodePopupInteropMethodBinding binding
+    )
+    {
         if (candidate.IsStatic != binding.IsStatic
-            || !MatchesName(candidate, binding.ManagedName, binding.ObfuscatedName)
             || !string.Equals(TypeName(candidate.ReturnType), binding.ReturnTypeName, StringComparison.Ordinal))
         {
             return false;

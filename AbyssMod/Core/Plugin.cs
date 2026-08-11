@@ -47,7 +47,7 @@ public class Plugin : BasePlugin
         NetherAutoClimbController.LogDiagnostic(
             "build",
             new("version", MyPluginInfo.PLUGIN_VERSION),
-            new("profile", "autonether-direct-code-confirm-v24")
+            new("profile", "autonether-unique-task-signature-v25")
         );
 
         AddComponent<ToastUI>();

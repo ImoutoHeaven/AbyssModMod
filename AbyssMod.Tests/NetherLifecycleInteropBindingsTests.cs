@@ -482,7 +482,7 @@ public sealed class NetherLifecycleInteropBindingsTests
         Assert.Equal("_SetupPopupEvent_b__6_1", confirm!.Name);
         Assert.Equal("_SetupPopupEvent_b__7_0", close!.Name);
         Assert.Equal(
-            "Method_Internal_Static_UniTask_AbyssCodeListPopupController_NetherModel_NetherEventResultModel_Int64_BoolReactiveProperty_CancellationToken_0",
+            "Method_Internal_Static_UniTask_AbyssCodeListPopupController_NetherModel_NetherEventResultModel_Int64_BoolReactiveProperty_CancellationToken_PDM_0",
             task!.Name
         );
 
