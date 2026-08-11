@@ -621,7 +621,9 @@ public static class BattleSessionAutoSL
         Logger.Info(
             $"[F11][BattleAutoSL] mode={mode}, source={source}, attempt={retryCount + 1}, "
                 + $"retry={retryCount}, questId={response?.quest_id ?? 0}, "
-                + $"drops={report.DropCount}, rare={report.RareDropCount}, "
+                + $"rootDrops={report.RootDropCount}, drops={report.DropCount}, "
+                + $"excludedInactive={report.ExcludedInactiveDropCount}, "
+                + $"rare={report.RareDropCount}, "
                 + $"targets={evaluation.Targets.Count}, decision={decision}, "
                 + $"condition={condition}, matchedTargets={matchedTargets}, "
                 + $"error={evaluation.Error}"

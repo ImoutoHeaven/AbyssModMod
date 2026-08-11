@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using Il2CppInterop.Runtime.InteropTypes;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using Project.Api;
 
 namespace AbyssMod.Services;
@@ -38,6 +40,13 @@ public static class BattleSettlementPayloadTrace
         foreach (BattleDropItem target in targets)
             targetSids.Add(target.Sid);
 
+        IReadOnlyList<ExplorationTreasureChest> targetChests =
+            mode == "exploration"
+                ? ExplorationStageDropReachability
+                    .Parse(response.stage_detail ?? string.Empty)
+                    .FindActiveTargetChests(targetSids)
+                : Array.Empty<ExplorationTreasureChest>();
+
         AcceptedSnapshot snapshot;
         lock (Sync)
         {
@@ -52,7 +61,8 @@ public static class BattleSettlementPayloadTrace
                 response.stage_type,
                 response.start_at ?? string.Empty,
                 rootBySid,
-                targetSids
+                targetSids,
+                targetChests
             );
             _accepted = snapshot;
         }
@@ -64,7 +74,8 @@ public static class BattleSettlementPayloadTrace
                 + $"mode={mode}, source={source}, attempt={attempt}, status={response.status}, "
                 + $"questType={response.quest_type}, questId={response.quest_id}, "
                 + $"stageType={response.stage_type}, startAt={snapshot.StartAt}, "
-                + $"rootDrops={rootItems.Count}, targetSids={FormatArray(targetSids)}"
+                + $"rootDrops={rootItems.Count}, targetSids={FormatArray(targetSids)}, "
+                + $"targetChests={FormatChests(targetChests)}"
         );
         LogPayloadChunks(snapshot.TraceId, "accepted-stage-detail", stageDetail);
         LogPayloadChunks(snapshot.TraceId, "accepted-session-detail", sessionDetail);
@@ -85,7 +96,7 @@ public static class BattleSettlementPayloadTrace
         CaptureAccepted("nether", source, attempt, response, rootItems, targetItems);
     }
 
-    public static void LogExplorationStageResults(ExplorationStageResults results)
+    public static void CompleteAndLogExplorationStageResults(ExplorationStageResults results)
     {
         if (results == null)
         {
@@ -96,7 +107,46 @@ public static class BattleSettlementPayloadTrace
         long[] destroyedEnemies = Copy(results.destroyed_enemies);
         long[] dropItems = Copy(results.drop_items);
         long[] passedFloorParts = Copy(results.passed_floor_parts);
-        string payload = "{\"stage_results\":{"
+        AcceptedSnapshot snapshot;
+        lock (Sync)
+            snapshot = _accepted;
+
+        if (Config.BattleSessionAutoSL.Value
+            && snapshot != null
+            && snapshot.Mode == "exploration"
+            && snapshot.TargetChests.Count != 0)
+        {
+            ExplorationTreasureDropCompletion completion =
+                ExplorationTreasureDropCompleter.Complete(
+                    dropItems,
+                    passedFloorParts,
+                    snapshot.TargetChests
+                );
+            var passed = new HashSet<long>(passedFloorParts);
+            bool targetChestPassed = snapshot.TargetChests.Any(chest =>
+                passed.Contains(chest.FloorSid));
+            string outcome = completion.AddedDropSids.Count != 0
+                ? "completed"
+                : targetChestPassed
+                    ? "already-complete"
+                    : "skipped-unpassed";
+            Logger.Info(
+                $"[F11][SettlementProbe][ChestCompletion] traceId={snapshot.TraceId}, "
+                    + $"outcome={outcome}, targetChests={FormatChests(snapshot.TargetChests)}, "
+                    + $"passedFloorParts={FormatArray(passedFloorParts)}, "
+                    + $"addedDropSids={FormatArray(completion.AddedDropSids)}, "
+                    + $"completedResourceSids={FormatArray(completion.CompletedResourceSids)}, "
+                    + $"before={dropItems.Length}, after={completion.DropSids.Count}"
+            );
+            if (completion.AddedDropSids.Count != 0)
+            {
+                dropItems = completion.DropSids.ToArray();
+                results.drop_items = new Il2CppStructArray<long>(dropItems);
+            }
+        }
+
+        string payload =
+            "{\"stage_results\":{"
             + $"\"play_time\":{results.play_time},"
             + $"\"destroyed_enemies\":{FormatArray(destroyedEnemies)},"
             + $"\"drop_items\":{FormatArray(dropItems)},"
@@ -150,6 +200,7 @@ public static class BattleSettlementPayloadTrace
                 $"[F11][SettlementProbe][ClearResponse] traceId={snapshot?.TraceId ?? 0}, "
                     + $"resultType={entity.ResultType}, questType={entity.QuestType}, drops=unsupported"
             );
+            ClearAccepted(snapshot);
             return;
         }
 
@@ -187,6 +238,16 @@ public static class BattleSettlementPayloadTrace
                 + $"resultType={entity.ResultType}, questType={entity.QuestType}, "
                 + $"dropCount={count}, drops={builder}"
         );
+        ClearAccepted(snapshot);
+    }
+
+    private static void ClearAccepted(AcceptedSnapshot snapshot)
+    {
+        lock (Sync)
+        {
+            if (ReferenceEquals(_accepted, snapshot))
+                _accepted = null;
+        }
     }
 
     private static void LogClearPayload(string resultType, string payload, long[] dropItems)
@@ -321,6 +382,25 @@ public static class BattleSettlementPayloadTrace
         return builder.Append(']').ToString();
     }
 
+    private static string FormatChests(IReadOnlyList<ExplorationTreasureChest> chests)
+    {
+        if (chests == null || chests.Count == 0)
+            return "none";
+
+        var builder = new StringBuilder();
+        for (int i = 0; i < chests.Count; i++)
+        {
+            if (i > 0)
+                builder.Append('|');
+            ExplorationTreasureChest chest = chests[i];
+            builder.Append("floor=").Append(chest.FloorSid)
+                .Append(" resource=").Append(chest.ResourceSid)
+                .Append(" asset=").Append(chest.AssetId)
+                .Append(" drops=").Append(FormatArray(chest.DropSids));
+        }
+        return builder.ToString();
+    }
+
     private static string ComputeHash(string value)
     {
         byte[] bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
@@ -340,6 +420,7 @@ public static class BattleSettlementPayloadTrace
         public string StartAt { get; }
         public IReadOnlyDictionary<long, BattleDropItem> RootBySid { get; }
         public IReadOnlyList<long> TargetSids { get; }
+        public IReadOnlyList<ExplorationTreasureChest> TargetChests { get; }
 
         public AcceptedSnapshot(
             long traceId,
@@ -352,7 +433,8 @@ public static class BattleSettlementPayloadTrace
             int stageType,
             string startAt,
             IReadOnlyDictionary<long, BattleDropItem> rootBySid,
-            IReadOnlyList<long> targetSids
+            IReadOnlyList<long> targetSids,
+            IReadOnlyList<ExplorationTreasureChest> targetChests
         )
         {
             TraceId = traceId;
@@ -366,6 +448,7 @@ public static class BattleSettlementPayloadTrace
             StartAt = startAt;
             RootBySid = rootBySid;
             TargetSids = targetSids;
+            TargetChests = targetChests;
         }
     }
 }

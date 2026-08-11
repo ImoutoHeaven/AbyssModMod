@@ -21,7 +21,7 @@ public static class BattleSettlementPayloadProbePatch
         if (!Config.BattleSessionAutoSL.Value && !Config.BattleSessionProbe.Value)
             return;
 
-        BattleSettlementPayloadTrace.LogExplorationStageResults(__result);
+        BattleSettlementPayloadTrace.CompleteAndLogExplorationStageResults(__result);
     }
 
     [HarmonyPostfix]

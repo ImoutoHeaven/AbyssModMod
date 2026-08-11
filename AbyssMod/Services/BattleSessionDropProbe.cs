@@ -18,16 +18,22 @@ public sealed class BattleDropProbeReport
 {
     public IReadOnlyList<BattleDropItem> Items { get; }
     public int DropCount => Items.Count;
+    public int RootDropCount { get; }
+    public int ExcludedInactiveDropCount { get; }
     public int RareDropCount { get; }
     public string Error { get; }
 
     public BattleDropProbeReport(
         IReadOnlyList<BattleDropItem> items,
         int rareDropCount,
-        string error = ""
+        string error = "",
+        int rootDropCount = -1,
+        int excludedInactiveDropCount = 0
     )
     {
         Items = items;
+        RootDropCount = rootDropCount < 0 ? items.Count : rootDropCount;
+        ExcludedInactiveDropCount = excludedInactiveDropCount;
         RareDropCount = rareDropCount;
         Error = error;
     }
@@ -70,7 +76,6 @@ public static class BattleSessionDropProbe
                 return Missing();
 
             var items = new List<BattleDropItem>();
-            int rareCount = 0;
             foreach (JsonElement drop in drops.EnumerateArray())
             {
                 if (drop.ValueKind != JsonValueKind.Object
@@ -81,9 +86,6 @@ public static class BattleSessionDropProbe
                     || !TryReadInt(drop, "rarity_level", out int rarityLevel)
                     || !TryReadRareFlag(drop, out bool isRare))
                     return ParseError();
-
-                if (isRare)
-                    rareCount++;
 
                 items.Add(
                     new BattleDropItem(
@@ -97,7 +99,29 @@ public static class BattleSessionDropProbe
                 );
             }
 
-            return new BattleDropProbeReport(items, rareCount);
+            int rootDropCount = items.Count;
+            ExplorationStageDropAnalysis reachability =
+                ExplorationStageDropReachability.Parse(document.RootElement);
+            int excludedInactiveDropCount = 0;
+            if (reachability.InactiveDropSids.Count != 0)
+            {
+                excludedInactiveDropCount = items.RemoveAll(item =>
+                    reachability.InactiveDropSids.Contains(item.Sid));
+            }
+
+            int rareCount = 0;
+            foreach (BattleDropItem item in items)
+            {
+                if (item.IsRare)
+                    rareCount++;
+            }
+
+            return new BattleDropProbeReport(
+                items,
+                rareCount,
+                rootDropCount: rootDropCount,
+                excludedInactiveDropCount: excludedInactiveDropCount
+            );
         }
         catch (JsonException)
         {

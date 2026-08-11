@@ -96,4 +96,55 @@ public class BattleSessionDropProbeTests
         Assert.Equal("", report.Error);
         Assert.Equal(3000000001, Assert.Single(report.Items).Sid);
     }
+
+    [Fact]
+    public void Parse_excludes_box_gold_drops_from_the_inactive_treasure_fork()
+    {
+        const string stageDetail = """
+            {
+              "floor_parts": [
+                {
+                  "sid": 100,
+                  "role": 304,
+                  "role_option": { "seamless_battle": { "fork_group_no": 0 } },
+                  "fork_group_no": 0,
+                  "enemy_groups": [],
+                  "resources": []
+                },
+                {
+                  "sid": 101,
+                  "role": 201,
+                  "role_option": null,
+                  "fork_group_no": 1,
+                  "enemy_groups": [],
+                  "resources": [500]
+                },
+                {
+                  "sid": 102,
+                  "role": 301,
+                  "role_option": null,
+                  "fork_group_no": 0,
+                  "enemy_groups": [{ "enemies": [700] }],
+                  "resources": []
+                }
+              ],
+              "enemies": [{ "sid": 700, "drops": [12] }],
+              "resources": [{ "sid": 500, "asset_id": "BoxGold", "drops": [10, 11] }],
+              "drops": [
+                { "sid": 10, "content_type": 80, "content_id": 23010440, "amount": 1, "rarity_level": 4, "is_rare_drop": 1 },
+                { "sid": 11, "content_type": 30, "content_id": 130001, "amount": 1, "rarity_level": 0, "is_rare_drop": 0 },
+                { "sid": 12, "content_type": 80, "content_id": 22010410, "amount": 1, "rarity_level": 0, "is_rare_drop": 0 }
+              ]
+            }
+            """;
+
+        BattleDropProbeReport report = BattleSessionDropProbe.Parse(stageDetail);
+
+        Assert.Equal(string.Empty, report.Error);
+        Assert.Equal([12], report.Items.Select(item => item.Sid));
+        Assert.Equal(3, report.RootDropCount);
+        Assert.Equal(2, report.ExcludedInactiveDropCount);
+        Assert.Equal(1, report.DropCount);
+        Assert.Equal(0, report.RareDropCount);
+    }
 }
