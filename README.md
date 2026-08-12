@@ -8,6 +8,7 @@
 - **啟發式文字分類收集**（細分 9 個子類別）
 - **機翻預處理**（可選，調用本地或雲端 LLM 補翻未收錄文字）
 - **角色名全介面共用**（強化、編隊等介面共用 `names` 字典）
+- **戰鬥掉落 Auto-SL**（Normal、Idle Exploration、Nether；支援稀有度、裝備 ID 與深淵分層策略）
 
 適用於 **Windows 平台 DMM Game Player 端**。
 
@@ -18,12 +19,12 @@
 - [架構說明](#-架構說明)
 - [安裝（Release）](#-安裝release)
 - [配置項](#-配置項)
+- [Auto-SL（F11）](#-auto-slf11)
 - [機翻預處理（可選）](#-機翻預處理可選)
 - [快捷鍵](#-快捷鍵)
 - [翻譯資料](#-翻譯資料)
 - [常見問題](#-常見問題)
 - [開發者：編譯與打包](#-開發者編譯與打包)
-- [社群](#-社群)
 
 ---
 
@@ -106,7 +107,7 @@ Language = zh_Hans
 
 設定檔位於 `BepInEx\config\AbyssMod.cfg`，首次啟動自動生成。
 
-插件會在 Unity 主執行緒每 `0.25` 秒檢查設定檔；變更連續兩次保持穩定後自動呼叫 BepInEx `Reload()`，通常約 `0.25–0.5` 秒生效。這可避免編輯器尚未完成寫入時讀取半份 cfg。F10 仍可手動立即重載作為備援。Auto-SL 的開關、cooldown、StopMode、rarity、AND/OR 模式和物品白名單會從下一次響應判定開始使用新值。
+插件會在 Unity 主執行緒每 `0.25` 秒檢查設定檔；變更連續兩次保持穩定後自動呼叫 BepInEx `Reload()`，通常約 `0.25–0.5` 秒生效。這可避免編輯器尚未完成寫入時讀取半份 cfg。F10 仍可手動立即重載作為備援。Auto-SL 的開關、cooldown、Normal 精確目標、Nether 分層策略及白名單會從下一次響應判定開始使用新值。
 
 ### `[General]`
 
@@ -116,24 +117,97 @@ Language = zh_Hans
 | `SoundCaution`      | `false` | 是否彈出音量提醒       |
 | `VoiceInterruption` | `false` | 是否啟用語音中斷       |
 | `TitleMovie`        | `true`  | 是否播放標題動畫       |
-| `BattleSessionAutoSL` | `false` | F11 自動重投 normal/Nether 開戰響應，命中目標後才初始化戰鬥模型 |
-| `BattleSessionAutoSLCooldown` | `4.0` | 兩次重投請求之間的冷卻秒數 |
+| `BattleSessionProbe` | `false` | 記錄戰鬥 session 的開始、掛起與恢復響應；僅供診斷 |
+| `BattleSessionAutoSL` | `false` | F11 Auto-SL 開關；支援 Normal、Idle Exploration 與 Nether，命中目標後才初始化戰鬥模型 |
+| `BattleSessionAutoSLCooldown` | `4.0` | 重投鏈中每個後續 API 請求前的冷卻秒數；必須大於或等於 `0`，不建議低於預設值 |
 
 ### `[BattleSessionAutoSL.Targets]`
 
-`is_rare_drop` 與 `rarity_level` 是兩個不同訊號。Nether 金袋為 `rarity_level=Gold(3)`，其 `is_rare_drop` 通常仍是 `false`。
+#### Normal / Idle Exploration 目標
 
 | 配置項 | 預設值 | 說明 |
 | ------ | ------ | ---- |
-| `NormalStopMode` | `IsRare` | Normal/Disaster 截止模式：`IsRare`、`Rarity`、`IsRareOrRarity`、`IsRareAndRarity` |
-| `NormalMinimumRarity` | `Gold` | Normal 模式包含 `Rarity` 時的最低掉落等級 |
-| `NetherStopMode` | `Rarity` | Nether 每層敵人掉落的截止模式 |
-| `NetherMinimumRarity` | `Gold` | `Gold` 表示金袋或更好；也可設為 `Red` 或 `UniqueWeapon` |
+| `NormalStopMode` | `IsRare` | 一般稀有度截止模式；可選值見下表 |
+| `NormalMinimumRarity` | `Gold` | `NormalStopMode` 包含 `Rarity` 時要求的最低 `rarity_level` |
+| `NormalContentTypes` | `Any` | 一般目標的種類篩選：`Any`、`Weapon`、`Armor`、`Accessory`，可用英文逗號組合 |
+| `NormalExactTargets` | 空 | 精確或同族裝備目標；非空時改用嚴格 TargetOnly 規則 |
+
+`is_rare_drop` 與 `rarity_level` 是兩個獨立訊號：
+
+| `NormalStopMode` | 接受條件 |
+| ---------------- | -------- |
+| `IsRare` | 只接受 `is_rare_drop=true`，忽略 `NormalMinimumRarity` |
+| `Rarity` | 只接受 `rarity_level >= NormalMinimumRarity` |
+| `IsRareOrRarity` | 上述任一條件成立 |
+| `IsRareAndRarity` | 上述兩個條件同時成立 |
+
+rarity 可選值依序為：`NoEffect(0)`、`Silver(1)`、`Purple(2)`、`Gold(3)`、`Red(4)`、`UniqueWeapon(5)`。
+
+`NormalContentTypes` 在一般 StopMode 命中後才篩選種類。`Weapon`、`Armor`、`Accessory` 分別對應遊戲 `content_type=70/80/90`；例如 `Weapon, Armor` 表示只接受武器或防具。請在 cfg 填名稱，不要填枚舉內部的組合掩碼。
+
+`NormalExactTargets` 支援以下格式，多個目標用英文逗號分隔，任意一個命中即停止：
+
+- `Weapon:<MasterDataId>`：指定武器。
+- `Armor:<MasterDataId>`：指定防具。
+- `Accessory:<MasterDataId>`：指定飾品。
+- ID 尾端加 `+`：接受同 `group_no`、同 MasterData rarity 且 Rank 不低於錨點的同族裝備，例如 `Armor:23010440+`。
+
+> ⚠️ **優先級：只要 `NormalExactTargets` 非空，便啟用嚴格 TargetOnly。`NormalStopMode`、`NormalMinimumRarity` 與 `NormalContentTypes` 都不會擴大或否決結果。** 清空 `NormalExactTargets` 才會恢復一般稀有度規則。
+
+這裡填的是武器／防具／飾品的 **MasterData ID**，不是每次掉落的 `sid`，也不是已持有裝備的 `t_weapon_id`、`t_armor_id` 或 `t_accessory_id`。在 Normal 或 Idle Exploration 的關卡掉落預覽中點開裝備詳情，再按 F6，Toast 會顯示可直接貼入 cfg 的推薦 token 與同族 Rank/ID；BepInEx 控制台同時記錄精確 token 和 `+` token。
+
+例如只刷森林披風及同族更高 Rank：
+
+```ini
+[BattleSessionAutoSL.Targets]
+NormalExactTargets = Armor:23010440+
+```
+
+若只想用一般稀有度與種類條件：
+
+```ini
+[BattleSessionAutoSL.Targets]
+NormalExactTargets =
+NormalStopMode = IsRareOrRarity
+NormalMinimumRarity = Red
+NormalContentTypes = Weapon, Armor
+```
+
+#### Nether 分層策略
+
+Nether 採用分層策略，不使用單一全局截止條件；普通戰、強敵與 Boss 各自使用一條策略。
+
+| 配置項 | 預設值 | 說明 |
+| ------ | ------ | ---- |
+| `NetherBattleStrategy` | `1-49=Off;50-*=Gold` | 普通戰（Battle）的樓層策略 |
+| `NetherMiniBossStrategy` | `1-49=Off;50-*=Gold` | 強敵（MiniBoss）的樓層策略 |
+| `NetherBossStrategy` | `1-49=Off;50-99=Gold;100-*=Red` | 每段 Boss 的樓層策略 |
 | `NetherEquipmentOnly` | `true` | 只接受經 `MItems` 驗證為 Nether 裝備袋（type 91）的目標 |
-| `NetherPreserveMode` | `AND` | 白名單與裝備 StopMode 的組合方式：`AND` 或 `OR` |
+| `NetherPreserveMode` | `AND` | 白名單與裝備目標的組合方式：`AND` 或 `OR` |
 | `NetherPreserveItemIds` | 空 | type 90 物品 ID 白名單；空值表示停用保留分支 |
 
-rarity 可選值依序為：`NoEffect`、`Silver`、`Purple`、`Gold`、`Red`、`UniqueWeapon`。
+策略語法為 `selector=target`，多段以分號分隔：
+
+- `selector` 支援單層 `N`、閉區間 `N-M`、向後開放區間 `N-*`、全部樓層 `*`，以及逗號清單。
+- `target` 支援 `Off`、`NoEffect`、`Silver`、`Purple`、`Gold`、`Red`、`UniqueWeapon`。
+- `NoEffect` 至 `Red` 表示最低門檻（該等級或更好）；`UniqueWeapon` 只接受 `rarity_level=5` 的精確匹配。
+- 同一樓層匹配多段時，**最後一段生效**。例如 `*=Gold;100,110,120,130=Red` 會在全部樓層刷金袋，但指定 Boss 樓層改刷紅袋。
+- `Off` 表示該樓層／遭遇完全跳過 SL，直接放行當前響應；同時略過裝備袋與白名單判定。
+- 無效或沒有匹配樓層的策略會 fail-open，記錄錯誤後放行，避免卡死。
+
+預設值採保守策略：1–49 層全部不刷；50 層起普通戰與強敵刷 Gold；Boss 在 50–99 層刷 Gold，100 層起刷 Red。若要讓 50 層前也全部刷 Gold，可改為：
+
+```ini
+[BattleSessionAutoSL.Targets]
+NetherBattleStrategy = *=Gold
+NetherMiniBossStrategy = *=Gold
+NetherBossStrategy = *=Gold;100-*=Red
+```
+
+Nether 金袋通常是 `rarity_level=Gold(3)`，但 `is_rare_drop` 仍可能為 `false`，因此 Nether 策略直接以袋子 `rarity_level` 判定。`NetherEquipmentOnly=true` 時只接受 `MItems.type=91` 的裝備袋，Gold/Red 候選還要求主資料 rarity 與掉落 rarity 一致；設為 `false` 才會允許其他敵人掉落按策略稀有度命中。
+
+#### Nether 保留物品
+
 `NetherPreserveItemIds` 接受逗號、分號或空白分隔的十進制 ID，且不使用掉落的 `is_rare_drop` / `rarity_level`：
 
 - `200001`：Lost Signal「深淵」（戰敗時也可帶回已獲得物品）
@@ -143,10 +217,9 @@ rarity 可選值依序為：`NoEffect`、`Silver`、`Purple`、`Gold`、`Red`、
 - `200005`：被侵蝕的寶石（深部調查素材）
 - `200006`：被侵蝕的結晶（深部調查素材）
 
-`NetherPreserveMode = AND` 要求同一次響應同時包含裝備目標和白名單物品；`OR` 接受任一類。白名單留空時組合模式不生效，仍只按裝備 StopMode 判斷。
+`NetherPreserveMode = AND` 要求同一次響應同時包含裝備目標和至少一個白名單物品；`OR` 接受任一類。白名單留空時保留分支停用，組合模式不生效，仍只按裝備策略判斷。
 
-例如保留全部深部調查素材：`NetherPreserveItemIds = 200003,200004,200005,200006`。普通 Silver/Purple 袋的開戰響應可能把 `rarity_level` 折疊為 `0`，因此 `MItems.rarity` 精確一致性只檢查 Gold/Red 裝備候選。
-若開戰響應無法解析、cfg 枚舉無效或 Nether 主資料交叉驗證失敗，Auto-SL 會記錄 `accept-error` 並放行當前響應，避免永久卡住。
+例如保留全部深部調查素材：`NetherPreserveItemIds = 200003,200004,200005,200006`。白名單只識別 `content_type=31` 且 `MItems.type=90` 的敵人掉落；無效 ID、非 type 90 ID 或主資料缺失會記錄 `accept-error` 並放行當前響應。
 
 ### `[Translation]`
 
@@ -201,6 +274,55 @@ rarity 可選值依序為：`NoEffect`、`Silver`、`Purple`、`Gold`、`Red`、
 | `llmRequestMaxInFlight` | 整數                                      | `10`                                              | 同時等待 LLM 回應的請求上限                                  |
 | `llmTranslatePeriod` | 整數（秒）                                    | `30`                                              | 待翻隊列的週期清理及週期重試間隔                             |
 | `llmRetryCount` | 整數                                              | `3`                                               | 失敗後的快速低優先級重試次數；耗盡後只走週期重試             |
+
+---
+
+## 🎲 Auto-SL（F11）
+
+Auto-SL 在遊戲取得開戰響應後、建立戰鬥模型前攔截結果。未命中目標時按模式重開 session；命中後才把最終響應交回原生流程並進入戰鬥。它只負責**進戰前重投掉落**，不會自動戰鬥、跳過戰鬥或保證關卡掉落池中不存在的物品。
+
+### 支援模式與請求時序
+
+| 模式 | 未命中時的請求順序 | 說明 |
+| ---- | ------------------ | ---- |
+| Normal / Disaster | `start response → cooldown → start` | 主線、活動等使用一般 Exploration／Disaster 戰鬥 session 的關卡 |
+| Idle Exploration | `start response → cooldown → close/lose → cooldown → start` | 探索任務不能在仍開啟的 session 上直接再次 start，必須先走原生 close/lose 流程 |
+| Nether | `start response → cooldown → start` | 只處理深淵內的 Battle、MiniBoss 與 Boss 掉落；目標由三條分層策略決定 |
+
+`BattleSessionAutoSLCooldown` 作用於**每兩個 API 請求之間**。因此預設 `4.0` 秒時，Normal／Nether 每輪等待一次；Idle Exploration 每輪會在 close 前和重新 start 前各等待一次。這是為了避免請求過密與伺服器 rate limit，不建議為追求速度而設成 `0`。
+
+Idle Exploration 的關閉行為也會維持 session 完整性：若在 close 前關閉 F11，插件直接放行仍開啟的當前響應；若 close 已成功，插件會先等待 cooldown 並補一次 start，恢復可進戰的 session 後才停止，不會把客戶端留在已關閉但無響應可用的狀態。
+
+### 使用方式
+
+1. 編輯 `BepInEx\config\AbyssMod.cfg` 的 `[BattleSessionAutoSL.Targets]`。需要指定裝備時，可在 Normal 或 Idle Exploration 關卡掉落預覽中打開裝備詳情並按 F6 取得 token。
+2. 在出擊或恢復戰鬥前按 F11；控制台出現 `Battle session auto-SL ON` 代表已啟用。也可把 `[General] BattleSessionAutoSL` 設為 `true`。
+3. 插件會把戰鬥卡在模型初始化前反覆判定。看到 `decision=retry` 表示未命中；`decision=accept-target` 表示已命中並將進入戰鬥。
+4. 想停止時再按一次 F11。插件會在安全邊界放行當前或恢復後的響應，不會中途提交撤退結算。
+
+### Normal / Idle Exploration 的掉落與結算
+
+開戰響應的 `stage_detail` 可能同時列出互斥路線、未啟用寶箱或不同 treasure Rank 的候選掉落。Auto-SL 不會把這整份列表一律當成可取得物品：
+
+- 一般判定會排除當前路線不可達的 inactive fork 掉落。
+- 若已接受目標位於當前可達的 `BoxGold` 寶箱，只有實際通過該樓層後，才把該寶箱由伺服器下發的完整 drops 併入原生結算 payload。
+- 若已接受目標位於 treasure battle 的 Rank 列表，同一樓層只選一個含目標的 Rank：先比較命中目標數，再選較高 Rank；實際通過該樓層後才併入該 Rank 的完整 drops。
+- 插件不混合互斥 Rank，也不憑空生成 item ID；補入內容必須來自本次已接受的伺服器開戰響應，並與原生客戶端可能生成的結算格式一致。
+
+這套結算補全同時用於 Normal 與 Idle Exploration，避免開戰響應已命中精確裝備，但原生客戶端只提交該分支部分 `drop_items` 而導致結算缺件。
+
+### 安全策略與排障
+
+無效 cfg、無法解析的 MasterData ID、未知 Nether 樓層類型或掉落資料不完整時，插件採 fail-open：依情況記錄 `accept-error` 或 `accept-off` 後放行當前響應，避免無限重投或永久卡在載入畫面。
+
+排查時查看 `BepInEx\LogOutput.log`：
+
+- `[F11][BattleAutoSL]`：Normal、Disaster 與 Idle Exploration 的每次判定、目標與 close/start 時序。
+- `[F11][NetherAutoSL]`：Nether 遭遇分類、樓層策略、裝備袋／白名單判定。
+- `[F11][SettlementProbe]`：最終接受響應與 clear payload 的關聯，以及寶箱／Rank drops 的補全結果。
+- `[F6][EquipmentTarget]`：關卡預覽裝備的 MasterData ID、精確 token 與同族 `+` token。
+
+提交問題時請保留從按下 F11、重投、進戰到結算完成的完整連續日誌；只截取最後一行通常無法判斷是哪個 session 或分支。
 
 ---
 
@@ -279,7 +401,8 @@ rarity 可選值依序為：`NoEffect`、`Silver`、`Purple`、`Gold`、`Red`、
 | `F8`   | 開啟 / 關閉劇情翻譯 |
 | `F9`   | 開啟 / 關閉語音中斷 |
 | `F10`  | 熱重載配置檔案    |
-| `F11`  | 開啟 / 關閉進戰前 Auto-SL；關閉時放行目前已取得的響應 |
+| `F6`   | 在 Normal／Idle Exploration 關卡掉落預覽的裝備詳情中，顯示 MasterData ID 與 `NormalExactTargets` token |
+| `F11`  | 開啟 / 關閉 Normal、Idle Exploration、Nether 進戰前 Auto-SL；關閉時在安全邊界放行響應 |
 
 ---
 
@@ -394,13 +517,6 @@ git tag v1.0.8
 git push origin v1.0.8
 # 在 GitHub Releases 建立 Release，上傳 AbyssMod-v1.0.8.zip
 ```
-
----
-
-## 💬 社群
-
-- 海外詢問：添加 Discord 好友 `.lienchu9420`（Lienchu 恋曲）
-- Issues：[GitHub Issues](https://github.com/ImoutoHeaven/AbyssModMod/issues)
 
 ---
 
