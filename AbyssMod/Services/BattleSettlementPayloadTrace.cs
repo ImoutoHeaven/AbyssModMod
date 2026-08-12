@@ -40,12 +40,16 @@ public static class BattleSettlementPayloadTrace
         foreach (BattleDropItem target in targets)
             targetSids.Add(target.Sid);
 
-        IReadOnlyList<ExplorationTreasureChest> targetChests =
-            mode == "exploration"
-                ? ExplorationStageDropReachability
-                    .Parse(response.stage_detail ?? string.Empty)
-                    .FindActiveTargetChests(targetSids)
-                : Array.Empty<ExplorationTreasureChest>();
+        bool isExploration = mode == "exploration" || mode == "idle-exploration";
+        ExplorationStageDropAnalysis dropAnalysis = isExploration
+            ? ExplorationStageDropReachability.Parse(response.stage_detail ?? string.Empty)
+            : null;
+        IReadOnlyList<ExplorationTreasureChest> targetChests = dropAnalysis
+            ?.FindActiveTargetChests(targetSids)
+            ?? Array.Empty<ExplorationTreasureChest>();
+        IReadOnlyList<ExplorationTreasureRankReward> targetRankRewards = dropAnalysis
+            ?.FindActiveTargetRankRewards(targetSids)
+            ?? Array.Empty<ExplorationTreasureRankReward>();
 
         AcceptedSnapshot snapshot;
         lock (Sync)
@@ -62,7 +66,8 @@ public static class BattleSettlementPayloadTrace
                 response.start_at ?? string.Empty,
                 rootBySid,
                 targetSids,
-                targetChests
+                targetChests,
+                targetRankRewards
             );
             _accepted = snapshot;
         }
@@ -75,7 +80,8 @@ public static class BattleSettlementPayloadTrace
                 + $"questType={response.quest_type}, questId={response.quest_id}, "
                 + $"stageType={response.stage_type}, startAt={snapshot.StartAt}, "
                 + $"rootDrops={rootItems.Count}, targetSids={FormatArray(targetSids)}, "
-                + $"targetChests={FormatChests(targetChests)}"
+                + $"targetChests={FormatChests(targetChests)}, "
+                + $"targetRankRewards={FormatRankRewards(targetRankRewards)}"
         );
         LogPayloadChunks(snapshot.TraceId, "accepted-stage-detail", stageDetail);
         LogPayloadChunks(snapshot.TraceId, "accepted-session-detail", sessionDetail);
@@ -113,29 +119,35 @@ public static class BattleSettlementPayloadTrace
 
         if (Config.BattleSessionAutoSL.Value
             && snapshot != null
-            && snapshot.Mode == "exploration"
-            && snapshot.TargetChests.Count != 0)
+            && (snapshot.Mode == "exploration" || snapshot.Mode == "idle-exploration")
+            && (snapshot.TargetChests.Count != 0
+                || snapshot.TargetRankRewards.Count != 0))
         {
             ExplorationTreasureDropCompletion completion =
                 ExplorationTreasureDropCompleter.Complete(
                     dropItems,
                     passedFloorParts,
-                    snapshot.TargetChests
+                    snapshot.TargetChests,
+                    snapshot.TargetRankRewards
                 );
             var passed = new HashSet<long>(passedFloorParts);
-            bool targetChestPassed = snapshot.TargetChests.Any(chest =>
-                passed.Contains(chest.FloorSid));
+            bool targetRewardPassed = snapshot.TargetChests.Any(chest =>
+                    passed.Contains(chest.FloorSid))
+                || snapshot.TargetRankRewards.Any(reward =>
+                    passed.Contains(reward.FloorSid));
             string outcome = completion.AddedDropSids.Count != 0
                 ? "completed"
-                : targetChestPassed
+                : targetRewardPassed
                     ? "already-complete"
                     : "skipped-unpassed";
             Logger.Info(
-                $"[F11][SettlementProbe][ChestCompletion] traceId={snapshot.TraceId}, "
+                $"[F11][SettlementProbe][DropCompletion] traceId={snapshot.TraceId}, "
                     + $"outcome={outcome}, targetChests={FormatChests(snapshot.TargetChests)}, "
+                    + $"targetRankRewards={FormatRankRewards(snapshot.TargetRankRewards)}, "
                     + $"passedFloorParts={FormatArray(passedFloorParts)}, "
                     + $"addedDropSids={FormatArray(completion.AddedDropSids)}, "
                     + $"completedResourceSids={FormatArray(completion.CompletedResourceSids)}, "
+                    + $"completedRankRewards={FormatRankRewards(completion.CompletedRankRewards)}, "
                     + $"before={dropItems.Length}, after={completion.DropSids.Count}"
             );
             if (completion.AddedDropSids.Count != 0)
@@ -401,6 +413,28 @@ public static class BattleSettlementPayloadTrace
         return builder.ToString();
     }
 
+    private static string FormatRankRewards(
+        IReadOnlyList<ExplorationTreasureRankReward> rewards
+    )
+    {
+        if (rewards == null || rewards.Count == 0)
+            return "none";
+
+        var builder = new StringBuilder();
+        for (int i = 0; i < rewards.Count; i++)
+        {
+            if (i > 0)
+                builder.Append('|');
+            ExplorationTreasureRankReward reward = rewards[i];
+            builder.Append("floor=").Append(reward.FloorSid)
+                .Append(" rank=").Append(reward.Rank)
+                .Append(" asset=").Append(reward.AssetId)
+                .Append(" timeLimit=").Append(reward.TimeLimit)
+                .Append(" drops=").Append(FormatArray(reward.DropSids));
+        }
+        return builder.ToString();
+    }
+
     private static string ComputeHash(string value)
     {
         byte[] bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
@@ -421,6 +455,7 @@ public static class BattleSettlementPayloadTrace
         public IReadOnlyDictionary<long, BattleDropItem> RootBySid { get; }
         public IReadOnlyList<long> TargetSids { get; }
         public IReadOnlyList<ExplorationTreasureChest> TargetChests { get; }
+        public IReadOnlyList<ExplorationTreasureRankReward> TargetRankRewards { get; }
 
         public AcceptedSnapshot(
             long traceId,
@@ -434,7 +469,8 @@ public static class BattleSettlementPayloadTrace
             string startAt,
             IReadOnlyDictionary<long, BattleDropItem> rootBySid,
             IReadOnlyList<long> targetSids,
-            IReadOnlyList<ExplorationTreasureChest> targetChests
+            IReadOnlyList<ExplorationTreasureChest> targetChests,
+            IReadOnlyList<ExplorationTreasureRankReward> targetRankRewards
         )
         {
             TraceId = traceId;
@@ -449,6 +485,7 @@ public static class BattleSettlementPayloadTrace
             RootBySid = rootBySid;
             TargetSids = targetSids;
             TargetChests = targetChests;
+            TargetRankRewards = targetRankRewards;
         }
     }
 }

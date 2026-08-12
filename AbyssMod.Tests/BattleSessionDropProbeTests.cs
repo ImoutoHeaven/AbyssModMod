@@ -147,4 +147,59 @@ public class BattleSessionDropProbeTests
         Assert.Equal(1, report.DropCount);
         Assert.Equal(0, report.RareDropCount);
     }
+
+    [Fact]
+    public void Parse_excludes_treasure_rank_drops_from_an_inactive_fork()
+    {
+        const string stageDetail = """
+            {
+              "floor_parts": [
+                {
+                  "sid": 100,
+                  "role": 304,
+                  "role_option": { "seamless_battle": { "fork_group_no": 0 } },
+                  "fork_group_no": 0,
+                  "enemy_groups": [],
+                  "resources": []
+                },
+                {
+                  "sid": 101,
+                  "role": 303,
+                  "role_option": {
+                    "treasure_battle": {
+                      "ranks": [
+                        { "rank": 2, "asset_id": "BoxSilver", "time_limit": 180, "drops": [20, 21] }
+                      ]
+                    }
+                  },
+                  "fork_group_no": 1,
+                  "enemy_groups": [],
+                  "resources": []
+                },
+                {
+                  "sid": 102,
+                  "role": 301,
+                  "role_option": null,
+                  "fork_group_no": 0,
+                  "enemy_groups": [{ "enemies": [700] }],
+                  "resources": []
+                }
+              ],
+              "enemies": [{ "sid": 700, "drops": [12] }],
+              "resources": [],
+              "drops": [
+                { "sid": 12, "content_type": 80, "content_id": 12, "amount": 1, "rarity_level": 0, "is_rare_drop": 0 },
+                { "sid": 20, "content_type": 80, "content_id": 20, "amount": 1, "rarity_level": 4, "is_rare_drop": 1 },
+                { "sid": 21, "content_type": 30, "content_id": 21, "amount": 1, "rarity_level": 0, "is_rare_drop": 0 }
+              ]
+            }
+            """;
+
+        BattleDropProbeReport report = BattleSessionDropProbe.Parse(stageDetail);
+
+        Assert.Equal(string.Empty, report.Error);
+        Assert.Equal([12], report.Items.Select(item => item.Sid));
+        Assert.Equal(3, report.RootDropCount);
+        Assert.Equal(2, report.ExcludedInactiveDropCount);
+    }
 }

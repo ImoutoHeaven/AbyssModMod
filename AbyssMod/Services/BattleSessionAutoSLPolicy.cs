@@ -65,8 +65,13 @@ public sealed class BattleSessionDropEvaluation
 
 public static class BattleSessionAutoSLRoutingPolicy
 {
-    public static bool ShouldInterceptExploration(bool isIdleExplorationEncounter) =>
-        !isIdleExplorationEncounter;
+    public static bool ShouldInterceptExploration(bool isIdleExplorationEncounter)
+    {
+        // Idle exploration has a distinct close -> start retry transport, but it is
+        // still eligible for the same response-side target evaluation.
+        _ = isIdleExplorationEncounter;
+        return true;
+    }
 }
 
 public static class BattleSessionAutoSLPolicy

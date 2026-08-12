@@ -24,6 +24,7 @@ public static class PatchManager
         Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback1Patch));
         Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback2Patch));
         Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback3Patch));
+        Harmony.CreateAndPatchAll(typeof(IdleExplorationQuestPreviewEquipmentDirectPatch));
         Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentDropPopupPatch));
         Harmony.CreateAndPatchAll(typeof(GeneralTextPatch));
         Harmony.CreateAndPatchAll(typeof(MasterDataTranslationPatch));

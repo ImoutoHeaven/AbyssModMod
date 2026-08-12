@@ -7,8 +7,8 @@ public class BattleSessionAutoSLPolicyTests
 {
     [Theory]
     [InlineData(false, true)]
-    [InlineData(true, false)]
-    public void Idle_exploration_encounters_are_excluded_from_auto_sl(
+    [InlineData(true, true)]
+    public void Idle_exploration_encounters_are_intercepted_for_transport_specific_auto_sl(
         bool isIdleExplorationEncounter,
         bool expected
     )

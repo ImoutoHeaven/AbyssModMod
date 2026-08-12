@@ -43,6 +43,38 @@ public sealed class ExplorationTreasureDropCompletionTests
         }
         """;
 
+    private const string TreasureRankStage = """
+        {
+          "floor_parts": [
+            {
+              "sid": 200,
+              "role": 303,
+              "role_option": {
+                "treasure_battle": {
+                  "ranks": [
+                    { "rank": 1, "asset_id": "BoxBronze", "time_limit": 0, "drops": [20] },
+                    { "rank": 2, "asset_id": "BoxSilver", "time_limit": 180, "drops": [21, 22] },
+                    { "rank": 3, "asset_id": "BoxGold", "time_limit": 120, "drops": [23, 24] }
+                  ]
+                }
+              },
+              "fork_group_no": 0,
+              "enemy_groups": [],
+              "resources": []
+            }
+          ],
+          "enemies": [],
+          "resources": [],
+          "drops": [
+            { "sid": 20, "content_type": 30, "content_id": 20, "amount": 1, "rarity_level": 0, "is_rare_drop": 0 },
+            { "sid": 21, "content_type": 80, "content_id": 21010440, "amount": 1, "rarity_level": 4, "is_rare_drop": 1 },
+            { "sid": 22, "content_type": 30, "content_id": 22, "amount": 1, "rarity_level": 0, "is_rare_drop": 0 },
+            { "sid": 23, "content_type": 80, "content_id": 23010440, "amount": 1, "rarity_level": 4, "is_rare_drop": 1 },
+            { "sid": 24, "content_type": 30, "content_id": 24, "amount": 1, "rarity_level": 0, "is_rare_drop": 0 }
+          ]
+        }
+        """;
+
     [Fact]
     public void Selected_treasure_fork_keeps_its_drops_and_builds_target_chest_plan()
     {
@@ -102,5 +134,65 @@ public sealed class ExplorationTreasureDropCompletionTests
         Assert.Equal([12], completion.DropSids);
         Assert.Empty(completion.AddedDropSids);
         Assert.Empty(completion.CompletedResourceSids);
+    }
+
+    [Fact]
+    public void Target_rank_plan_selects_one_rank_and_keeps_its_complete_server_drop_set()
+    {
+        ExplorationStageDropAnalysis analysis = ExplorationStageDropReachability.Parse(
+            TreasureRankStage
+        );
+
+        ExplorationTreasureRankReward reward = Assert.Single(
+            analysis.FindActiveTargetRankRewards([21, 23])
+        );
+
+        Assert.Equal(200, reward.FloorSid);
+        Assert.Equal(3, reward.Rank);
+        Assert.Equal("BoxGold", reward.AssetId);
+        Assert.Equal(120, reward.TimeLimit);
+        Assert.Equal([23, 24], reward.DropSids);
+    }
+
+    [Fact]
+    public void Passed_target_rank_appends_the_rank_complete_drop_set_exactly_once()
+    {
+        ExplorationStageDropAnalysis analysis = ExplorationStageDropReachability.Parse(
+            TreasureRankStage
+        );
+        IReadOnlyList<ExplorationTreasureRankReward> rankPlan =
+            analysis.FindActiveTargetRankRewards([23]);
+
+        ExplorationTreasureDropCompletion completion =
+            ExplorationTreasureDropCompleter.Complete(
+                existingDropSids: [23],
+                passedFloorSids: [200],
+                targetChests: [],
+                targetRankRewards: rankPlan
+            );
+
+        Assert.Equal([23, 24], completion.DropSids);
+        Assert.Equal([24], completion.AddedDropSids);
+        Assert.Equal(3, Assert.Single(completion.CompletedRankRewards).Rank);
+    }
+
+    [Fact]
+    public void Unpassed_target_rank_does_not_modify_the_clear_payload()
+    {
+        ExplorationStageDropAnalysis analysis = ExplorationStageDropReachability.Parse(
+            TreasureRankStage
+        );
+
+        ExplorationTreasureDropCompletion completion =
+            ExplorationTreasureDropCompleter.Complete(
+                existingDropSids: [],
+                passedFloorSids: [],
+                targetChests: [],
+                targetRankRewards: analysis.FindActiveTargetRankRewards([23])
+            );
+
+        Assert.Empty(completion.DropSids);
+        Assert.Empty(completion.AddedDropSids);
+        Assert.Empty(completion.CompletedRankRewards);
     }
 }

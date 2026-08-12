@@ -7,6 +7,7 @@ using HarmonyLib;
 using Il2CppInterop.Runtime;
 using Project.Common;
 using Project.Outgame;
+using Project.Outgame.UI;
 using UnityEngine;
 
 namespace AbyssMod.Patches;
@@ -199,6 +200,106 @@ public static class QuestPreviewEquipmentCallback3Patch
         ref Il2CppSystem.Action<IContentModel> __3,
         MethodBase __originalMethod
     ) => QuestPreviewEquipmentCallbackPatchShared.Wrap(ref __3, __originalMethod);
+}
+
+[HarmonyPatch]
+public static class IdleExplorationQuestPreviewEquipmentDirectPatch
+{
+    private static IEnumerable<MethodBase> TargetMethods()
+    {
+        Assembly projectAssembly = typeof(EquipmentDropPopup).Assembly;
+        foreach (
+            DirectQuestPreviewBindingDescriptor binding in
+                DirectQuestPreviewBindingCatalog.Bindings
+        )
+        {
+            Type ownerType = projectAssembly.GetType(binding.TypeName, false);
+            Type parameterType = projectAssembly.GetType(binding.ParameterTypeName, false);
+            if (ownerType == null || parameterType == null)
+            {
+                Logger.Warn(
+                    $"[F6][EquipmentTarget][Binding] outcome=missing-direct-type "
+                        + $"type={binding.TypeName} parameter={binding.ParameterTypeName}"
+                );
+                continue;
+            }
+
+            MethodInfo[] candidates = ownerType
+                .GetMethods(
+                    BindingFlags.Instance
+                        | BindingFlags.Public
+                        | BindingFlags.NonPublic
+                        | BindingFlags.DeclaredOnly
+                )
+                .Where(method => method.Name.Equals(
+                    binding.MethodName,
+                    StringComparison.Ordinal
+                ))
+                .Where(method =>
+                {
+                    ParameterInfo[] parameters = method.GetParameters();
+                    return parameters.Length == 1
+                        && parameters[0].ParameterType == parameterType;
+                })
+                .ToArray();
+            if (candidates.Length != 1)
+            {
+                Logger.Warn(
+                    $"[F6][EquipmentTarget][Binding] outcome=missing-direct-method "
+                        + $"type={binding.TypeName} method={binding.MethodName} "
+                        + $"parameter={binding.ParameterTypeName} candidates={candidates.Length}"
+                );
+                continue;
+            }
+
+            Logger.Info(
+                $"[F6][EquipmentTarget][Binding] outcome=bound-direct "
+                    + $"type={binding.TypeName} method={candidates[0].Name}"
+            );
+            yield return candidates[0];
+        }
+    }
+
+    [HarmonyPrefix]
+    private static void Prefix(DropThumbnailModel __0, MethodBase __originalMethod)
+    {
+        string source = __originalMethod?.DeclaringType?.FullName
+            + "."
+            + __originalMethod?.Name;
+        try
+        {
+            if (__0 == null)
+            {
+                PreviewEquipmentTargetInspector.Shared.Clear();
+                return;
+            }
+
+            int contentType = (int)__0.ContentType;
+            long contentId = __0.ContentId;
+            bool recorded = PreviewEquipmentTargetInspector.Shared.RecordQuestPreviewIntent(
+                contentType,
+                contentId,
+                Time.realtimeSinceStartup
+            );
+            if (recorded)
+            {
+                var target = new NormalExactDropTarget(contentType, contentId);
+                Logger.Info(
+                    $"[F6][EquipmentTarget][Diag] event=quest-preview-intent "
+                        + $"source={source} path=idle-direct token={target.Token}"
+                );
+            }
+        }
+        catch (Exception ex)
+        {
+            PreviewEquipmentTargetInspector.Shared.Clear();
+            Logger.Warn(
+                $"[F6][EquipmentTarget][Diag] event=quest-preview-intent outcome=error "
+                    + $"source={source} path=idle-direct "
+                    + $"error={ex.GetType().Name}:{ex.Message}"
+            );
+        }
+    }
 }
 
 [HarmonyPatch(typeof(EquipmentDropPopup), nameof(EquipmentDropPopup.Setup))]

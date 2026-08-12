@@ -255,4 +255,19 @@ public sealed class PreviewEquipmentTargetInspectorTests
                 && binding.ActionParameterIndex == 3
         );
     }
+
+    [Fact]
+    public void Idle_exploration_drop_preview_uses_its_direct_thumbnail_opening_path()
+    {
+        DirectQuestPreviewBindingDescriptor binding = Assert.Single(
+            DirectQuestPreviewBindingCatalog.Bindings
+        );
+
+        Assert.Equal(
+            "Project.IdleExploration.EncounterQuestList.SubViewController",
+            binding.TypeName
+        );
+        Assert.Equal("OpenContentDetailPopupAsync", binding.MethodName);
+        Assert.Equal("Project.Outgame.UI.DropThumbnailModel", binding.ParameterTypeName);
+    }
 }

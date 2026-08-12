@@ -26,18 +26,45 @@ public sealed class ExplorationTreasureChest
     }
 }
 
+public sealed class ExplorationTreasureRankReward
+{
+    public long FloorSid { get; }
+    public int Rank { get; }
+    public string AssetId { get; }
+    public int TimeLimit { get; }
+    public IReadOnlyList<long> DropSids { get; }
+
+    internal ExplorationTreasureRankReward(
+        long floorSid,
+        int rank,
+        string assetId,
+        int timeLimit,
+        IReadOnlyList<long> dropSids
+    )
+    {
+        FloorSid = floorSid;
+        Rank = rank;
+        AssetId = assetId;
+        TimeLimit = timeLimit;
+        DropSids = dropSids;
+    }
+}
+
 public sealed class ExplorationStageDropAnalysis
 {
     public IReadOnlySet<long> InactiveDropSids { get; }
     public IReadOnlyList<ExplorationTreasureChest> ActiveTreasureChests { get; }
+    public IReadOnlyList<ExplorationTreasureRankReward> ActiveRankRewards { get; }
 
     internal ExplorationStageDropAnalysis(
         IReadOnlySet<long> inactiveDropSids,
-        IReadOnlyList<ExplorationTreasureChest> activeTreasureChests
+        IReadOnlyList<ExplorationTreasureChest> activeTreasureChests,
+        IReadOnlyList<ExplorationTreasureRankReward> activeRankRewards
     )
     {
         InactiveDropSids = inactiveDropSids;
         ActiveTreasureChests = activeTreasureChests;
+        ActiveRankRewards = activeRankRewards;
     }
 
     public IReadOnlyList<ExplorationTreasureChest> FindActiveTargetChests(
@@ -52,6 +79,24 @@ public sealed class ExplorationStageDropAnalysis
             .Where(chest => chest.DropSids.Any(targets.Contains))
             .ToArray();
     }
+
+    public IReadOnlyList<ExplorationTreasureRankReward> FindActiveTargetRankRewards(
+        IReadOnlyCollection<long> targetSids
+    )
+    {
+        if (targetSids == null || targetSids.Count == 0)
+            return Array.Empty<ExplorationTreasureRankReward>();
+
+        var targets = new HashSet<long>(targetSids);
+        return ActiveRankRewards
+            .Where(reward => reward.DropSids.Any(targets.Contains))
+            .GroupBy(reward => reward.FloorSid)
+            .Select(group => group
+                .OrderByDescending(reward => reward.DropSids.Count(targets.Contains))
+                .ThenByDescending(reward => reward.Rank)
+                .First())
+            .ToArray();
+    }
 }
 
 public sealed class ExplorationTreasureDropCompletion
@@ -59,16 +104,19 @@ public sealed class ExplorationTreasureDropCompletion
     public IReadOnlyList<long> DropSids { get; }
     public IReadOnlyList<long> AddedDropSids { get; }
     public IReadOnlyList<long> CompletedResourceSids { get; }
+    public IReadOnlyList<ExplorationTreasureRankReward> CompletedRankRewards { get; }
 
     internal ExplorationTreasureDropCompletion(
         IReadOnlyList<long> dropSids,
         IReadOnlyList<long> addedDropSids,
-        IReadOnlyList<long> completedResourceSids
+        IReadOnlyList<long> completedResourceSids,
+        IReadOnlyList<ExplorationTreasureRankReward> completedRankRewards
     )
     {
         DropSids = dropSids;
         AddedDropSids = addedDropSids;
         CompletedResourceSids = completedResourceSids;
+        CompletedRankRewards = completedRankRewards;
     }
 }
 
@@ -78,6 +126,18 @@ public static class ExplorationTreasureDropCompleter
         IReadOnlyList<long> existingDropSids,
         IReadOnlyList<long> passedFloorSids,
         IReadOnlyList<ExplorationTreasureChest> targetChests
+    ) => Complete(
+        existingDropSids,
+        passedFloorSids,
+        targetChests,
+        Array.Empty<ExplorationTreasureRankReward>()
+    );
+
+    public static ExplorationTreasureDropCompletion Complete(
+        IReadOnlyList<long> existingDropSids,
+        IReadOnlyList<long> passedFloorSids,
+        IReadOnlyList<ExplorationTreasureChest> targetChests,
+        IReadOnlyList<ExplorationTreasureRankReward> targetRankRewards
     )
     {
         var completed = new List<long>(existingDropSids ?? Array.Empty<long>());
@@ -85,6 +145,7 @@ public static class ExplorationTreasureDropCompleter
         var passedFloors = new HashSet<long>(passedFloorSids ?? Array.Empty<long>());
         var added = new List<long>();
         var completedResources = new List<long>();
+        var completedRanks = new List<ExplorationTreasureRankReward>();
 
         foreach (ExplorationTreasureChest chest in targetChests
             ?? Array.Empty<ExplorationTreasureChest>())
@@ -104,10 +165,29 @@ public static class ExplorationTreasureDropCompleter
                 completedResources.Add(chest.ResourceSid);
         }
 
+        foreach (ExplorationTreasureRankReward reward in targetRankRewards
+            ?? Array.Empty<ExplorationTreasureRankReward>())
+        {
+            if (!passedFloors.Contains(reward.FloorSid))
+                continue;
+
+            int addedBefore = added.Count;
+            foreach (long sid in reward.DropSids)
+            {
+                if (!seen.Add(sid))
+                    continue;
+                completed.Add(sid);
+                added.Add(sid);
+            }
+            if (added.Count != addedBefore)
+                completedRanks.Add(reward);
+        }
+
         return new ExplorationTreasureDropCompletion(
             completed,
             added,
-            completedResources
+            completedResources,
+            completedRanks
         );
     }
 }
@@ -115,6 +195,7 @@ public static class ExplorationTreasureDropCompleter
 public static class ExplorationStageDropReachability
 {
     private const int TreasureBoxRoomRole = 201;
+    private const int TreasureRankBattleRole = 303;
     private const int SeamlessBattleRole = 304;
     private const string GoldBoxAssetId = "BoxGold";
 
@@ -149,9 +230,18 @@ public static class ExplorationStageDropReachability
         foreach (ResourceDrops resource in resources.Values)
             allReferenced.UnionWith(resource.DropSids);
 
+        foreach (JsonElement floorPart in floorParts.EnumerateArray())
+        {
+            foreach (ExplorationTreasureRankReward reward in ReadTreasureRankRewards(
+                floorPart
+            ))
+                allReferenced.UnionWith(reward.DropSids);
+        }
+
         var activeGroups = new HashSet<int>();
         var activeReferenced = new HashSet<long>();
         var activeChests = new List<ExplorationTreasureChest>();
+        var activeRankRewards = new List<ExplorationTreasureRankReward>();
         foreach (JsonElement floorPart in floorParts.EnumerateArray())
         {
             if (floorPart.ValueKind != JsonValueKind.Object)
@@ -169,6 +259,13 @@ public static class ExplorationStageDropReachability
                 activeReferenced,
                 activeChests
             );
+            foreach (ExplorationTreasureRankReward reward in ReadTreasureRankRewards(
+                floorPart
+            ))
+            {
+                activeReferenced.UnionWith(reward.DropSids);
+                activeRankRewards.Add(reward);
+            }
 
             if (ReadInt(floorPart, "role") == SeamlessBattleRole
                 && TryReadNestedInt(
@@ -183,11 +280,56 @@ public static class ExplorationStageDropReachability
         }
 
         allReferenced.ExceptWith(activeReferenced);
-        return new ExplorationStageDropAnalysis(allReferenced, activeChests);
+        return new ExplorationStageDropAnalysis(
+            allReferenced,
+            activeChests,
+            activeRankRewards
+        );
     }
 
     private static ExplorationStageDropAnalysis Empty() =>
-        new(new HashSet<long>(), Array.Empty<ExplorationTreasureChest>());
+        new(
+            new HashSet<long>(),
+            Array.Empty<ExplorationTreasureChest>(),
+            Array.Empty<ExplorationTreasureRankReward>()
+        );
+
+    private static IReadOnlyList<ExplorationTreasureRankReward> ReadTreasureRankRewards(
+        JsonElement floorPart
+    )
+    {
+        if (floorPart.ValueKind != JsonValueKind.Object
+            || ReadInt(floorPart, "role") != TreasureRankBattleRole
+            || !TryReadLong(floorPart, "sid", out long floorSid)
+            || !floorPart.TryGetProperty("role_option", out JsonElement roleOption)
+            || roleOption.ValueKind != JsonValueKind.Object
+            || !roleOption.TryGetProperty("treasure_battle", out JsonElement treasureBattle)
+            || treasureBattle.ValueKind != JsonValueKind.Object
+            || !treasureBattle.TryGetProperty("ranks", out JsonElement ranks)
+            || ranks.ValueKind != JsonValueKind.Array)
+            return Array.Empty<ExplorationTreasureRankReward>();
+
+        var rewards = new List<ExplorationTreasureRankReward>();
+        foreach (JsonElement rank in ranks.EnumerateArray())
+        {
+            if (rank.ValueKind != JsonValueKind.Object)
+                continue;
+            string assetId = rank.TryGetProperty("asset_id", out JsonElement asset)
+                && asset.ValueKind == JsonValueKind.String
+                    ? asset.GetString() ?? string.Empty
+                    : string.Empty;
+            rewards.Add(
+                new ExplorationTreasureRankReward(
+                    floorSid,
+                    ReadInt(rank, "rank"),
+                    assetId,
+                    ReadInt(rank, "time_limit"),
+                    ReadLongArray(rank, "drops")
+                )
+            );
+        }
+        return rewards;
+    }
 
     private static Dictionary<long, IReadOnlyList<long>> ReadOwnedDrops(
         JsonElement root,

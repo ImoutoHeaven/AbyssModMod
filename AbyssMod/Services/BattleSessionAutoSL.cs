@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using Absf;
 using Cysharp.Threading.Tasks;
+using Il2CppInterop.Runtime.InteropTypes;
 using Il2CppSystem.Threading;
 using Project.Api;
 using Project.Ingame.Disaster;
@@ -21,8 +22,11 @@ public static class BattleSessionAutoSL
         string source
     )
     {
+        EncounterQuestAPIService idleApiService =
+            apiService.TryCast<EncounterQuestAPIService>();
         var operation = new ExplorationOperation(
             apiService,
+            idleApiService,
             source,
             ct,
             Engine.RebootCancellationToken,
@@ -87,7 +91,10 @@ public static class BattleSessionAutoSL
         protected readonly CancellationToken RequestCancellationToken;
         protected readonly CancellationToken RetryCancellationToken;
         protected UniTask<BattleSessionStatusResponseEntity> Current;
+        private readonly BattleSessionRetryRequestFlow _retryRequestFlow = new();
         private BattleSessionStatusResponseEntity _lastResponse;
+        private UniTask<IFinishQuestResponseEntity> _closeTask;
+        private bool _closeTaskActive;
         private long _retryDueTimestamp;
 
         protected virtual string LogPrefix => "[F11][BattleAutoSL]";
@@ -110,25 +117,20 @@ public static class BattleSessionAutoSL
         {
             try
             {
+                if (_closeTaskActive)
+                    return PollCloseTask();
+
                 if (_retryDueTimestamp != 0)
                 {
-                    if (!Config.BattleSessionAutoSL.Value)
-                    {
-                        _retryDueTimestamp = 0;
-                        State.ObserveDecision(false);
-                        Completion.TrySetResult(_lastResponse);
-                        Logger.Info(
-                            $"{LogPrefix} disabled during cooldown; accepting previous response"
-                        );
-                        return true;
-                    }
-
                     if (Stopwatch.GetTimestamp() < _retryDueTimestamp)
                         return false;
 
                     _retryDueTimestamp = 0;
-                    StartRetry();
-                    return false;
+                    BattleSessionRetryRequestAction action =
+                        _retryRequestFlow.OnCooldownElapsed(
+                            Config.BattleSessionAutoSL.Value
+                        );
+                    return DispatchRetryAction(action);
                 }
 
                 switch (Current.Status)
@@ -154,6 +156,11 @@ public static class BattleSessionAutoSL
                         return true;
                     case UniTaskStatus.Succeeded:
                         _lastResponse = Current.GetAwaiter().GetResult();
+                        if (
+                            _retryRequestFlow.Phase
+                            == BattleSessionRetryRequestPhase.Starting
+                        )
+                            _retryRequestFlow.OnStartResponseReceived();
                         return HandleResponse(_lastResponse);
                     default:
                         State.ObserveFaulted();
@@ -176,7 +183,18 @@ public static class BattleSessionAutoSL
 
         protected abstract void StartRetry();
 
-        protected void ScheduleRetry(string mode)
+        protected virtual UniTask<IFinishQuestResponseEntity> StartClose() =>
+            throw new InvalidOperationException(
+                $"{GetType().Name} does not support a close-before-start retry."
+            );
+
+        protected void ScheduleRetry(string mode, bool closeBeforeStart = false)
+        {
+            _retryRequestFlow.Schedule(closeBeforeStart);
+            ArmCooldown(mode, closeBeforeStart ? "close" : "start");
+        }
+
+        private void ArmCooldown(string mode, string nextRequest)
         {
             float cooldownSeconds = BattleSessionAutoSLPolicy.ClampCooldown(
                 Config.BattleSessionAutoSLCooldown.Value
@@ -184,21 +202,96 @@ public static class BattleSessionAutoSL
             _retryDueTimestamp = Stopwatch.GetTimestamp()
                 + (long)(cooldownSeconds * Stopwatch.Frequency);
             Logger.Info(
-                $"{LogPrefix} {mode} retry scheduled, "
+                $"{LogPrefix} {mode} retry cooldown scheduled before {nextRequest}, "
                     + $"requestCanceled={RequestCancellationToken.IsCancellationRequested}, "
                     + $"retryCanceled={RetryCancellationToken.IsCancellationRequested}, "
                     + $"cooldown={cooldownSeconds:0.0}s"
             );
+        }
+
+        private bool DispatchRetryAction(BattleSessionRetryRequestAction action)
+        {
+            switch (action)
+            {
+                case BattleSessionRetryRequestAction.AcceptCurrentResponse:
+                    State.ObserveDecision(false);
+                    Completion.TrySetResult(_lastResponse);
+                    Logger.Info(
+                        $"{LogPrefix} disabled before the next retry request; "
+                            + "accepting the still-open response"
+                    );
+                    return true;
+                case BattleSessionRetryRequestAction.InvokeClose:
+                    _closeTask = StartClose();
+                    _closeTaskActive = true;
+                    Logger.Info(
+                        $"{LogPrefix} close request invoked; "
+                            + $"taskStatus={_closeTask.Status}"
+                    );
+                    return false;
+                case BattleSessionRetryRequestAction.InvokeStart:
+                    StartRetry();
+                    return false;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unexpected retry request action: {action}."
+                    );
+            }
+        }
+
+        private bool PollCloseTask()
+        {
+            switch (_closeTask.Status)
+            {
+                case UniTaskStatus.Pending:
+                    return false;
+                case UniTaskStatus.Canceled:
+                    _closeTaskActive = false;
+                    State.ObserveCanceled();
+                    Completion.TrySetCanceled(RetryCancellationToken);
+                    return true;
+                case UniTaskStatus.Faulted:
+                    _closeTaskActive = false;
+                    State.ObserveFaulted();
+                    try
+                    {
+                        _closeTask.GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error($"{LogPrefix} close request fault: {ex}");
+                        Completion.TrySetException(
+                            new Il2CppSystem.Exception(ex.Message)
+                        );
+                    }
+                    return true;
+                case UniTaskStatus.Succeeded:
+                    _closeTask.GetAwaiter().GetResult();
+                    _closeTaskActive = false;
+                    _retryRequestFlow.OnCloseSucceeded();
+                    ArmCooldown("idle-exploration", "start");
+                    Logger.Info(
+                        $"{LogPrefix} idle-exploration close completed; "
+                            + "waiting the second cooldown before start"
+                    );
+                    return false;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unknown close UniTask status: {_closeTask.Status}."
+                    );
+            }
         }
     }
 
     private sealed class ExplorationOperation : Operation
     {
         private readonly IExplorationQuestAPIService _apiService;
+        private readonly EncounterQuestAPIService _idleApiService;
         private readonly string _source;
 
         public ExplorationOperation(
             IExplorationQuestAPIService apiService,
+            EncounterQuestAPIService idleApiService,
             string source,
             CancellationToken ct,
             CancellationToken retryCancellationToken,
@@ -207,15 +300,32 @@ public static class BattleSessionAutoSL
             : base(initial, ct, retryCancellationToken)
         {
             _apiService = apiService;
+            _idleApiService = idleApiService;
             _source = source;
         }
+
+        private bool IsIdle => _idleApiService != null;
+
+        private string Mode => IsIdle ? "idle-exploration" : "exploration";
 
         protected override void StartRetry()
         {
             Current = _apiService.StartQuestAsync(RetryCancellationToken);
             Logger.Info(
-                $"[F11][BattleAutoSL] exploration retry task status={Current.Status}, "
+                $"[F11][BattleAutoSL] {Mode} retry start task status={Current.Status}, "
                     + $"source={_source}"
+            );
+        }
+
+        protected override UniTask<IFinishQuestResponseEntity> StartClose()
+        {
+            if (_idleApiService == null)
+                return base.StartClose();
+
+            var endRecord = new ExplorationBattleEndRecord { PlayTime = 0 };
+            return _idleApiService.CloseQuestAsync(
+                endRecord,
+                RetryCancellationToken
             );
         }
 
@@ -224,7 +334,7 @@ public static class BattleSessionAutoSL
             if (!Config.BattleSessionAutoSL.Value)
             {
                 Logger.Info(
-                    $"[F11][BattleAutoSL] disabled; accepting current exploration response, "
+                    $"[F11][BattleAutoSL] disabled; accepting current {Mode} response, "
                         + $"source={_source}"
                 );
                 Completion.TrySetResult(response);
@@ -247,7 +357,7 @@ public static class BattleSessionAutoSL
                 normalExactTargets
             );
             LogAttempt(
-                "exploration",
+                Mode,
                 _source,
                 State.RetryCount,
                 response,
@@ -260,12 +370,12 @@ public static class BattleSessionAutoSL
             );
             if (State.ObserveDecision(evaluation.ShouldRetry) == BattleSessionAutoSLTransition.Retry)
             {
-                ScheduleRetry("exploration");
+                ScheduleRetry(Mode, closeBeforeStart: IsIdle);
                 return false;
             }
 
             BattleSettlementPayloadTrace.CaptureAccepted(
-                "exploration",
+                Mode,
                 _source,
                 State.RetryCount + 1,
                 response,

@@ -81,6 +81,25 @@ public static class QuestPreviewBindingCatalog
         };
 }
 
+public readonly record struct DirectQuestPreviewBindingDescriptor(
+    string TypeName,
+    string MethodName,
+    string ParameterTypeName
+);
+
+public static class DirectQuestPreviewBindingCatalog
+{
+    public static IReadOnlyList<DirectQuestPreviewBindingDescriptor> Bindings { get; } =
+        new DirectQuestPreviewBindingDescriptor[]
+        {
+            new(
+                "Project.IdleExploration.EncounterQuestList.SubViewController",
+                "OpenContentDetailPopupAsync",
+                "Project.Outgame.UI.DropThumbnailModel"
+            ),
+        };
+}
+
 public sealed class PreviewEquipmentTargetSnapshot
 {
     public int ContentType { get; }
