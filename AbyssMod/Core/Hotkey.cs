@@ -24,6 +24,7 @@ public class Hotkey : MonoBehaviour
     private void Update()
     {
         ConfigAutoReload.Update(Time.unscaledTime);
+        EnhancePatch.UpdateNovelLive2DScale();
         BattleSessionAutoSL.Update();
 
         if (Input.GetKeyDown(KeyCode.F6) && CanTrigger(KeyCode.F6))
@@ -58,6 +59,7 @@ public class Hotkey : MonoBehaviour
         if (Input.GetKeyDown(KeyCode.F10) && CanTrigger(KeyCode.F10))
         {
             Plugin.ConfigFile.Reload();
+            EnhancePatch.ReloadNovelLive2DScale();
             ConfigAutoReload.AcknowledgeCurrent();
             Logger.Info("Config reloaded");
         }

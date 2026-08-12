@@ -40,6 +40,9 @@ namespace AbyssMod
         [JsonPropertyName("add_on")]
         public Dictionary<string, string> AddOn { get; set; }
 
+        [JsonPropertyName("replacements")]
+        public Dictionary<string, string> Replacements { get; set; }
+
         [JsonExtensionData]
         public Dictionary<string, JsonElement> Extra { get; set; }
 

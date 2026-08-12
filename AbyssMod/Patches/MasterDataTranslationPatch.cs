@@ -70,7 +70,7 @@ public static class MasterDataTranslationPatch
                     MasterMapping.WriteField(
                         rowPtr,
                         field,
-                        rule.Seal ? RestoreSealNames(translated) : translated
+                        MasterDataSyncProtocol.ResolveRepositoryValue(translated, rule.Seal)
                     );
                     count++;
                     break;
@@ -80,12 +80,4 @@ public static class MasterDataTranslationPatch
         return count;
     }
 
-    private static string RestoreSealNames(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-            return text;
-        text = text.Replace("纹章：冲击", "紋章：衝撃");
-        text = text.Replace("纹章：热情", "紋章：情熱");
-        return text;
-    }
 }

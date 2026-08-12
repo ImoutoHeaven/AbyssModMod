@@ -23,6 +23,12 @@
     <Compile Include="..\AbyssMod\Patches\StaticNovelMessageState.cs" Link="StaticNovelMessageState.cs" />
     <Compile Include="..\AbyssMod\Patches\NovelTextTranslation.cs" Link="NovelTextTranslation.cs" />
     <Compile Include="..\AbyssMod\Services\TranslationPaths.cs" Link="TranslationPaths.cs" />
+    <Compile Include="..\AbyssMod\Services\ContextualUiTextIndex.cs" Link="ContextualUiTextIndex.cs" />
+    <Compile Include="..\AbyssMod\Services\ContextualUiTextProtocol.cs" Link="ContextualUiTextProtocol.cs" />
+    <Compile Include="..\AbyssMod\Services\ContextualMachineTranslationStore.cs" Link="ContextualMachineTranslationStore.cs" />
+    <Compile Include="..\AbyssMod\Services\MasterDataSyncProtocol.cs" Link="MasterDataSyncProtocol.cs" />
+    <Compile Include="..\AbyssMod\Services\NovelLive2DScaleState.cs" Link="NovelLive2DScaleState.cs" />
+    <Compile Include="..\AbyssMod\Services\ImageReplacementCacheLayout.cs" Link="ImageReplacementCacheLayout.cs" />
     <Compile Include="..\AbyssMod\Services\UiTranslatedValueCache.cs" Link="UiTranslatedValueCache.cs" />
     <Compile Include="..\AbyssMod\Services\TextCollectionStore.cs" Link="TextCollectionStore.cs" />
     <Compile Include="..\AbyssMod\Services\NovelTranslationLoadPolicy.cs" Link="NovelTranslationLoadPolicy.cs" />

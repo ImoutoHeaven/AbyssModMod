@@ -41,6 +41,7 @@ namespace AbyssMod
         public static ConfigEntry<bool> SoundCaution;
         public static ConfigEntry<bool> VoiceInterruption;
         public static ConfigEntry<bool> TitleMovie;
+        public static ConfigEntry<float> NovelLive2DScale;
         public static ConfigEntry<bool> BattleSessionProbe;
         public static ConfigEntry<bool> BattleSessionAutoSL;
         public static ConfigEntry<float> BattleSessionAutoSLCooldown;
@@ -162,6 +163,18 @@ namespace AbyssMod
                 "TitleMovie",
                 true,
                 "是否开启进入游戏时的标题动画"
+            );
+            NovelLive2DScale = Plugin.ConfigFile.Bind(
+                "General",
+                "NovelLive2DScale",
+                1.0f,
+                new ConfigDescription(
+                    "剧情 Live2D 的缩放倍率；按住 Ctrl 滚动鼠标滚轮调整",
+                    new AcceptableValueRange<float>(
+                        NovelLive2DScaleState.Minimum,
+                        NovelLive2DScaleState.Maximum
+                    )
+                )
             );
             BattleSessionProbe = Plugin.ConfigFile.Bind(
                 "General",

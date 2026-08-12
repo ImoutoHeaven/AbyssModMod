@@ -22,6 +22,7 @@ public class TranslationManager
         public static readonly TranslationSnapshot Empty = new(
             new Dictionary<string, Dictionary<string, string>>(),
             new Dictionary<string, Dictionary<string, Dictionary<string, string>>>(),
+            null,
             new Dictionary<string, string>(),
             new Dictionary<string, string>(),
             new Dictionary<string, string>(),
@@ -32,6 +33,7 @@ public class TranslationManager
         public TranslationSnapshot(
             Dictionary<string, Dictionary<string, string>> tables,
             Dictionary<string, Dictionary<string, Dictionary<string, string>>> fieldTables,
+            ContextualUiTextIndex uiTexts,
             Dictionary<string, string> names,
             Dictionary<string, string> titles,
             Dictionary<string, string> descriptions,
@@ -41,6 +43,7 @@ public class TranslationManager
         {
             Tables = tables;
             FieldTables = fieldTables;
+            UiTexts = uiTexts;
             Names = names;
             Titles = titles;
             Descriptions = descriptions;
@@ -50,6 +53,7 @@ public class TranslationManager
 
         public Dictionary<string, Dictionary<string, string>> Tables { get; }
         public Dictionary<string, Dictionary<string, Dictionary<string, string>>> FieldTables { get; }
+        public ContextualUiTextIndex UiTexts { get; }
         public Dictionary<string, string> Names { get; }
         public Dictionary<string, string> Titles { get; }
         public Dictionary<string, string> Descriptions { get; }
@@ -57,11 +61,7 @@ public class TranslationManager
         public Dictionary<string, string> AbilityDescriptions { get; }
     }
 
-    private static readonly HashSet<string> CriticalTypes =
-    [
-        TranslationPaths.Names,
-        TranslationPaths.UiTexts,
-    ];
+    private static readonly HashSet<string> CriticalTypes = [TranslationPaths.Names];
 
     private readonly TranslationCache _cache;
     private readonly FontHelper _font;
@@ -129,6 +129,17 @@ public class TranslationManager
             ?? (snapshot.Tables.TryGetValue(type, out var table) ? table : null);
     }
 
+    public bool TryTranslateUiText(
+        string transformPath,
+        string sourceText,
+        out string translatedText
+    )
+    {
+        translatedText = null;
+        var index = _snapshot.UiTexts;
+        return index != null && index.TryTranslate(transformPath, sourceText, out translatedText);
+    }
+
     public async Task LoadTranslationAsync()
     {
         var loadedTables = new Dictionary<string, Dictionary<string, string>>();
@@ -156,10 +167,10 @@ public class TranslationManager
         var tasks = new Dictionary<string, Task<Dictionary<string, string>>>
         {
             [TranslationPaths.Names] = _cache.LoadAsync(TranslationPaths.Names),
-            [TranslationPaths.UiTexts] = _cache.LoadAsync(TranslationPaths.UiTexts),
         };
+        var uiTextsTask = _cache.LoadUiTextsAsync();
 
-        await Task.WhenAll(tasks.Values);
+        await Task.WhenAll(tasks.Values.Cast<Task>().Append(uiTextsTask));
 
         foreach (var (type, task) in tasks)
         {
@@ -174,6 +185,21 @@ public class TranslationManager
                 if (CriticalTypes.Contains(type))
                     Toast.Warn("加载失败", $"翻译加载失败: {type}");
             }
+        }
+
+        ContextualUiTextIndex loadedUiTexts = null;
+        if (uiTextsTask.Result != null)
+        {
+            loadedUiTexts = new ContextualUiTextIndex(uiTextsTask.Result);
+            Logger.Info(
+                $"Contextual UI text translation loaded. Total: "
+                    + ContextualUiTextProtocol.CountEntries(uiTextsTask.Result)
+            );
+        }
+        else
+        {
+            Logger.Warn("Contextual UI text translation load failed.");
+            Toast.Warn("加载失败", "翻译加载失败: ui_texts");
         }
 
         var loadedNames = loadedTables.TryGetValue(TranslationPaths.Names, out var names)
@@ -192,8 +218,6 @@ public class TranslationManager
                 ? abilityDetails
                 : new Dictionary<string, string>();
 
-        MachineTranslator.ReloadFromDisk();
-
         var loadedTexts = await BuildLocalAddOnFallbackAsync(loadedTables, loadedFieldTables);
         AbilityTextMatcher.Rebuild(loadedAbilityDescriptions);
         TemplateTextMatcher.Rebuild(loadedTexts);
@@ -201,6 +225,7 @@ public class TranslationManager
         _snapshot = new TranslationSnapshot(
             loadedTables,
             loadedFieldTables,
+            loadedUiTexts,
             loadedNames,
             loadedTexts,
             loadedTexts,
@@ -250,9 +275,8 @@ public class TranslationManager
                 MergeTable(type);
         }
 
-        // names / ui_texts 仅补 MasterData 未覆盖的 key。
+        // names 仅补 MasterData 未覆盖的 key；ui_texts 为路径化递归表，不进入扁平兜底。
         MergeTable(TranslationPaths.Names, masterKeys);
-        MergeTable(TranslationPaths.UiTexts, masterKeys);
 
         Logger.Info(
             $"Non-story text fallback merged. Total: {merged.Count} "

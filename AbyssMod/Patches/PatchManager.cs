@@ -16,6 +16,8 @@ public static class PatchManager
     public static void Initialize()
     {
         Harmony.CreateAndPatchAll(typeof(EnhancePatch));
+        if (Plugin.Images?.Enabled == true)
+            Harmony.CreateAndPatchAll(typeof(ImageReplacementPatch));
         Harmony.CreateAndPatchAll(typeof(TranslationPatch));
         Harmony.CreateAndPatchAll(typeof(ItemPatch));
         Harmony.CreateAndPatchAll(typeof(BattleSessionAutoSLPatch));

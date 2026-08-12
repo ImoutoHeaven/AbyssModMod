@@ -37,6 +37,7 @@ internal static class ConfigAutoReload
         try
         {
             Plugin.ConfigFile.Reload();
+            Patches.EnhancePatch.ReloadNovelLive2DScale();
             AcknowledgeCurrent();
             Logger.Info($"[Config] Auto-reloaded: {Plugin.ConfigFile.ConfigFilePath}");
         }

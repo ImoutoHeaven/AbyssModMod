@@ -324,6 +324,9 @@
       }
     },
     "MDescriptionTextColors": {
+      "_class_aliases": [
+        "MDescriptionTextColor"
+      ],
       "word": {
         "dict": "m_description_text_colors"
       }

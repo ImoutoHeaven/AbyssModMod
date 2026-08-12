@@ -41,6 +41,19 @@ public class UpstreamTranslationProtocolTests
     }
 
     [Fact]
+    public void Manifest_reads_image_replacement_hashes()
+    {
+        var manifest = System.Text.Json.JsonSerializer.Deserialize<Manifest>(
+            "{\"replacements\":{\"manifest.json\":\"0123456789abcdef0123456789abcdef\"}}"
+        );
+
+        Assert.Equal(
+            "0123456789abcdef0123456789abcdef",
+            manifest!.Replacements["manifest.json"]
+        );
+    }
+
+    [Fact]
     public void Local_overlays_are_not_remote_translation_types()
     {
         Assert.False(TranslationPaths.IsCdnFlatType(TranslationPaths.AddOn));

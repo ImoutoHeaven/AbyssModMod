@@ -6,13 +6,11 @@ using UnityEngine;
 namespace AbyssMod.Services;
 
 /// <summary>
-/// ui_texts 查表：原文 key → 译文；或 Transform 路径 key → 译文。
+/// ui_texts 路径化递归查表：Transform 路径 → 原文/模板 → 译文。
 /// </summary>
 public static class UiTextTranslator
 {
     private static bool _loadRequested;
-    private static readonly UiTranslatedValueCache TranslatedValueCache = new();
-
     public static string Translate(TMP_Text text, string value)
     {
         if (!Config.Translation.Value || Plugin.Trans == null || value == null)
@@ -20,34 +18,6 @@ public static class UiTextTranslator
         if (value.Length == 0)
             return value;
 
-        Dictionary<string, string> table = GetTable();
-        if (table == null || table.Count == 0)
-            return value;
-
-        if (IsAlreadyTranslated(table, value))
-            return value;
-
-        if (table.TryGetValue(value, out string hit) && !string.IsNullOrEmpty(hit))
-            return hit;
-
-        string path = GetTransformPath(text != null ? text.transform : null);
-        if (
-            !string.IsNullOrEmpty(path)
-            && table.TryGetValue(path, out hit)
-            && !string.IsNullOrEmpty(hit)
-        )
-            return hit;
-
-        return value;
-    }
-
-    private static bool IsAlreadyTranslated(Dictionary<string, string> table, string value)
-    {
-        return TranslatedValueCache.Contains(table, value);
-    }
-
-    private static Dictionary<string, string> GetTable()
-    {
         if (!_loadRequested)
         {
             _loadRequested = true;
@@ -60,8 +30,16 @@ public static class UiTextTranslator
                 Logger.Warn($"UI text translation load request skipped: {ex.Message}");
             }
         }
-        return Plugin.Trans.GetTable(TranslationPaths.UiTexts);
+
+        string path = GetTransformPath(text);
+        return !string.IsNullOrEmpty(path)
+            && Plugin.Trans.TryTranslateUiText(path, value, out var translated)
+            ? translated
+            : value;
     }
+
+    public static string GetTransformPath(TMP_Text text) =>
+        GetTransformPath(text != null ? text.transform : null);
 
     private static string GetTransformPath(Transform transform)
     {

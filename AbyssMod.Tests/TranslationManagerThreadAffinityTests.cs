@@ -15,6 +15,29 @@ public class TranslationManagerThreadAffinityTests
         Assert.DoesNotContain("GeneralTextPatch.RefreshAllVisibleText();", source);
     }
 
+    [Fact]
+    public void Static_translation_completion_does_not_reset_the_live_machine_cache()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(
+            Path.Combine(root, "AbyssMod", "Services", "TranslationManager.cs")
+        );
+        var start = source.IndexOf(
+            "public async Task LoadTranslationAsync()",
+            StringComparison.Ordinal
+        );
+        var end = source.IndexOf(
+            "private async Task<Dictionary<string, string>> BuildLocalAddOnFallbackAsync",
+            start,
+            StringComparison.Ordinal
+        );
+
+        Assert.DoesNotContain(
+            "MachineTranslator.ReloadFromDisk();",
+            source.Substring(start, end - start)
+        );
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

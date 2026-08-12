@@ -284,6 +284,66 @@ namespace AbyssMod.Services
             }
         }
 
+        /// <summary>加载 breaking v2 ui_texts 递归表：{ transformPath: { source: target } }。</summary>
+        public async Task<Dictionary<string, Dictionary<string, string>>> LoadUiTextsAsync()
+        {
+            string type = TranslationPaths.UiTexts;
+            string cacheKey = $"{_language}/{type}";
+            string cachePath = TranslationPaths.BuildCachePath(_cacheDir, type, _language);
+            string remoteUrl = TranslationPaths.BuildRemoteUrl(_cdn, type, _language);
+            string expectedHash = GetManifestHash(type, null);
+
+            if (_manifest != null && expectedHash == null)
+            {
+                Logger.Info($"Manifest has no entry for {cacheKey}, skipped.");
+                return new Dictionary<string, Dictionary<string, string>>();
+            }
+
+            var semaphore = _locks.GetOrAdd(cacheKey, _ => new SemaphoreSlim(1, 1));
+            await semaphore.WaitAsync();
+            try
+            {
+                if (string.IsNullOrWhiteSpace(_cdn))
+                {
+                    return File.Exists(cachePath)
+                        ? LoadUiTextsFromFile(cachePath)
+                        : new Dictionary<string, Dictionary<string, string>>();
+                }
+
+                if (expectedHash != null && File.Exists(cachePath))
+                {
+                    string localHash = HashUiTextFile(cachePath);
+                    if (localHash == expectedHash)
+                    {
+                        Logger.Info($"Cache hit: {cacheKey}");
+                        return LoadUiTextsFromFile(cachePath);
+                    }
+                    Logger.Info(
+                        $"Cache hash mismatch for {cacheKey}, "
+                            + $"expected={expectedHash}, local={localHash}"
+                    );
+                }
+
+                Logger.Info($"Fetching from remote: {remoteUrl}");
+                var data = await GetAsync<Dictionary<string, Dictionary<string, string>>>(
+                    remoteUrl
+                );
+                if (data != null)
+                {
+                    SaveUiTextsToFile(cachePath, data);
+                    return data;
+                }
+
+                Logger.Warn($"Remote fetch failed for {cacheKey}, trying local fallback.");
+                return File.Exists(cachePath) ? LoadUiTextsFromFile(cachePath) : null;
+            }
+            finally
+            {
+                semaphore.Release();
+                CleanupLocksIfNeeded();
+            }
+        }
+
         public async Task<Dictionary<string, Dictionary<string, Dictionary<string, string>>>> LoadStaticBundleAsync()
         {
             string cacheKey = $"{_language}/{TranslationPaths.Static}";
@@ -435,6 +495,23 @@ namespace AbyssMod.Services
             }
         }
 
+        private static Dictionary<string, Dictionary<string, string>> LoadUiTextsFromFile(
+            string path
+        )
+        {
+            try
+            {
+                return JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(
+                    File.ReadAllText(path, Utf8)
+                );
+            }
+            catch (Exception e)
+            {
+                Logger.Warn($"UI text cache is incompatible: {e.Message}");
+                return null;
+            }
+        }
+
         /// <summary>
         /// 将翻译字典保存到本地文件。
         /// </summary>
@@ -449,6 +526,15 @@ namespace AbyssMod.Services
         private static void SaveBundleToFile(
             string path,
             Dictionary<string, Dictionary<string, Dictionary<string, string>>> data
+        )
+        {
+            EnsureCacheDirectory(path);
+            File.WriteAllText(path, JsonSerializer.Serialize(data, JsonOptions), Utf8);
+        }
+
+        private static void SaveUiTextsToFile(
+            string path,
+            Dictionary<string, Dictionary<string, string>> data
         )
         {
             EnsureCacheDirectory(path);
@@ -476,6 +562,12 @@ namespace AbyssMod.Services
         {
             var bundle = LoadBundleFromFile(path);
             return StaticBundleProtocol.ComputeHash(bundle);
+        }
+
+        private static string HashUiTextFile(string path)
+        {
+            var table = LoadUiTextsFromFile(path);
+            return table == null ? null : ContextualUiTextProtocol.ComputeHash(table);
         }
 
         /// <summary>

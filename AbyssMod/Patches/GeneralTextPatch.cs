@@ -166,7 +166,12 @@ public static class GeneralTextPatch
                 ? s
                 : TextTranslator.Process(cat, s);
             if (MachineTranslationCategoryPolicy.CanProcess(Config.Translation.Value, cat))
-                s = MachineTranslator.Handle(cat, s);
+            {
+                string transformPath = UiTextTranslator.GetTransformPath(instance);
+                s = string.IsNullOrEmpty(transformPath)
+                    ? MachineTranslator.Handle(cat, s)
+                    : MachineTranslator.HandleUi(transformPath, cat, s);
+            }
         }
         finally
         {

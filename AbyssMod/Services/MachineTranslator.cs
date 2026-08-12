@@ -40,6 +40,10 @@ public static class MachineTranslator
     /// <summary>模板（已数字占位）-> 译文模板。内存单一查找字典。</summary>
     private static readonly ConcurrentDictionary<string, string> _cache = new();
 
+    /// <summary>UI 专用 v1 上下文缓存；旧的 source-only 缓存不会进入此命名空间。</summary>
+    private static ContextualMachineTranslationStore _uiCache = new();
+    private static string _uiCachePath;
+
     /// <summary>待翻译模板及其重试状态。</summary>
     private static readonly TranslationQueue _pending = new();
     private static readonly SemaphoreSlim _queueSignal = new(0);
@@ -75,8 +79,14 @@ public static class MachineTranslator
 
         Directory.CreateDirectory(otherDir);
         _pendingPath = Path.Combine(otherDir, $"{language}.pending.json");
+        _uiCachePath = Path.Combine(
+            otherDir,
+            TranslationPaths.UiTexts,
+            $"{language}.contextual.v{ContextualMachineTranslationProtocol.CurrentVersion}.json"
+        );
 
         LoadAllCaches();   // 扫描 other/* 子目录，全量载入
+        LoadContextualUiCache();
         PruneGraduatedKeys(); // 移除已被 add-on/ 收录的重复 key
         LoadPending();
 
@@ -86,7 +96,8 @@ public static class MachineTranslator
         var langLabel = IsTraditional ? "zh_Hant (繁體)" : "zh_Hans (簡體)";
         Logger.Info(
             $"MachineTranslator (event queue mode) initialized. Enabled={Config.MTEnabled.Value}, "
-                + $"language={langLabel}, cached={_cache.Count}, pending={_pending.Count}"
+                + $"language={langLabel}, cached={_cache.Count}, uiCached={_uiCache.Count}, "
+                + $"pending={_pending.Count}"
         );
     }
 
@@ -100,8 +111,12 @@ public static class MachineTranslator
 
         _cache.Clear();
         LoadAllCaches();
+        LoadContextualUiCache();
         PruneGraduatedKeys();
-        Logger.Info($"MachineTranslator reloaded from disk. cached={_cache.Count}");
+        Logger.Info(
+            $"MachineTranslator reloaded from disk. cached={_cache.Count}, "
+                + $"uiCached={_uiCache.Count}"
+        );
     }
 
     // ──────────────────────────────────────────────────
@@ -144,6 +159,49 @@ public static class MachineTranslator
     }
 
     /// <summary>
+    /// UI 专用入口。缓存和队列均以 Transform 路径 + 数字模板为键，不读取旧扁平缓存。
+    /// </summary>
+    public static string HandleUi(string transformPath, string category, string text)
+    {
+        if (
+            !Config.Translation.Value
+            || !_initialized
+            || string.IsNullOrEmpty(transformPath)
+            || string.IsNullOrEmpty(text)
+        )
+            return text;
+        if (category == TextClassifier.Name || !MachineTranslationTextProtection.HasKana(text))
+            return text;
+
+        var (template, numbers) = Normalize(text);
+        if (_uiCache.TryGet(transformPath, template, out var cached))
+        {
+            var filled = Fill(cached, numbers);
+            if (filled != null)
+                return filled;
+        }
+
+        if (!Config.MTEnabled.Value)
+            return text;
+
+        if (
+            _pending.EnqueueContextual(
+                transformPath,
+                template,
+                TranslationPaths.UiTexts,
+                foreground: true
+            )
+        )
+        {
+            _logCounters.RecordEventEnqueued();
+            _queueSignal.Release();
+            SavePending();
+        }
+
+        return text;
+    }
+
+    /// <summary>
     /// 查询已完成的机翻缓存，但绝不把文本加入待翻队列。
     /// 用于在当前界面的完整原句已显示完后安全刷新显示。
     /// </summary>
@@ -165,6 +223,7 @@ public static class MachineTranslator
     public static void Save()
     {
         SaveAllCaches();
+        SaveContextualUiCache();
         SavePending();
     }
 
@@ -239,19 +298,32 @@ public static class MachineTranslator
     {
         try
         {
-            if (_cache.ContainsKey(job.Template))
+            bool contextual = !string.IsNullOrEmpty(job.ContextPath);
+            bool alreadyCached = contextual
+                ? _uiCache.TryGet(job.ContextPath, job.Template, out _)
+                : _cache.ContainsKey(job.Template);
+            if (alreadyCached)
             {
                 _pending.CompleteSuccess(job);
                 SavePending();
                 return;
             }
 
-            var translated = await TranslateAsync(job.Template);
+            var translated = await TranslateAsync(job.Template, job.ContextPath);
             if (!string.IsNullOrEmpty(translated))
             {
-                _cache[job.Template] = translated;
                 _pending.CompleteSuccess(job);
-                WriteToCategoryFile(job.Category, job.Template, translated);
+
+                if (contextual)
+                {
+                    _uiCache.Set(job.ContextPath, job.Template, translated);
+                    SaveContextualUiCache();
+                }
+                else
+                {
+                    _cache[job.Template] = translated;
+                    WriteToCategoryFile(job.Category, job.Template, translated);
+                }
 
                 if (Interlocked.Increment(ref _cacheDirty) % SaveCacheEvery == 0)
                     SaveAllCaches();
@@ -311,7 +383,7 @@ public static class MachineTranslator
             $"MT translate: pending={stats.Pending}, eventQueued={stats.EventEnqueued}, "
             + $"periodicQueued={stats.PeriodicEnqueued}, translated={stats.Translated}, "
             + $"fastRetries={stats.FastRetries}, periodicOnlyRetries={stats.PeriodicOnlyRetries}, "
-            + $"cache={_cache.Count}"
+                + $"cache={_cache.Count}, uiCache={_uiCache.Count}"
         );
     }
 
@@ -375,11 +447,68 @@ public static class MachineTranslator
 
         foreach (var subDir in Directory.GetDirectories(_otherDir))
         {
+            if (
+                string.Equals(
+                    Path.GetFileName(subDir),
+                    TranslationPaths.UiTexts,
+                    StringComparison.Ordinal
+                )
+            )
+                continue;
+
             var catFile = Path.Combine(subDir, $"{_language}.json");
             if (File.Exists(catFile))
             {
                 var catName = Path.GetFileName(subDir);
                 LoadCacheFile(catFile, catName);
+            }
+        }
+    }
+
+    private static void LoadContextualUiCache()
+    {
+        _uiCache = new ContextualMachineTranslationStore();
+        if (string.IsNullOrEmpty(_uiCachePath) || !File.Exists(_uiCachePath))
+            return;
+
+        try
+        {
+            string json = File.ReadAllText(_uiCachePath, Utf8NoBom);
+            if (ContextualMachineTranslationStore.TryDeserialize(json, out var loaded))
+            {
+                _uiCache = loaded;
+                Logger.Info($"Contextual UI MT cache loaded: {_uiCache.Count} entries");
+            }
+            else
+            {
+                Logger.Warn(
+                    "Contextual UI MT cache has an unsupported schema and was ignored."
+                );
+            }
+        }
+        catch (Exception e)
+        {
+            Logger.Warn($"Load contextual UI MT cache failed: {e.Message}");
+        }
+    }
+
+    private static readonly object _uiCacheFileLock = new();
+
+    private static void SaveContextualUiCache()
+    {
+        if (string.IsNullOrEmpty(_uiCachePath))
+            return;
+
+        lock (_uiCacheFileLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_uiCachePath)!);
+                File.WriteAllText(_uiCachePath, _uiCache.Serialize(), Utf8NoBom);
+            }
+            catch (Exception e)
+            {
+                Logger.Warn($"Save contextual UI MT cache failed: {e.Message}");
             }
         }
     }
@@ -519,7 +648,7 @@ public static class MachineTranslator
                 if (dict != null)
                 {
                     foreach (var kv in dict)
-                        if (!_cache.ContainsKey(kv.Key))
+                        if (!HasCachedPending(kv.Key, kv.Value))
                             _pending.AddPending(kv.Key, kv.Value);
                     Logger.Info($"MT pending loaded: {dict.Count} entries");
                     return;
@@ -535,7 +664,14 @@ public static class MachineTranslator
                 {
                     foreach (var kv in dict)
                         if (!_cache.ContainsKey(kv.Key))
-                            _pending.AddPending(kv.Key, new PendingTranslation { Category = kv.Value });
+                            _pending.AddPending(
+                                kv.Key,
+                                new PendingTranslation
+                                {
+                                    Category = kv.Value,
+                                    Template = kv.Key,
+                                }
+                            );
                     Logger.Info($"MT pending loaded (legacy map): {dict.Count} entries");
                     return;
                 }
@@ -548,7 +684,14 @@ public static class MachineTranslator
             {
                 foreach (var t in list)
                     if (!_cache.ContainsKey(t))
-                        _pending.AddPending(t, new PendingTranslation { Category = TextClassifier.UiMisc });
+                        _pending.AddPending(
+                            t,
+                            new PendingTranslation
+                            {
+                                Category = TextClassifier.UiMisc,
+                                Template = t,
+                            }
+                        );
                 Logger.Info($"MT pending loaded (legacy list format): {list.Count} entries");
             }
         }
@@ -556,6 +699,21 @@ public static class MachineTranslator
         {
             Logger.Warn($"Load MT pending failed: {e.Message}");
         }
+    }
+
+    private static bool HasCachedPending(string key, PendingTranslation pending)
+    {
+        if (!string.IsNullOrEmpty(pending.ContextPath))
+        {
+            return !string.IsNullOrEmpty(pending.Template)
+                && _uiCache.TryGet(pending.ContextPath, pending.Template, out _);
+        }
+
+        // A contextual category without its path is an obsolete/invalid UI queue entry.
+        if (string.Equals(pending.Category, TranslationPaths.UiTexts, StringComparison.Ordinal))
+            return true;
+
+        return _cache.ContainsKey(pending.Template ?? key);
     }
 
     private static void SavePending()
@@ -568,7 +726,7 @@ public static class MachineTranslator
     // 翻译引擎
     // ──────────────────────────────────────────────────
 
-    private static async Task<string> TranslateAsync(string text)
+    private static async Task<string> TranslateAsync(string text, string contextPath = null)
     {
         try
         {
@@ -576,10 +734,10 @@ public static class MachineTranslator
             var engine = (Config.MTEngine.Value ?? "openai").Trim().ToLowerInvariant();
             var translated = engine switch
             {
-                "claude" => await TranslateClaude(protectedText.Text),
+                "claude" => await TranslateClaude(protectedText.Text, contextPath),
                 "sugoi"  => await TranslateSugoi(protectedText.Text),
                 "libre"  => await TranslateLibre(protectedText.Text),
-                _ => await TranslateOpenAI(protectedText.Text),
+                _ => await TranslateOpenAI(protectedText.Text, contextPath),
             };
             if (string.IsNullOrEmpty(translated))
                 return null;
@@ -641,7 +799,7 @@ public static class MachineTranslator
     /// 需要在 AbyssMod.cfg 设置 Engine=claude、ApiKey=sk-ant-...
     /// 默认 Endpoint 为 https://api.anthropic.com/v1/messages，可自行修改为代理地址。
     /// </summary>
-    private static async Task<string> TranslateClaude(string text)
+    private static async Task<string> TranslateClaude(string text, string contextPath)
     {
         var apiKey  = Config.MTApiKey?.Value ?? "";
         var model   = Config.MTModel.Value ?? "claude-haiku-4-5";
@@ -654,7 +812,11 @@ public static class MachineTranslator
         var messages = new List<object>();
         foreach (var fs in FewShot)
             messages.Add(fs);
-        messages.Add(new { role = "user", content = text });
+        messages.Add(new
+        {
+            role = "user",
+            content = BuildTranslationInput(text, contextPath),
+        });
 
         var body = new
         {
@@ -688,11 +850,15 @@ public static class MachineTranslator
         return Clean(content);
     }
 
-    private static async Task<string> TranslateOpenAI(string text)
+    private static async Task<string> TranslateOpenAI(string text, string contextPath)
     {
         var messages = new List<object> { new { role = "system", content = SystemPrompt } };
         messages.AddRange(FewShot);
-        messages.Add(new { role = "user", content = text });
+        messages.Add(new
+        {
+            role = "user",
+            content = BuildTranslationInput(text, contextPath),
+        });
 
         var body = new { model = Config.MTModel.Value, temperature = 0, stream = false, messages };
         using var resp = await PostJson(Config.MTEndpoint.Value, body, apiKey: Config.MTApiKey?.Value);
@@ -718,6 +884,11 @@ public static class MachineTranslator
         using var doc = JsonDocument.Parse(json);
         return Clean(doc.RootElement.GetProperty("translatedText").GetString());
     }
+
+    private static string BuildTranslationInput(string text, string contextPath) =>
+        string.IsNullOrEmpty(contextPath)
+            ? text
+            : ContextualMachineTranslationProtocol.BuildUserPrompt(contextPath, text);
 
     private static async Task<string> TranslateSugoi(string text)
     {

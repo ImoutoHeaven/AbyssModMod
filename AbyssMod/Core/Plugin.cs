@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
+using System.Threading.Tasks;
 using AbyssMod.Patches;
 using AbyssMod.Services;
 using BepInEx;
@@ -26,6 +27,7 @@ public class Plugin : BasePlugin
     public static new ManualLogSource Log;
     public static MonoBehaviour Instance;
     public static TranslationManager Trans;
+    public static ImageReplacementManager Images;
 
     public override void Load()
     {
@@ -103,10 +105,41 @@ public class Plugin : BasePlugin
             ),
             AbyssMod.Config.TranslationLanguage.Value
         );
+
+        string replacementCacheRoot = Path.Combine(
+            Paths.PluginPath,
+            MyPluginInfo.PLUGIN_GUID,
+            "cache",
+            "replacements"
+        );
+        var replacementLayout = new ImageReplacementCacheLayout(replacementCacheRoot);
+        try
+        {
+            if (replacementLayout.PromotePendingIfReady())
+                Logger.Info("Activated image replacement update from previous startup.");
+        }
+        catch (Exception e)
+        {
+            Logger.Warn($"Image replacement activation failed; keeping active cache: {e.Message}");
+        }
+
+        Images = new ImageReplacementManager(replacementLayout.ActiveRoot);
+        Images.Initialize();
+
+        var imageCache = new ImageReplacementCache(
+            AbyssMod.Config.TranslationCDN.Value,
+            AbyssMod.Config.TranslationLanguage.Value,
+            replacementLayout,
+            httpClient
+        );
+        _ = Task.Run(imageCache.SyncAsync);
     }
 
     public override bool Unload()
     {
+        EnhancePatch.FlushNovelLive2DScale();
+        Images?.Dispose();
+        Images = null;
         Toast.Clear();
         MachineTranslator.Save();
         return base.Unload();

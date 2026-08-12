@@ -12,11 +12,21 @@ internal enum TranslationFailureDisposition
     PeriodicOnly,
 }
 
-internal readonly record struct TranslationJob(string Template, string Category, int QueueVersion);
+internal readonly record struct TranslationJob(
+    string Key,
+    string Template,
+    string Category,
+    string ContextPath,
+    int QueueVersion
+);
 
 internal sealed class PendingTranslation
 {
     public string Category { get; set; } = "ui_misc";
+
+    public string Template { get; set; }
+
+    public string ContextPath { get; set; }
 
     public int FastRetryCount { get; set; }
 
@@ -37,6 +47,8 @@ internal sealed class PendingTranslation
     public PendingTranslation Clone() => new()
     {
         Category = Category,
+        Template = Template,
+        ContextPath = ContextPath,
         FastRetryCount = FastRetryCount,
         PeriodicOnly = PeriodicOnly,
     };
@@ -80,7 +92,7 @@ internal sealed class TranslationQueue
         {
             if (!_pending.TryGetValue(template, out var pending))
             {
-                pending = new PendingTranslation { Category = category };
+                pending = new PendingTranslation { Category = category, Template = template };
                 _pending.Add(template, pending);
             }
 
@@ -88,10 +100,38 @@ internal sealed class TranslationQueue
         }
     }
 
+    public bool EnqueueContextual(
+        string contextPath,
+        string template,
+        string category,
+        bool foreground
+    )
+    {
+        string key = ContextualMachineTranslationProtocol.BuildPendingKey(contextPath, template);
+        lock (_lock)
+        {
+            if (!_pending.TryGetValue(key, out var pending))
+            {
+                pending = new PendingTranslation
+                {
+                    Category = category,
+                    Template = template,
+                    ContextPath = contextPath,
+                };
+                _pending.Add(key, pending);
+            }
+
+            return EnqueueNoLock(key, pending, foreground);
+        }
+    }
+
     public void AddPending(string template, PendingTranslation pending)
     {
         lock (_lock)
+        {
+            pending.Template ??= template;
             _pending.TryAdd(template, pending);
+        }
     }
 
     public bool Contains(string template)
@@ -112,7 +152,7 @@ internal sealed class TranslationQueue
         {
             while (TryTakeNoLock(out var candidate, out var foreground))
             {
-                if (!_pending.TryGetValue(candidate.Template, out var pending)
+                if (!_pending.TryGetValue(candidate.Key, out var pending)
                     || !pending.Queued
                     || pending.InFlight
                     || pending.QueueVersion != candidate.QueueVersion)
@@ -137,8 +177,8 @@ internal sealed class TranslationQueue
     {
         lock (_lock)
         {
-            if (_pending.TryGetValue(job.Template, out var pending) && pending.InFlight)
-                _pending.Remove(job.Template);
+            if (_pending.TryGetValue(job.Key, out var pending) && pending.InFlight)
+                _pending.Remove(job.Key);
         }
     }
 
@@ -146,7 +186,7 @@ internal sealed class TranslationQueue
     {
         lock (_lock)
         {
-            if (!_pending.TryGetValue(job.Template, out var pending))
+            if (!_pending.TryGetValue(job.Key, out var pending))
                 return TranslationFailureDisposition.PeriodicOnly;
 
             pending.InFlight = false;
@@ -156,7 +196,7 @@ internal sealed class TranslationQueue
             if (pending.FastRetryCount < Math.Max(0, fastRetryCount))
             {
                 pending.FastRetryCount++;
-                EnqueueNoLock(job.Template, pending, foreground: false);
+                EnqueueNoLock(job.Key, pending, foreground: false);
                 return TranslationFailureDisposition.FastRetry;
             }
 
@@ -169,7 +209,7 @@ internal sealed class TranslationQueue
     {
         lock (_lock)
         {
-            if (_pending.TryGetValue(job.Template, out var pending))
+            if (_pending.TryGetValue(job.Key, out var pending))
                 pending.InFlight = false;
         }
     }
@@ -209,7 +249,13 @@ internal sealed class TranslationQueue
         pending.Queued = true;
         pending.Foreground = foreground;
         pending.QueueVersion++;
-        var job = new TranslationJob(template, pending.Category, pending.QueueVersion);
+        var job = new TranslationJob(
+            template,
+            pending.Template ?? template,
+            pending.Category,
+            pending.ContextPath,
+            pending.QueueVersion
+        );
         if (foreground)
             _foreground.Enqueue(job);
         else

@@ -67,9 +67,17 @@ public static class MasterMapping
             var tables = new Dictionary<string, TableMapping>();
             foreach (JsonProperty prop in tablesEl.EnumerateObject())
             {
-                TableMapping table = BuildTable(prop.Name, prop.Value);
-                if (table.Fields.Count > 0)
-                    tables[prop.Name] = table;
+                foreach (
+                    string className in MasterDataSyncProtocol.ReadClassNames(
+                        prop.Name,
+                        prop.Value
+                    )
+                )
+                {
+                    TableMapping table = BuildTable(prop.Name, prop.Value, className);
+                    if (table.Fields.Count > 0)
+                        tables[className] = table;
+                }
             }
 
             Tables = tables;
@@ -97,18 +105,25 @@ public static class MasterMapping
         return null;
     }
 
-    private static TableMapping BuildTable(string tableName, JsonElement tableEl)
+    private static TableMapping BuildTable(
+        string tableName,
+        JsonElement tableEl,
+        string className
+    )
     {
         var table = new TableMapping();
-        IntPtr classPtr = ResolveClassPtr(tableName);
+        IntPtr classPtr = ResolveClassPtr(className);
         if (classPtr == IntPtr.Zero)
         {
-            Logger.Warn($"[MasterMapping] type not resolved: {tableName}, table skipped");
+            Logger.Warn($"[MasterMapping] type not resolved: {className}, table skipped");
             return table;
         }
 
         foreach (JsonProperty prop in tableEl.EnumerateObject())
         {
+            if (prop.Name.StartsWith("_", StringComparison.Ordinal))
+                continue;
+
             List<FieldRule> rules = ParseRules(prop.Value);
             if (rules.Count == 0)
                 continue;
@@ -116,7 +131,7 @@ public static class MasterMapping
             IntPtr fieldPtr = IL2CPP.GetIl2CppField(classPtr, prop.Name);
             if (fieldPtr == IntPtr.Zero)
             {
-                Logger.Warn($"[MasterMapping] field not found: {tableName}.{prop.Name}, skipped");
+                Logger.Warn($"[MasterMapping] field not found: {className}.{prop.Name}, skipped");
                 continue;
             }
 
