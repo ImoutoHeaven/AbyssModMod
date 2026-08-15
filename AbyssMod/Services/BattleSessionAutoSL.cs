@@ -434,6 +434,12 @@ public static class BattleSessionAutoSL
             );
         }
 
+        protected override UniTask<IFinishQuestResponseEntity> StartClose()
+        {
+            DisasterBattleEndRecord endRecord = new DisasterBattleEndRecord().Dummy;
+            return _apiService.CloseQuestAsync(endRecord, RetryCancellationToken);
+        }
+
         protected override bool HandleResponse(BattleSessionStatusResponseEntity response)
         {
             if (!Config.BattleSessionAutoSL.Value)
@@ -475,7 +481,7 @@ public static class BattleSessionAutoSL
             );
             if (State.ObserveDecision(evaluation.ShouldRetry) == BattleSessionAutoSLTransition.Retry)
             {
-                ScheduleRetry("disaster");
+                ScheduleRetry("disaster", closeBeforeStart: true);
                 return false;
             }
 
