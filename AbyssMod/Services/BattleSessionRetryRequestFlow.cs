@@ -20,10 +20,53 @@ public enum BattleSessionRetryRequestAction
     InvokeStart = 3,
 }
 
+public enum BattleSessionExplorationRetryMode
+{
+    Exploration = 0,
+    IdleExploration = 1,
+    HuntEvent = 2,
+    EventBonus = 3,
+    StoryEvent = 4,
+    TrainingEvent = 5,
+    CommissionEvent = 6,
+    MiningEvent = 7,
+}
+
+public static class BattleSessionExplorationRetryPolicy
+{
+    public static bool RequiresCloseBeforeStart(BattleSessionExplorationRetryMode mode) =>
+        mode switch
+        {
+            BattleSessionExplorationRetryMode.Exploration => false,
+            BattleSessionExplorationRetryMode.IdleExploration => true,
+            BattleSessionExplorationRetryMode.HuntEvent => true,
+            BattleSessionExplorationRetryMode.EventBonus => true,
+            BattleSessionExplorationRetryMode.StoryEvent => true,
+            BattleSessionExplorationRetryMode.TrainingEvent => true,
+            BattleSessionExplorationRetryMode.CommissionEvent => true,
+            BattleSessionExplorationRetryMode.MiningEvent => true,
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null),
+        };
+
+    public static string GetLogName(BattleSessionExplorationRetryMode mode) =>
+        mode switch
+        {
+            BattleSessionExplorationRetryMode.Exploration => "exploration",
+            BattleSessionExplorationRetryMode.IdleExploration => "idle-exploration",
+            BattleSessionExplorationRetryMode.HuntEvent => "hunt-event",
+            BattleSessionExplorationRetryMode.EventBonus => "event-bonus",
+            BattleSessionExplorationRetryMode.StoryEvent => "story-event",
+            BattleSessionExplorationRetryMode.TrainingEvent => "training-event",
+            BattleSessionExplorationRetryMode.CommissionEvent => "commission-event",
+            BattleSessionExplorationRetryMode.MiningEvent => "mining-event",
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null),
+        };
+}
+
 /// <summary>
 /// Models the request ordering for one Auto-SL retry without depending on Unity or UniTask.
-/// Normal battles use response -> cooldown -> start. Idle exploration uses
-/// response -> cooldown -> close -> cooldown -> start.
+/// Normal battles use response -> cooldown -> start. Session-bound exploration
+/// transports use response -> cooldown -> close -> cooldown -> start.
 /// </summary>
 public sealed class BattleSessionRetryRequestFlow
 {

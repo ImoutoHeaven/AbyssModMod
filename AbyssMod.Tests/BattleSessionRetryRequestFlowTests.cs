@@ -10,7 +10,11 @@ public sealed class BattleSessionRetryRequestFlowTests
     {
         var flow = new BattleSessionRetryRequestFlow();
 
-        flow.Schedule(closeBeforeStart: false);
+        flow.Schedule(
+            BattleSessionExplorationRetryPolicy.RequiresCloseBeforeStart(
+                BattleSessionExplorationRetryMode.Exploration
+            )
+        );
 
         Assert.Equal(
             BattleSessionRetryRequestPhase.CooldownBeforeStart,
@@ -28,7 +32,11 @@ public sealed class BattleSessionRetryRequestFlowTests
     {
         var flow = new BattleSessionRetryRequestFlow();
 
-        flow.Schedule(closeBeforeStart: true);
+        flow.Schedule(
+            BattleSessionExplorationRetryPolicy.RequiresCloseBeforeStart(
+                BattleSessionExplorationRetryMode.IdleExploration
+            )
+        );
         Assert.Equal(
             BattleSessionRetryRequestPhase.CooldownBeforeClose,
             flow.Phase
@@ -50,6 +58,35 @@ public sealed class BattleSessionRetryRequestFlowTests
             flow.OnCooldownElapsed(autoSlEnabled: true)
         );
         Assert.Equal(BattleSessionRetryRequestPhase.Starting, flow.Phase);
+    }
+
+    [Theory]
+    [InlineData(BattleSessionExplorationRetryMode.HuntEvent)]
+    [InlineData(BattleSessionExplorationRetryMode.EventBonus)]
+    [InlineData(BattleSessionExplorationRetryMode.StoryEvent)]
+    [InlineData(BattleSessionExplorationRetryMode.TrainingEvent)]
+    [InlineData(BattleSessionExplorationRetryMode.CommissionEvent)]
+    [InlineData(BattleSessionExplorationRetryMode.MiningEvent)]
+    public void Event_retry_closes_the_session_before_starting_again(
+        BattleSessionExplorationRetryMode mode
+    )
+    {
+        var flow = new BattleSessionRetryRequestFlow();
+
+        flow.Schedule(
+            BattleSessionExplorationRetryPolicy.RequiresCloseBeforeStart(mode)
+        );
+        Assert.Equal(
+            BattleSessionRetryRequestAction.InvokeClose,
+            flow.OnCooldownElapsed(autoSlEnabled: true)
+        );
+
+        flow.OnCloseSucceeded();
+
+        Assert.Equal(
+            BattleSessionRetryRequestAction.InvokeStart,
+            flow.OnCooldownElapsed(autoSlEnabled: true)
+        );
     }
 
     [Fact]
