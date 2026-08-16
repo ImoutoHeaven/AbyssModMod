@@ -26,6 +26,7 @@ public class Hotkey : MonoBehaviour
         ConfigAutoReload.Update(Time.unscaledTime);
         EnhancePatch.UpdateNovelLive2DScale();
         BattleSessionAutoSL.Update();
+        TavernFirstCardAutoSL.Update();
 
         if (Input.GetKeyDown(KeyCode.F6) && CanTrigger(KeyCode.F6))
         {
@@ -92,6 +93,7 @@ public class Hotkey : MonoBehaviour
                         )
                             ? "none"
                             : Config.BattleSessionAutoSLNetherPreserveItemIds.Value)
+                        + ", tavernFirstCard=" + Config.TavernAutoSLFirstCardTarget.Value
                 );
             }
         }

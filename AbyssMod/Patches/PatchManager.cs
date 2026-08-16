@@ -21,6 +21,7 @@ public static class PatchManager
         Harmony.CreateAndPatchAll(typeof(TranslationPatch));
         Harmony.CreateAndPatchAll(typeof(ItemPatch));
         Harmony.CreateAndPatchAll(typeof(BattleSessionAutoSLPatch));
+        Harmony.CreateAndPatchAll(typeof(TavernFirstCardAutoSLPatch));
         Harmony.CreateAndPatchAll(typeof(BattleSettlementPayloadProbePatch));
         Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback0Patch));
         Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback1Patch));

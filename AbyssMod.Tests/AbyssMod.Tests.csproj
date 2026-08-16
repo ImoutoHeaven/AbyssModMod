@@ -43,6 +43,8 @@
     <Compile Include="..\AbyssMod\Services\NormalEquipmentFamilies.cs" Link="NormalEquipmentFamilies.cs" />
     <Compile Include="..\AbyssMod\Services\PreviewEquipmentTargetInspector.cs" Link="PreviewEquipmentTargetInspector.cs" />
     <Compile Include="..\AbyssMod\Services\BattleSessionAutoSLStateMachine.cs" Link="BattleSessionAutoSLStateMachine.cs" />
+    <Compile Include="..\AbyssMod\Services\TavernFirstCardAutoSLPolicy.cs" Link="TavernFirstCardAutoSLPolicy.cs" />
+    <Compile Include="..\AbyssMod\Services\TavernFirstCardRetryFlow.cs" Link="TavernFirstCardRetryFlow.cs" />
     <Compile Include="..\AbyssMod\Services\ConfigAutoReloadState.cs" Link="ConfigAutoReloadState.cs" />
     <Compile Include="..\AbyssMod\Core\UpstreamTranslationPolicy.cs" Link="UpstreamTranslationPolicy.cs" />
     <Compile Include="..\AbyssMod\Models\Manifest.cs" Link="Manifest.cs" />

@@ -55,6 +55,7 @@ namespace AbyssMod
         public static ConfigEntry<bool> BattleSessionAutoSLNetherEquipmentOnly;
         public static ConfigEntry<NetherPreserveMode> BattleSessionAutoSLNetherPreserveMode;
         public static ConfigEntry<string> BattleSessionAutoSLNetherPreserveItemIds;
+        public static ConfigEntry<string> TavernAutoSLFirstCardTarget;
         #endregion
 
         #region Translation
@@ -299,6 +300,13 @@ namespace AbyssMod
                     + "- 200006 = 被侵蚀的结晶：深部调查素材\n"
                     + "示例（保留全部深部调查素材）：200003,200004,200005,200006\n"
                     + "无效 ID、非 type=90 ID 或主数据缺失会 accept-error 并放行，避免卡死。"
+            );
+            TavernAutoSLFirstCardTarget = Plugin.ConfigFile.Bind(
+                "TavernAutoSL",
+                "FirstCardTarget",
+                "cook",
+                "F11 酒馆/娼馆首轮卡组自动 SL 目标。只接受 5% All 卡；"
+                    + "可选 off、cook、waitress、drink。默认 cook。"
             );
             #endregion
 
