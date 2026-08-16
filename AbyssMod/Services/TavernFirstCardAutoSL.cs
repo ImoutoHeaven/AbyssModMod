@@ -6,30 +6,33 @@ using Cysharp.Threading.Tasks;
 using Il2CppSystem.Threading;
 using Project.Api;
 using Project.Tavern;
+using Il2CppVignetteList = Il2CppSystem.Collections.Generic.List<Project.Tavern.Top.VignetteData>;
+using TavernGameViewController = Project.Tavern.Top.GameViewController;
 
 namespace AbyssMod.Services;
 
 public static class TavernFirstCardAutoSL
 {
-    private static readonly List<Operation> Operations = new();
+    private static readonly List<CreateGameDataOperation> Operations = new();
 
     [ThreadStatic]
-    private static int _replayInvocationDepth;
+    private static int _nativeCreateGameDataInvocationDepth;
 
-    internal static bool IsReplayInvocation => _replayInvocationDepth != 0;
+    internal static bool IsNativeCreateGameDataInvocation =>
+        _nativeCreateGameDataInvocationDepth != 0;
 
-    public static UniTask<TavernExecWorkResponseEntity> Run(
-        long dailyCardId,
-        bool useTicket,
-        UniTask<TavernExecWorkResponseEntity> initial,
-        CancellationToken requestCancellationToken
+    public static UniTask RunCreateGameData(
+        TavernGameViewController controller,
+        Il2CppVignetteList vignetteIds,
+        TavernExecWorkResponseEntity initialResponse,
+        long dailyId
     )
     {
-        var operation = new Operation(
-            dailyCardId,
-            useTicket,
-            initial,
-            requestCancellationToken,
+        var operation = new CreateGameDataOperation(
+            controller,
+            vignetteIds,
+            initialResponse,
+            dailyId,
             Engine.RebootCancellationToken
         );
         Operations.Add(operation);
@@ -78,87 +81,91 @@ public static class TavernFirstCardAutoSL
         long dailyCardId,
         bool useTicket,
         CancellationToken cancellationToken
+    ) => TavernApiService.RequestExecWorkAsync(dailyCardId, useTicket, cancellationToken);
+
+    private static UniTask InvokeNativeCreateGameData(
+        TavernGameViewController controller,
+        Il2CppVignetteList vignetteIds,
+        TavernExecWorkResponseEntity response,
+        long dailyId
     )
     {
-        _replayInvocationDepth++;
+        _nativeCreateGameDataInvocationDepth++;
         try
         {
-            return TavernApiService.RequestExecWorkAsync(
-                dailyCardId,
-                useTicket,
-                cancellationToken
-            );
+            return controller.CreateGameData(vignetteIds, response, dailyId);
         }
         finally
         {
-            _replayInvocationDepth--;
+            _nativeCreateGameDataInvocationDepth--;
         }
     }
 
-    private sealed class Operation
+    private sealed class CreateGameDataOperation
     {
+        private readonly TavernGameViewController _controller;
+        private readonly Il2CppVignetteList _vignetteIds;
         private readonly long _dailyCardId;
         private readonly bool _useTicket;
-        private readonly CancellationToken _requestCancellationToken;
-        private readonly CancellationToken _retryCancellationToken;
-        private readonly UniTaskCompletionSource<TavernExecWorkResponseEntity> _completion =
-            new();
+        private readonly CancellationToken _cancellationToken;
+        private readonly UniTaskCompletionSource _completion = new();
         private readonly TavernFirstCardRetryFlow _flow = new();
 
-        private UniTask<TavernExecWorkResponseEntity> _current;
+        private TavernExecWorkResponseEntity _pendingResponse;
         private TavernExecWorkResponseEntity _lastResponse;
-        private bool _currentIsReplay;
+        private UniTask<TavernExecWorkResponseEntity> _replayTask;
+        private UniTask _createGameDataTask;
+        private bool _replayActive;
+        private bool _createGameDataActive;
         private long _retryDueTimestamp;
 
-        public Operation(
-            long dailyCardId,
-            bool useTicket,
-            UniTask<TavernExecWorkResponseEntity> initial,
-            CancellationToken requestCancellationToken,
-            CancellationToken retryCancellationToken
+        public CreateGameDataOperation(
+            TavernGameViewController controller,
+            Il2CppVignetteList vignetteIds,
+            TavernExecWorkResponseEntity initialResponse,
+            long dailyId,
+            CancellationToken cancellationToken
         )
         {
-            _dailyCardId = dailyCardId;
-            _useTicket = useTicket;
-            _current = initial;
-            _requestCancellationToken = requestCancellationToken;
-            _retryCancellationToken = retryCancellationToken;
+            _controller = controller;
+            _vignetteIds = vignetteIds;
+            _pendingResponse = initialResponse;
+            _dailyCardId = dailyId;
+            _useTicket = initialResponse.tavern_daily_card.use_ticket != 0;
+            _cancellationToken = cancellationToken;
         }
 
-        public UniTask<TavernExecWorkResponseEntity> Task => _completion.Task;
+        public UniTask Task => _completion.Task;
 
         public bool Update()
         {
             try
             {
+                if (_createGameDataActive)
+                    return PollCreateGameData();
                 if (_retryDueTimestamp != 0)
                     return PollCooldown();
-
-                switch (_current.Status)
+                if (_replayActive)
+                    return PollReplay();
+                if (_pendingResponse != null)
                 {
-                    case UniTaskStatus.Pending:
-                        return false;
-                    case UniTaskStatus.Canceled:
-                        _completion.TrySetCanceled(_requestCancellationToken);
-                        return true;
-                    case UniTaskStatus.Faulted:
-                        return HandleFaultedRequest();
-                    case UniTaskStatus.Succeeded:
-                        return HandleResponse(_current.GetAwaiter().GetResult());
-                    default:
-                        _completion.TrySetException(
-                            new Il2CppSystem.Exception("Unknown Tavern UniTask status.")
-                        );
-                        return true;
+                    TavernExecWorkResponseEntity response = _pendingResponse;
+                    _pendingResponse = null;
+                    return HandleResponse(response);
                 }
+
+                _completion.TrySetException(
+                    new Il2CppSystem.Exception("Tavern Auto-SL entered an idle state.")
+                );
+                return true;
             }
             catch (Exception ex)
             {
                 Logger.Error($"[F11][TavernAutoSL] update fault: {ex}");
-                if (_lastResponse != null)
-                    _completion.TrySetResult(_lastResponse);
-                else
-                    _completion.TrySetException(new Il2CppSystem.Exception(ex.Message));
+                if (_lastResponse != null && !_createGameDataActive)
+                    return StartNativeCreateGameData(_lastResponse, "update-fault-fail-open");
+
+                _completion.TrySetException(new Il2CppSystem.Exception(ex.Message));
                 return true;
             }
         }
@@ -177,47 +184,73 @@ public static class TavernFirstCardAutoSL
                     $"[F11][TavernAutoSL] disabled before replay; accepting response, "
                         + $"reason={disabledReason}"
                 );
-                _completion.TrySetResult(_lastResponse);
-                return true;
+                return StartNativeCreateGameData(_lastResponse, "disabled-before-replay");
             }
 
-            _current = ReplayRequest(_dailyCardId, _useTicket, _retryCancellationToken);
-            _currentIsReplay = true;
+            _replayTask = ReplayRequest(
+                _dailyCardId,
+                _useTicket,
+                _cancellationToken
+            );
+            _replayActive = true;
             Logger.Info(
                 $"[F11][TavernAutoSL] replay RequestExecWorkAsync invoked, "
                     + $"dailyCardId={_dailyCardId}, useTicket={_useTicket}, "
-                    + $"taskStatus={_current.Status}"
+                    + $"taskStatus={_replayTask.Status}"
             );
             return false;
         }
 
-        private bool HandleFaultedRequest()
+        private bool PollReplay()
         {
+            switch (_replayTask.Status)
+            {
+                case UniTaskStatus.Pending:
+                    return false;
+                case UniTaskStatus.Canceled:
+                    _replayActive = false;
+                    _flow.OnReplayFault();
+                    Logger.Warn(
+                        "[F11][TavernAutoSL] replay canceled; accepting previous response"
+                    );
+                    return StartNativeCreateGameData(_lastResponse, "replay-canceled-fail-open");
+                case UniTaskStatus.Faulted:
+                    return HandleReplayFault();
+                case UniTaskStatus.Succeeded:
+                    _replayActive = false;
+                    return HandleResponse(_replayTask.GetAwaiter().GetResult());
+                default:
+                    _replayActive = false;
+                    Logger.Warn(
+                        $"[F11][TavernAutoSL] unknown replay status "
+                            + $"{_replayTask.Status}; accepting previous response"
+                    );
+                    return StartNativeCreateGameData(_lastResponse, "unknown-replay-status");
+            }
+        }
+
+        private bool HandleReplayFault()
+        {
+            _replayActive = false;
             Exception fault;
             try
             {
-                _current.GetAwaiter().GetResult();
-                fault = new InvalidOperationException("Faulted Tavern task returned no exception.");
+                _replayTask.GetAwaiter().GetResult();
+                fault = new InvalidOperationException(
+                    "Faulted Tavern replay task returned no exception."
+                );
             }
             catch (Exception ex)
             {
                 fault = ex;
             }
 
-            if (_currentIsReplay && _lastResponse != null)
-            {
-                _flow.OnReplayFault();
-                Logger.Warn(
-                    $"[F11][TavernAutoSL] replay faulted; accepting previous response: "
-                        + $"{fault.GetType().Name}: {fault.Message}"
-                );
-                _completion.TrySetResult(_lastResponse);
-                return true;
-            }
-
-            Logger.Error($"[F11][TavernAutoSL] initial request fault: {fault}");
-            _completion.TrySetException(new Il2CppSystem.Exception(fault.Message));
-            return true;
+            _flow.OnReplayFault();
+            Logger.Warn(
+                $"[F11][TavernAutoSL] replay faulted; accepting previous response: "
+                    + $"{fault.GetType().Name}: {fault.Message}"
+            );
+            return StartNativeCreateGameData(_lastResponse, "replay-fault-fail-open");
         }
 
         private bool HandleResponse(TavernExecWorkResponseEntity response)
@@ -229,8 +262,7 @@ public static class TavernFirstCardAutoSL
                     $"[F11][TavernAutoSL] accepting response without evaluation, "
                         + $"reason={disabledReason}"
                 );
-                _completion.TrySetResult(response);
-                return true;
+                return StartNativeCreateGameData(response, "disabled-before-evaluation");
             }
 
             TavernFirstCardProbeReport report = TavernFirstCardProbe.Parse(response);
@@ -239,8 +271,7 @@ public static class TavernFirstCardAutoSL
                 Logger.Warn(
                     $"[F11][TavernAutoSL] probe failed; accepting response, error={report.Error}"
                 );
-                _completion.TrySetResult(response);
-                return true;
+                return StartNativeCreateGameData(response, "probe-fail-open");
             }
             if (!TavernFirstCardAutoSLPolicy.IsFirstCardTurn(report.SelectedCount))
             {
@@ -248,8 +279,7 @@ public static class TavernFirstCardAutoSL
                     $"[F11][TavernAutoSL] later turn bypassed, "
                         + $"selectedCount={report.SelectedCount}, workedCount={report.WorkedCount}"
                 );
-                _completion.TrySetResult(response);
-                return true;
+                return StartNativeCreateGameData(response, "later-turn-bypass");
             }
 
             TavernFirstCardEvaluation evaluation = TavernFirstCardAutoSLPolicy.Evaluate(
@@ -277,10 +307,7 @@ public static class TavernFirstCardAutoSL
             Logger.Info($"[F11][TavernAutoSL] cards={report.FormatCandidates()}");
 
             if (action == TavernFirstCardRetryAction.AcceptCurrentResponse)
-            {
-                _completion.TrySetResult(response);
-                return true;
-            }
+                return StartNativeCreateGameData(response, decision);
 
             float cooldownSeconds = BattleSessionAutoSLPolicy.ClampCooldown(
                 Config.BattleSessionAutoSLCooldown.Value
@@ -292,6 +319,93 @@ public static class TavernFirstCardAutoSL
                     + $"cooldown={cooldownSeconds:0.0}s"
             );
             return false;
+        }
+
+        private bool StartNativeCreateGameData(
+            TavernExecWorkResponseEntity response,
+            string reason
+        )
+        {
+            if (response == null)
+            {
+                _completion.TrySetException(
+                    new Il2CppSystem.Exception(
+                        $"Tavern Auto-SL cannot fail open without a response: {reason}"
+                    )
+                );
+                return true;
+            }
+
+            try
+            {
+                _createGameDataTask = InvokeNativeCreateGameData(
+                    _controller,
+                    _vignetteIds,
+                    response,
+                    _dailyCardId
+                );
+                _createGameDataActive = true;
+                Logger.Info(
+                    $"[F11][TavernAutoSL] native CreateGameData invoked, "
+                        + $"reason={reason}, taskStatus={_createGameDataTask.Status}"
+                );
+                return PollCreateGameData();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(
+                    $"[F11][TavernAutoSL] native CreateGameData invocation fault: {ex}"
+                );
+                _completion.TrySetException(new Il2CppSystem.Exception(ex.Message));
+                return true;
+            }
+        }
+
+        private bool PollCreateGameData()
+        {
+            switch (_createGameDataTask.Status)
+            {
+                case UniTaskStatus.Pending:
+                    return false;
+                case UniTaskStatus.Canceled:
+                    _createGameDataActive = false;
+                    _completion.TrySetCanceled(_cancellationToken);
+                    return true;
+                case UniTaskStatus.Faulted:
+                    return HandleCreateGameDataFault();
+                case UniTaskStatus.Succeeded:
+                    _createGameDataTask.GetAwaiter().GetResult();
+                    _createGameDataActive = false;
+                    _completion.TrySetResult();
+                    return true;
+                default:
+                    _createGameDataActive = false;
+                    _completion.TrySetException(
+                        new Il2CppSystem.Exception("Unknown Tavern CreateGameData UniTask status.")
+                    );
+                    return true;
+            }
+        }
+
+        private bool HandleCreateGameDataFault()
+        {
+            _createGameDataActive = false;
+            Exception fault;
+            try
+            {
+                _createGameDataTask.GetAwaiter().GetResult();
+                fault = new InvalidOperationException(
+                    "Faulted Tavern CreateGameData task returned no exception."
+                );
+            }
+            catch (Exception ex)
+            {
+                fault = ex;
+            }
+
+            Logger.Error($"[F11][TavernAutoSL] native CreateGameData fault: {fault}");
+            _completion.TrySetException(new Il2CppSystem.Exception(fault.Message));
+            return true;
         }
     }
 }

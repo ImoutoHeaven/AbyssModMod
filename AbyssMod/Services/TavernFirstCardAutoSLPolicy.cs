@@ -3,6 +3,18 @@ using System.Collections.Generic;
 
 namespace AbyssMod.Services;
 
+public static class TavernFirstCardHookPlan
+{
+    public const string InterceptionType = "Project.Tavern.Top.GameViewController";
+    public const string InterceptionMethod = "CreateGameData";
+    public const bool InterceptsStaticGenericUniTask = false;
+
+    public static bool IsNativeAbiSafe =>
+        InterceptionType == "Project.Tavern.Top.GameViewController"
+        && InterceptionMethod == "CreateGameData"
+        && !InterceptsStaticGenericUniTask;
+}
+
 public enum TavernFirstCardTarget
 {
     Off = 0,
