@@ -23,16 +23,41 @@ public static class PatchManager
         Harmony.CreateAndPatchAll(typeof(BattleSessionAutoSLPatch));
         Harmony.CreateAndPatchAll(typeof(TavernFirstCardAutoSLPatch));
         Harmony.CreateAndPatchAll(typeof(BattleSettlementPayloadProbePatch));
-        Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback0Patch));
-        Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback1Patch));
-        Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback2Patch));
-        Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback3Patch));
+        InstallQuestPreviewEquipmentCallbackPatches();
         Harmony.CreateAndPatchAll(typeof(IdleExplorationQuestPreviewEquipmentDirectPatch));
+        Harmony.CreateAndPatchAll(typeof(EventQuestPreviewContextPatch));
         Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentDropPopupPatch));
         Harmony.CreateAndPatchAll(typeof(GeneralTextPatch));
         Harmony.CreateAndPatchAll(typeof(MasterDataTranslationPatch));
 #if DEBUG
         Harmony.CreateAndPatchAll(typeof(DebugPatch));
 #endif
+    }
+
+    private static void InstallQuestPreviewEquipmentCallbackPatches()
+    {
+        foreach (
+            int actionParameterIndex in Services.QuestPreviewHarmonyPatchPlan.ActionParameterIndices
+        )
+        {
+            switch (actionParameterIndex)
+            {
+                case 0:
+                    Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback0Patch));
+                    break;
+                case 1:
+                    Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback1Patch));
+                    break;
+                case 2:
+                    Harmony.CreateAndPatchAll(typeof(QuestPreviewEquipmentCallback2Patch));
+                    break;
+                default:
+                    Logger.Warn(
+                        $"[F6][EquipmentTarget][Binding] outcome=skipped-unsupported-callback-index "
+                            + $"index={actionParameterIndex}"
+                    );
+                    break;
+            }
+        }
     }
 }

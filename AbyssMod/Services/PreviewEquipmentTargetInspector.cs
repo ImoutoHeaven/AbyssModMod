@@ -29,34 +29,9 @@ public static class QuestPreviewBindingCatalog
                 2
             ),
             new(
-                "Project.StoryEvent.StoryEventQuestDetailPopup",
-                "Initialize",
-                2
-            ),
-            new(
                 "Project.Outgame.Event.BonusQuest.EventBonusQuestDetailPopup",
                 "Initialize",
                 2
-            ),
-            new(
-                "Project.TrainingEvent.TrainingEventQuestDetailPopup",
-                "Initialize",
-                2
-            ),
-            new(
-                "Project.HuntEvent.HuntEventQuestDetailPopup",
-                "Initialize",
-                2
-            ),
-            new(
-                "Project.CommissionEvent.CommissionEventQuestDetailPopup",
-                "Initialize",
-                2
-            ),
-            new(
-                "Project.MiningEvent.MiningEventQuestDetailPopup",
-                "Initialize",
-                3
             ),
             new(
                 "Project.Disaster.DisasterQuestDetailPopup",
@@ -81,6 +56,16 @@ public static class QuestPreviewBindingCatalog
         };
 }
 
+public static class QuestPreviewHarmonyPatchPlan
+{
+    public static IReadOnlyList<int> ActionParameterIndices { get; } =
+        QuestPreviewBindingCatalog.Bindings
+            .Select(binding => binding.ActionParameterIndex)
+            .Distinct()
+            .OrderBy(index => index)
+            .ToArray();
+}
+
 public readonly record struct DirectQuestPreviewBindingDescriptor(
     string TypeName,
     string MethodName,
@@ -96,6 +81,45 @@ public static class DirectQuestPreviewBindingCatalog
                 "Project.IdleExploration.EncounterQuestList.SubViewController",
                 "OpenContentDetailPopupAsync",
                 "Project.Outgame.UI.DropThumbnailModel"
+            ),
+        };
+}
+
+public readonly record struct QuestPreviewContextBindingDescriptor(
+    string TypeName,
+    string MethodName,
+    string ParameterTypeName
+);
+
+public static class QuestPreviewContextBindingCatalog
+{
+    public static IReadOnlyList<QuestPreviewContextBindingDescriptor> Bindings { get; } =
+        new QuestPreviewContextBindingDescriptor[]
+        {
+            new(
+                "Project.StoryEvent.StoryEventQuestDetailPopupController",
+                "InitializePopup",
+                "Project.StoryEvent.StoryEventQuestDetailPopup"
+            ),
+            new(
+                "Project.TrainingEvent.TrainingEventQuestDetailPopupController",
+                "InitializePopup",
+                "Project.TrainingEvent.TrainingEventQuestDetailPopup"
+            ),
+            new(
+                "Project.HuntEvent.HuntEventQuestDetailPopupController",
+                "InitializePopup",
+                "Project.HuntEvent.HuntEventQuestDetailPopup"
+            ),
+            new(
+                "Project.CommissionEvent.CommissionEventQuestDetailPopupController",
+                "InitializePopup",
+                "Project.CommissionEvent.CommissionEventQuestDetailPopup"
+            ),
+            new(
+                "Project.MiningEvent.MiningEventQuestDetailPopupController",
+                "InitializePopup",
+                "Project.MiningEvent.MiningEventQuestDetailPopup"
             ),
         };
 }
@@ -207,6 +231,13 @@ public sealed class PreviewEquipmentTargetSnapshot
         value.Replace('\r', ' ').Replace('\n', ' ');
 }
 
+public enum PreviewEquipmentTargetCorrelation
+{
+    None = 0,
+    QuestPreviewIntent = 1,
+    ActiveQuestPreviewContext = 2,
+}
+
 public sealed class QuestPreviewOpenIntentTracker
 {
     private NormalExactDropTarget? _pending;
@@ -256,6 +287,8 @@ public sealed class PreviewEquipmentTargetInspector
     private object? _popup;
     private PreviewEquipmentTargetSnapshot? _snapshot;
     private Func<object, bool>? _isActive;
+    private object? _questPreviewContext;
+    private Func<object, bool>? _isQuestPreviewContextActive;
 
     public PreviewEquipmentTargetInspector(double intentLifetimeSeconds = 10)
     {
@@ -274,21 +307,67 @@ public sealed class PreviewEquipmentTargetInspector
         return _intent.Record(contentType, contentId, nowSeconds);
     }
 
+    public bool RecordQuestPreviewContext(
+        object? questPreviewContext,
+        Func<object, bool>? isActive
+    )
+    {
+        ClearActive();
+        ClearQuestPreviewContext();
+        if (questPreviewContext == null || isActive == null)
+            return false;
+
+        _questPreviewContext = questPreviewContext;
+        _isQuestPreviewContextActive = isActive;
+        return true;
+    }
+
     public bool TryRegisterPopup(
         object? popup,
         PreviewEquipmentTargetSnapshot? snapshot,
         double nowSeconds,
         Func<object, bool>? isActive
+    ) => TryRegisterPopup(
+        popup,
+        snapshot,
+        nowSeconds,
+        isActive,
+        out _
+    );
+
+    public bool TryRegisterPopup(
+        object? popup,
+        PreviewEquipmentTargetSnapshot? snapshot,
+        double nowSeconds,
+        Func<object, bool>? isActive,
+        out PreviewEquipmentTargetCorrelation correlation
     )
     {
+        correlation = PreviewEquipmentTargetCorrelation.None;
         ClearActive();
         if (popup == null || snapshot == null || isActive == null)
         {
             _intent.Clear();
             return false;
         }
-        if (!_intent.TryConsume(snapshot.Target, nowSeconds, _intentLifetimeSeconds))
+
+        bool matchedIntent = _intent.TryConsume(
+            snapshot.Target,
+            nowSeconds,
+            _intentLifetimeSeconds
+        );
+        if (matchedIntent)
+        {
+            correlation = PreviewEquipmentTargetCorrelation.QuestPreviewIntent;
+        }
+        else if (HasActiveQuestPreviewContext())
+        {
+            correlation = PreviewEquipmentTargetCorrelation.ActiveQuestPreviewContext;
+        }
+        else
+        {
             return false;
+        }
 
         _popup = popup;
         _snapshot = snapshot;
@@ -324,6 +403,26 @@ public sealed class PreviewEquipmentTargetInspector
     {
         _intent.Clear();
         ClearActive();
+        ClearQuestPreviewContext();
+    }
+
+    private bool HasActiveQuestPreviewContext()
+    {
+        if (_questPreviewContext == null || _isQuestPreviewContextActive == null)
+            return false;
+
+        try
+        {
+            if (_isQuestPreviewContextActive(_questPreviewContext))
+                return true;
+        }
+        catch
+        {
+            // Treat destroyed IL2CPP/Unity objects as an inactive context.
+        }
+
+        ClearQuestPreviewContext();
+        return false;
     }
 
     private void ClearActive()
@@ -331,5 +430,11 @@ public sealed class PreviewEquipmentTargetInspector
         _popup = null;
         _snapshot = null;
         _isActive = null;
+    }
+
+    private void ClearQuestPreviewContext()
+    {
+        _questPreviewContext = null;
+        _isQuestPreviewContextActive = null;
     }
 }

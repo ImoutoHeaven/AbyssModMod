@@ -190,19 +190,6 @@ public static class QuestPreviewEquipmentCallback2Patch
 }
 
 [HarmonyPatch]
-public static class QuestPreviewEquipmentCallback3Patch
-{
-    private static IEnumerable<MethodBase> TargetMethods() =>
-        QuestPreviewEquipmentCallbackPatchShared.TargetMethods(3);
-
-    [HarmonyPrefix]
-    private static void Prefix(
-        ref Il2CppSystem.Action<IContentModel> __3,
-        MethodBase __originalMethod
-    ) => QuestPreviewEquipmentCallbackPatchShared.Wrap(ref __3, __originalMethod);
-}
-
-[HarmonyPatch]
 public static class IdleExplorationQuestPreviewEquipmentDirectPatch
 {
     private static IEnumerable<MethodBase> TargetMethods()
@@ -302,6 +289,101 @@ public static class IdleExplorationQuestPreviewEquipmentDirectPatch
     }
 }
 
+[HarmonyPatch]
+public static class EventQuestPreviewContextPatch
+{
+    private static IEnumerable<MethodBase> TargetMethods()
+    {
+        Assembly projectAssembly = typeof(EquipmentDropPopup).Assembly;
+        foreach (
+            QuestPreviewContextBindingDescriptor binding in
+                QuestPreviewContextBindingCatalog.Bindings
+        )
+        {
+            Type ownerType = projectAssembly.GetType(binding.TypeName, false);
+            Type parameterType = projectAssembly.GetType(binding.ParameterTypeName, false);
+            if (ownerType == null || parameterType == null)
+            {
+                Logger.Warn(
+                    $"[F6][EquipmentTarget][Binding] outcome=missing-context-type "
+                        + $"type={binding.TypeName} parameter={binding.ParameterTypeName}"
+                );
+                continue;
+            }
+
+            MethodInfo[] candidates = ownerType
+                .GetMethods(
+                    BindingFlags.Instance
+                        | BindingFlags.Public
+                        | BindingFlags.NonPublic
+                        | BindingFlags.DeclaredOnly
+                )
+                .Where(method => method.Name.Equals(
+                    binding.MethodName,
+                    StringComparison.Ordinal
+                ))
+                .Where(method => method.ReturnType == typeof(void))
+                .Where(method =>
+                {
+                    ParameterInfo[] parameters = method.GetParameters();
+                    return parameters.Length == 1
+                        && parameters[0].ParameterType == parameterType;
+                })
+                .ToArray();
+            if (candidates.Length != 1)
+            {
+                Logger.Warn(
+                    $"[F6][EquipmentTarget][Binding] outcome=missing-context-method "
+                        + $"type={binding.TypeName} method={binding.MethodName} "
+                        + $"parameter={binding.ParameterTypeName} candidates={candidates.Length}"
+                );
+                continue;
+            }
+
+            Logger.Info(
+                $"[F6][EquipmentTarget][Binding] outcome=bound-context "
+                    + $"type={binding.TypeName} method={candidates[0].Name}"
+            );
+            yield return candidates[0];
+        }
+    }
+
+    [HarmonyPostfix]
+    private static void Postfix(object __0, MethodBase __originalMethod)
+    {
+        string source = __originalMethod?.DeclaringType?.FullName
+            + "."
+            + __originalMethod?.Name;
+        try
+        {
+            bool recorded = PreviewEquipmentTargetInspector.Shared.RecordQuestPreviewContext(
+                __0,
+                IsActiveQuestPreview
+            );
+            Logger.Info(
+                $"[F6][EquipmentTarget][Diag] event=quest-preview-context "
+                    + $"outcome={(recorded ? "registered" : "ignored")} source={source}"
+            );
+        }
+        catch (Exception ex)
+        {
+            PreviewEquipmentTargetInspector.Shared.Clear();
+            Logger.Warn(
+                $"[F6][EquipmentTarget][Diag] event=quest-preview-context outcome=error "
+                    + $"source={source} error={ex.GetType().Name}:{ex.Message}"
+            );
+        }
+    }
+
+    private static bool IsActiveQuestPreview(object handle)
+    {
+        if (handle is not Component component || component == null)
+            return false;
+        GameObject gameObject = component.gameObject;
+        return gameObject != null && gameObject.activeInHierarchy;
+    }
+}
+
 [HarmonyPatch(typeof(EquipmentDropPopup), nameof(EquipmentDropPopup.Setup))]
 public static class QuestPreviewEquipmentDropPopupPatch
 {
@@ -328,12 +410,14 @@ public static class QuestPreviewEquipmentDropPopupPatch
                 __instance,
                 snapshot,
                 Time.realtimeSinceStartup,
-                IsActivePopup
+                IsActivePopup,
+                out PreviewEquipmentTargetCorrelation correlation
             );
             if (registered)
             {
                 Logger.Info(
                     $"[F6][EquipmentTarget][Diag] event=popup-correlated outcome=registered "
+                        + $"correlation={FormatCorrelation(correlation)} "
                         + snapshot.LogFields
                 );
             }
@@ -400,6 +484,15 @@ public static class QuestPreviewEquipmentDropPopupPatch
         GameObject gameObject = popup.gameObject;
         return gameObject != null && gameObject.activeInHierarchy;
     }
+
+    private static string FormatCorrelation(PreviewEquipmentTargetCorrelation correlation) =>
+        correlation switch
+        {
+            PreviewEquipmentTargetCorrelation.QuestPreviewIntent => "click-intent",
+            PreviewEquipmentTargetCorrelation.ActiveQuestPreviewContext =>
+                "active-event-quest-preview",
+            _ => "none",
+        };
 
     private static void LogIgnored(string reason, string token)
     {

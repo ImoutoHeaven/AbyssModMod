@@ -107,11 +107,75 @@ public sealed class PreviewEquipmentTargetInspectorTests
         var popup = new object();
 
         Assert.True(inspector.RecordQuestPreviewIntent(80, 23010440, 10));
-        Assert.True(inspector.TryRegisterPopup(popup, ForestCloak(), 10.5, _ => true));
+        Assert.True(
+            inspector.TryRegisterPopup(
+                popup,
+                ForestCloak(),
+                10.5,
+                _ => true,
+                out PreviewEquipmentTargetCorrelation correlation
+            )
+        );
+        Assert.Equal(PreviewEquipmentTargetCorrelation.QuestPreviewIntent, correlation);
         Assert.True(inspector.TryGetActive(out PreviewEquipmentTargetSnapshot snapshot));
         Assert.Equal("Armor:23010440", snapshot.Token);
 
         Assert.False(inspector.TryRegisterPopup(new object(), ForestCloak(), 10.6, _ => true));
+    }
+
+    [Fact]
+    public void Active_activity_quest_preview_context_registers_equipment_without_click_intent()
+    {
+        var inspector = new PreviewEquipmentTargetInspector();
+        var activityQuestPreview = new object();
+        var equipmentPopup = new object();
+
+        Assert.True(
+            inspector.RecordQuestPreviewContext(activityQuestPreview, _ => true)
+        );
+        Assert.True(
+            inspector.TryRegisterPopup(
+                equipmentPopup,
+                ForestCloak(),
+                10,
+                _ => true,
+                out PreviewEquipmentTargetCorrelation correlation
+            )
+        );
+        Assert.Equal(
+            PreviewEquipmentTargetCorrelation.ActiveQuestPreviewContext,
+            correlation
+        );
+        Assert.True(inspector.TryGetActive(out PreviewEquipmentTargetSnapshot snapshot));
+        Assert.Equal("Armor:23010440", snapshot.Token);
+    }
+
+    [Fact]
+    public void Inactive_activity_quest_preview_context_is_rejected_and_cleared()
+    {
+        var inspector = new PreviewEquipmentTargetInspector();
+        bool activityQuestPreviewActive = false;
+
+        inspector.RecordQuestPreviewContext(
+            new object(),
+            _ => activityQuestPreviewActive
+        );
+
+        Assert.False(
+            inspector.TryRegisterPopup(
+                new object(),
+                ForestCloak(),
+                10,
+                _ => true,
+                out PreviewEquipmentTargetCorrelation correlation
+            )
+        );
+        Assert.Equal(PreviewEquipmentTargetCorrelation.None, correlation);
+
+        activityQuestPreviewActive = true;
+        Assert.False(
+            inspector.TryRegisterPopup(new object(), ForestCloak(), 10.1, _ => true)
+        );
     }
 
     [Fact]
@@ -216,10 +280,13 @@ public sealed class PreviewEquipmentTargetInspectorTests
             types
         );
         Assert.Contains("Project.MainStory.StaminaQuestDetailPopup", types);
-        Assert.Contains("Project.StoryEvent.StoryEventQuestDetailPopup", types);
         Assert.Contains("Project.Disaster.DisasterQuestDetailPopup", types);
         Assert.Contains("Project.UnionRequest.UnionRequestDetailPopup", types);
         Assert.Contains("Project.UnionRequest.UnionRequestContentView", types);
+        Assert.All(
+            QuestPreviewContextBindingCatalog.Bindings,
+            binding => Assert.DoesNotContain(binding.ParameterTypeName, types)
+        );
         Assert.DoesNotContain(
             types,
             type => type.EndsWith("PopupController", StringComparison.Ordinal)
@@ -248,11 +315,49 @@ public sealed class PreviewEquipmentTargetInspectorTests
                 && binding.MethodName == "InitializeView"
                 && binding.ActionParameterIndex == 0
         );
-        Assert.Contains(
-            QuestPreviewBindingCatalog.Bindings,
-            binding => binding.TypeName == "Project.MiningEvent.MiningEventQuestDetailPopup"
-                && binding.MethodName == "Initialize"
-                && binding.ActionParameterIndex == 3
+    }
+
+    [Fact]
+    public void Harmony_callback_patch_plan_contains_only_non_empty_native_argument_groups()
+    {
+        int[] bindingIndices = QuestPreviewBindingCatalog.Bindings
+            .Select(binding => binding.ActionParameterIndex)
+            .Distinct()
+            .OrderBy(index => index)
+            .ToArray();
+
+        Assert.Equal(
+            new[] { 0, 1, 2 },
+            QuestPreviewHarmonyPatchPlan.ActionParameterIndices
+        );
+        Assert.Equal(bindingIndices, QuestPreviewHarmonyPatchPlan.ActionParameterIndices);
+        Assert.All(
+            QuestPreviewHarmonyPatchPlan.ActionParameterIndices,
+            index => Assert.Contains(
+                QuestPreviewBindingCatalog.Bindings,
+                binding => binding.ActionParameterIndex == index
+            )
+        );
+    }
+
+    [Fact]
+    public void Direct_event_controllers_bind_their_live_initialize_popup_contexts()
+    {
+        string[] bindings = QuestPreviewContextBindingCatalog.Bindings
+            .Select(binding =>
+                $"{binding.TypeName}|{binding.MethodName}|{binding.ParameterTypeName}")
+            .ToArray();
+
+        Assert.Equal(
+            new[]
+            {
+                "Project.StoryEvent.StoryEventQuestDetailPopupController|InitializePopup|Project.StoryEvent.StoryEventQuestDetailPopup",
+                "Project.TrainingEvent.TrainingEventQuestDetailPopupController|InitializePopup|Project.TrainingEvent.TrainingEventQuestDetailPopup",
+                "Project.HuntEvent.HuntEventQuestDetailPopupController|InitializePopup|Project.HuntEvent.HuntEventQuestDetailPopup",
+                "Project.CommissionEvent.CommissionEventQuestDetailPopupController|InitializePopup|Project.CommissionEvent.CommissionEventQuestDetailPopup",
+                "Project.MiningEvent.MiningEventQuestDetailPopupController|InitializePopup|Project.MiningEvent.MiningEventQuestDetailPopup",
+            },
+            bindings
         );
     }
 
