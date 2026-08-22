@@ -664,6 +664,120 @@ public class NetherBattleDropProbeTests
     }
 
     [Fact]
+    public void Policy_retries_when_gold_equipment_is_not_a_selected_weapon_type()
+    {
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(OneEnemyDrop(3));
+        var masterItems = new Dictionary<long, NetherItemMasterInfo>
+        {
+            [210021] = new(91, 3, NetherWeaponType.Gun),
+        };
+
+        NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
+            report,
+            masterItems,
+            NetherSlTarget.Gold,
+            weaponTypes: NetherWeaponTypeFilter.Staff
+        );
+
+        Assert.True(evaluation.ShouldRetry);
+        Assert.Empty(evaluation.Targets);
+        Assert.Equal(string.Empty, evaluation.Error);
+    }
+
+    [Fact]
+    public void Policy_any_weapon_type_filter_preserves_existing_matching()
+    {
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(OneEnemyDrop(3));
+        var masterItems = new Dictionary<long, NetherItemMasterInfo>
+        {
+            [210021] = new(91, 3),
+        };
+
+        NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
+            report,
+            masterItems,
+            NetherSlTarget.Gold,
+            weaponTypes: NetherWeaponTypeFilter.Any
+        );
+
+        Assert.False(evaluation.ShouldRetry);
+        Assert.Equal(string.Empty, evaluation.Error);
+        Assert.Single(evaluation.Targets);
+    }
+
+    [Fact]
+    public void Policy_accepts_a_weapon_type_from_multi_selection()
+    {
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(OneEnemyDrop(3));
+        var masterItems = new Dictionary<long, NetherItemMasterInfo>
+        {
+            [210021] = new(91, 3, NetherWeaponType.Staff),
+        };
+
+        NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
+            report,
+            masterItems,
+            NetherSlTarget.Gold,
+            weaponTypes: NetherWeaponTypeFilter.Gun | NetherWeaponTypeFilter.Staff
+        );
+
+        Assert.False(evaluation.ShouldRetry);
+        Assert.Equal(string.Empty, evaluation.Error);
+        Assert.Single(evaluation.Targets);
+    }
+
+    [Fact]
+    public void Policy_fails_open_when_selected_weapon_type_cannot_be_resolved()
+    {
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(OneEnemyDrop(3));
+        var masterItems = new Dictionary<long, NetherItemMasterInfo>
+        {
+            [210021] = new(91, 3),
+        };
+
+        NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
+            report,
+            masterItems,
+            NetherSlTarget.Gold,
+            weaponTypes: NetherWeaponTypeFilter.Staff
+        );
+
+        Assert.False(evaluation.ShouldRetry);
+        Assert.Equal("unresolved-nether-equipment-type:210021", evaluation.Error);
+    }
+
+    [Fact]
+    public void Policy_preserve_branch_bypasses_weapon_type_filter()
+    {
+        const string preserveDrop = """
+            {
+              "enemies": [{ "sid": 1, "drops": [11] }],
+              "drops": [
+                { "sid": 11, "content_type": 31, "content_id": 200003, "amount": 1, "rarity_level": 0, "is_rare_drop": 0 }
+              ]
+            }
+            """;
+        NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(preserveDrop);
+        var masterItems = new Dictionary<long, NetherItemMasterInfo>
+        {
+            [200003] = new(90, 0),
+        };
+
+        NetherBattleDropEvaluation evaluation = NetherBattleAutoSLPolicy.Evaluate(
+            report,
+            masterItems,
+            NetherSlTarget.Gold,
+            preserveMode: NetherPreserveMode.OR,
+            preservedItemIds: new HashSet<long> { 200003 },
+            weaponTypes: NetherWeaponTypeFilter.Staff
+        );
+
+        Assert.True(evaluation.StopConditionMatched);
+        Assert.Equal(string.Empty, evaluation.Error);
+        Assert.Equal(NetherTargetReason.PreservedNetherItemId, Assert.Single(evaluation.Targets).Reason);
+    }
+
+    [Fact]
     public void Parse_fails_open_when_enemy_references_an_unknown_drop_sid()
     {
         const string invalid = """

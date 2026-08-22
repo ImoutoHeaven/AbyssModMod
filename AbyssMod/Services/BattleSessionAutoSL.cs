@@ -574,6 +574,7 @@ public static class BattleSessionAutoSL
 
             NetherBattleDropProbeReport report = NetherBattleDropProbe.Parse(response?.stage_detail);
             bool equipmentOnly = Config.BattleSessionAutoSLNetherEquipmentOnly.Value;
+            NetherWeaponTypeFilter weaponTypes = Config.BattleSessionAutoSLNetherWeaponTypes.Value;
             NetherPreserveMode preserveMode = Config.BattleSessionAutoSLNetherPreserveMode.Value;
             bool preserveConfigValid = NetherPreserveItemIdParser.TryParse(
                 Config.BattleSessionAutoSLNetherPreserveItemIds.Value,
@@ -603,7 +604,8 @@ public static class BattleSessionAutoSL
                     runtimeDecision.Target,
                     equipmentOnly,
                     preserveMode,
-                    preservedItemIds
+                    preservedItemIds,
+                    weaponTypes
                 );
             }
 
@@ -619,6 +621,7 @@ public static class BattleSessionAutoSL
                 runtimeDecision.StrategyText,
                 runtimeDecision.StrategyDecision,
                 equipmentOnly,
+                weaponTypes,
                 preserveMode,
                 preservedItemIds,
                 Config.BattleSessionAutoSLNetherPreserveItemIds.Value,
@@ -653,6 +656,7 @@ public static class BattleSessionAutoSL
             string strategyText,
             NetherFloorStrategyDecision strategyDecision,
             bool equipmentOnly,
+            NetherWeaponTypeFilter weaponTypes,
             NetherPreserveMode preserveMode,
             HashSet<long> preservedItemIds,
             string rawPreserveItemIds,
@@ -670,7 +674,7 @@ public static class BattleSessionAutoSL
                     + $"floorType={rawFloorType}, encounter={encounterKind}, configKey={configKey}, "
                     + $"strategy={strategyText}, selector={strategyDecision.Selector}, clause={strategyDecision.ClauseIndex}, "
                     + $"target={strategyDecision.Target}, strategyMatched={strategyDecision.Matched}, strategyError={strategyError}, "
-                    + $"equipmentOnly={equipmentOnly}, "
+                    + $"equipmentOnly={equipmentOnly}, weaponTypes={weaponTypes}, "
                     + $"preserveMode={preserveMode}, rawPreserveItemIds={rawPreserveItemIds}, "
                     + $"parsedPreserveItemIds={NetherPreserveItemIdParser.Format(preservedItemIds)}, "
                     + $"probeError={report.Error}, "
@@ -692,6 +696,7 @@ public static class BattleSessionAutoSL
             );
             var evaluation = new NetherBattleDropEvaluation(Array.Empty<NetherTargetDrop>(), false);
             string rawPreserveItemIds = Config.BattleSessionAutoSLNetherPreserveItemIds.Value;
+            NetherWeaponTypeFilter weaponTypes = Config.BattleSessionAutoSLNetherWeaponTypes.Value;
             NetherPreserveMode preserveMode = Config.BattleSessionAutoSLNetherPreserveMode.Value;
             NetherAttemptLogContext logContext = new(rawPreserveItemIds, preserveMode, runtimeDecision);
             LogNetherAttempt(
@@ -700,6 +705,7 @@ public static class BattleSessionAutoSL
                 runtimeDecision.Reason, runtimeDecision.EncounterKind, runtimeDecision.RawFloorType,
                 runtimeDecision.ConfigKey, runtimeDecision.StrategyText, runtimeDecision.StrategyDecision,
                 Config.BattleSessionAutoSLNetherEquipmentOnly.Value,
+                weaponTypes,
                 preserveMode,
                 new HashSet<long>(),
                 logContext.RawPreserveItemIds,

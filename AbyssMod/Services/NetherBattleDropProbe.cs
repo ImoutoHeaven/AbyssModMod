@@ -8,7 +8,38 @@ using System.Text.Json;
 
 namespace AbyssMod.Services;
 
-public readonly record struct NetherItemMasterInfo(long ItemType, int ContentRarity);
+public enum NetherWeaponType
+{
+    Unknown = 0,
+    OneHandSword = 1,
+    GreatSword = 2,
+    Fists = 3,
+    Bow = 4,
+    Gun = 5,
+    Staff = 6,
+    Grimoire = 7,
+    Pickel = 8,
+}
+
+[Flags]
+public enum NetherWeaponTypeFilter
+{
+    Any = 0,
+    OneHandSword = 1 << 0,
+    GreatSword = 1 << 1,
+    Fists = 1 << 2,
+    Bow = 1 << 3,
+    Gun = 1 << 4,
+    Staff = 1 << 5,
+    Grimoire = 1 << 6,
+    Pickel = 1 << 7,
+}
+
+public readonly record struct NetherItemMasterInfo(
+    long ItemType,
+    int ContentRarity,
+    NetherWeaponType WeaponType = NetherWeaponType.Unknown
+);
 
 public enum NetherTargetReason
 {
@@ -280,13 +311,18 @@ public static class NetherBattleAutoSLPolicy
         NetherSlTarget target,
         bool equipmentOnly = true,
         NetherPreserveMode preserveMode = NetherPreserveMode.AND,
-        HashSet<long>? preservedItemIds = null
+        HashSet<long>? preservedItemIds = null,
+        NetherWeaponTypeFilter weaponTypes = NetherWeaponTypeFilter.Any
     )
     {
         if (report.Error.Length != 0)
             return Error(report.Error);
         if (target == NetherSlTarget.Off || !Enum.IsDefined(typeof(NetherSlTarget), target))
             return Error($"invalid-nether-sl-target:{(int)target}");
+        if (!IsValidWeaponTypeFilter(weaponTypes))
+            return Error($"invalid-nether-weapon-types:{(int)weaponTypes}");
+        if (weaponTypes != NetherWeaponTypeFilter.Any && !equipmentOnly)
+            return Error("nether-weapon-types-require-equipment-only");
         bool hasPreserveRules = preservedItemIds != null && preservedItemIds.Count > 0;
         if (hasPreserveRules && !Enum.IsDefined(typeof(NetherPreserveMode), preserveMode))
             return Error($"unsupported-preserve-mode:{(int)preserveMode}");
@@ -352,6 +388,14 @@ public static class NetherBattleAutoSLPolicy
 
                 if (item.ContentType != NetherItemContentType)
                     return Error($"content-type-mismatch:{item.ContentId}:{item.ContentType}");
+                if (weaponTypes != NetherWeaponTypeFilter.Any)
+                {
+                    NetherWeaponTypeFilter itemWeaponType = ToWeaponTypeFilter(master.WeaponType);
+                    if (itemWeaponType == NetherWeaponTypeFilter.Any)
+                        return Error($"unresolved-nether-equipment-type:{item.ContentId}");
+                    if ((weaponTypes & itemWeaponType) == NetherWeaponTypeFilter.Any)
+                        continue;
+                }
             }
 
             if (item.RarityLevel < (int)NetherSlTarget.NoEffect
@@ -405,6 +449,33 @@ public static class NetherBattleAutoSLPolicy
 
         return new NetherBattleDropEvaluation(targets, stopConditionMatched);
     }
+
+    private const NetherWeaponTypeFilter AllWeaponTypes =
+        NetherWeaponTypeFilter.OneHandSword
+        | NetherWeaponTypeFilter.GreatSword
+        | NetherWeaponTypeFilter.Fists
+        | NetherWeaponTypeFilter.Bow
+        | NetherWeaponTypeFilter.Gun
+        | NetherWeaponTypeFilter.Staff
+        | NetherWeaponTypeFilter.Grimoire
+        | NetherWeaponTypeFilter.Pickel;
+
+    private static bool IsValidWeaponTypeFilter(NetherWeaponTypeFilter weaponTypes) =>
+        (weaponTypes & ~AllWeaponTypes) == NetherWeaponTypeFilter.Any;
+
+    private static NetherWeaponTypeFilter ToWeaponTypeFilter(NetherWeaponType weaponType) =>
+        weaponType switch
+        {
+            NetherWeaponType.OneHandSword => NetherWeaponTypeFilter.OneHandSword,
+            NetherWeaponType.GreatSword => NetherWeaponTypeFilter.GreatSword,
+            NetherWeaponType.Fists => NetherWeaponTypeFilter.Fists,
+            NetherWeaponType.Bow => NetherWeaponTypeFilter.Bow,
+            NetherWeaponType.Gun => NetherWeaponTypeFilter.Gun,
+            NetherWeaponType.Staff => NetherWeaponTypeFilter.Staff,
+            NetherWeaponType.Grimoire => NetherWeaponTypeFilter.Grimoire,
+            NetherWeaponType.Pickel => NetherWeaponTypeFilter.Pickel,
+            _ => NetherWeaponTypeFilter.Any,
+        };
 
     public static NetherBattleDropEvaluation Error(string error) =>
         new(Array.Empty<NetherTargetDrop>(), false, error);

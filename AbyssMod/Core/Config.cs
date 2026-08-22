@@ -53,6 +53,7 @@ namespace AbyssMod
         public static ConfigEntry<string> BattleSessionAutoSLNetherMiniBossStrategy;
         public static ConfigEntry<string> BattleSessionAutoSLNetherBossStrategy;
         public static ConfigEntry<bool> BattleSessionAutoSLNetherEquipmentOnly;
+        public static ConfigEntry<NetherWeaponTypeFilter> BattleSessionAutoSLNetherWeaponTypes;
         public static ConfigEntry<NetherPreserveMode> BattleSessionAutoSLNetherPreserveMode;
         public static ConfigEntry<string> BattleSessionAutoSLNetherPreserveItemIds;
         public static ConfigEntry<string> TavernAutoSLFirstCardTarget;
@@ -270,6 +271,17 @@ namespace AbyssMod
                     + "所以未命中所选策略目标前不会因二者不同而报错。\n"
                     + "NetherPreserveItemIds 是独立的 type=90 白名单分支，"
                     + "由 NetherPreserveMode 决定如何与装备目标组合。"
+            );
+            BattleSessionAutoSLNetherWeaponTypes = Plugin.ConfigFile.Bind(
+                "BattleSessionAutoSL.Targets",
+                "NetherWeaponTypes",
+                NetherWeaponTypeFilter.Any,
+                "Nether 装备袋武器类型多选过滤器：\n"
+                    + "- Any（默认）：不筛选武器类型，保持旧版行为。\n"
+                    + "- 可用英文逗号组合：OneHandSword, GreatSword, Fists, Bow, Gun, Staff, Grimoire, Pickel。\n"
+                    + "只作用于已验证 content_type=31、MItems.type=91 的 Nether 装备袋；"
+                    + "启用非 Any 时必须保持 NetherEquipmentOnly=true。\n"
+                    + "无法解析袋子武器类别或配置非法时会 accept-error 并放行当前响应，避免无限重投。"
             );
             BattleSessionAutoSLNetherPreserveMode = Plugin.ConfigFile.Bind(
                 "BattleSessionAutoSL.Targets",
