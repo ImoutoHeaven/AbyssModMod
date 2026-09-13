@@ -14,9 +14,15 @@ public sealed class ContextualUiTextIndex
     private static readonly Regex PlaceholderRegex = new(@"\{(\d+)\}", RegexOptions.Compiled);
     private readonly Dictionary<string, UiTextPathRules> _exactPaths = new(StringComparer.Ordinal);
     private readonly List<UiTextPathRules> _wildcardPaths = new();
+    private readonly Dictionary<string, string> _uniqueExact = new(StringComparer.Ordinal);
+    private readonly List<UiTextPattern> _uniquePatterns = new();
+    private readonly HashSet<string> _ambiguousExact = new(StringComparer.Ordinal);
 
     public ContextualUiTextIndex(Dictionary<string, Dictionary<string, string>> table)
     {
+        var uniquePatternTemplates = new Dictionary<string, string>(StringComparer.Ordinal);
+        var ambiguousPatterns = new HashSet<string>(StringComparer.Ordinal);
+
         foreach (var (path, translations) in table)
         {
             if (string.IsNullOrEmpty(path) || translations == null)
@@ -27,35 +33,96 @@ public sealed class ContextualUiTextIndex
                 _wildcardPaths.Add(rules);
             else
                 _exactPaths[path] = rules;
+
+            foreach (var (sourceText, translatedText) in translations)
+            {
+                if (string.IsNullOrEmpty(sourceText) || string.IsNullOrEmpty(translatedText))
+                    continue;
+
+                if (PlaceholderRegex.IsMatch(sourceText))
+                    CollectUnique(
+                        uniquePatternTemplates,
+                        ambiguousPatterns,
+                        sourceText,
+                        translatedText
+                    );
+                else
+                    CollectUnique(_uniqueExact, _ambiguousExact, sourceText, translatedText);
+            }
         }
 
         _wildcardPaths.Sort(
             static (left, right) => right.Specificity.CompareTo(left.Specificity)
         );
+
+        foreach (var (sourceText, translatedText) in uniquePatternTemplates)
+            _uniquePatterns.Add(new UiTextPattern(sourceText, translatedText));
     }
 
     public bool TryTranslate(string transformPath, string sourceText, out string translatedText)
     {
         translatedText = null;
-        if (string.IsNullOrEmpty(transformPath) || string.IsNullOrEmpty(sourceText))
+        if (string.IsNullOrEmpty(sourceText))
             return false;
 
-        if (
-            _exactPaths.TryGetValue(transformPath, out var exactRules)
-            && exactRules.TryTranslate(sourceText, out translatedText)
-        )
-            return true;
-
-        foreach (var rules in _wildcardPaths)
+        if (!string.IsNullOrEmpty(transformPath))
         {
             if (
-                rules.MatchesPath(transformPath)
-                && rules.TryTranslate(sourceText, out translatedText)
+                _exactPaths.TryGetValue(transformPath, out var exactRules)
+                && exactRules.TryTranslate(sourceText, out translatedText)
             )
+                return true;
+
+            foreach (var rules in _wildcardPaths)
+            {
+                if (
+                    rules.MatchesPath(transformPath)
+                    && rules.TryTranslate(sourceText, out translatedText)
+                )
+                    return true;
+            }
+        }
+
+        if (_uniqueExact.TryGetValue(sourceText, out translatedText))
+            return true;
+
+        if (_ambiguousExact.Contains(sourceText))
+        {
+            translatedText = null;
+            return false;
+        }
+
+        foreach (var pattern in _uniquePatterns)
+        {
+            if (pattern.TryTranslate(sourceText, out translatedText))
                 return true;
         }
 
+        translatedText = null;
         return false;
+    }
+
+    private static void CollectUnique(
+        Dictionary<string, string> unique,
+        HashSet<string> ambiguous,
+        string sourceText,
+        string translatedText
+    )
+    {
+        if (ambiguous.Contains(sourceText))
+            return;
+
+        if (!unique.TryGetValue(sourceText, out var existing))
+        {
+            unique[sourceText] = translatedText;
+            return;
+        }
+
+        if (string.Equals(existing, translatedText, StringComparison.Ordinal))
+            return;
+
+        unique.Remove(sourceText);
+        ambiguous.Add(sourceText);
     }
 
     private sealed class UiTextPathRules

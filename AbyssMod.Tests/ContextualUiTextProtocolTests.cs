@@ -24,6 +24,29 @@ public class ContextualUiTextProtocolTests
     }
 
     [Fact]
+    public void Unique_source_still_translates_when_the_transform_path_is_unknown()
+    {
+        var index = new ContextualUiTextIndex(
+            new Dictionary<string, Dictionary<string, string>>
+            {
+                ["Root/Party/Text"] = new() { ["編成"] = "编队" },
+                ["Root/Inventory/Sort"] = new() { ["入手"] = "获得时间" },
+                ["Root/Rewards/Sort"] = new() { ["入手"] = "获取" },
+                ["Root/Count"] = new() { ["所持数：{0}/{1}"] = "持有：{0}/{1}" },
+            }
+        );
+
+        Assert.True(index.TryTranslate("Root/Unknown/Text", "編成", out var unique));
+        Assert.Equal("编队", unique);
+        Assert.True(index.TryTranslate("", "編成", out var noPath));
+        Assert.Equal("编队", noPath);
+        Assert.True(index.TryTranslate("Root/Unknown/Count", "所持数：12/34", out var count));
+        Assert.Equal("持有：12/34", count);
+        Assert.False(index.TryTranslate("Root/Unknown/Sort", "入手", out _));
+        Assert.False(index.TryTranslate("", "入手", out _));
+    }
+
+    [Fact]
     public void Exact_path_wins_before_the_most_specific_matching_wildcard()
     {
         var index = new ContextualUiTextIndex(

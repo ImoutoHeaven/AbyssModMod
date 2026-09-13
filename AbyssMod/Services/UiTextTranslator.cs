@@ -31,9 +31,8 @@ public static class UiTextTranslator
             }
         }
 
-        string path = GetTransformPath(text);
-        return !string.IsNullOrEmpty(path)
-            && Plugin.Trans.TryTranslateUiText(path, value, out var translated)
+        string path = GetTransformPath(text) ?? "";
+        return Plugin.Trans.TryTranslateUiText(path, value, out var translated)
             ? translated
             : value;
     }
