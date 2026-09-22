@@ -43,7 +43,7 @@ public static class GeneralTextPatch
 
     private static void TranslateStaticUiText(TMP_Text text)
     {
-        if (text == null || !Config.Translation.Value)
+        if (text == null || !Config.Translation.Value || IsNovelLetterText(text))
             return;
 
         try
@@ -129,7 +129,7 @@ public static class GeneralTextPatch
 
     private static void ApplyTranslation(ref string s, TMP_Text instance = null)
     {
-        if (_inTranslation) return;
+        if (_inTranslation || IsNovelLetterText(instance)) return;
         _inTranslation = true;
         try
         {
@@ -152,9 +152,7 @@ public static class GeneralTextPatch
                 IsNameField(instance)
             );
             string cat;
-            if (IsNovelLetterText(instance))
-                cat = MachineTranslationCategoryPolicy.NovelTypewriter;
-            else if (!string.IsNullOrEmpty(nameFieldCategory))
+            if (!string.IsNullOrEmpty(nameFieldCategory))
                 cat = nameFieldCategory;
             else if (IsAbilityDescriptionField(instance) || TextClassifier.IsActionSkillDescription(s))
                 cat = TranslationPaths.AbilityDescriptions;

@@ -127,6 +127,29 @@ public class TranslationLoadingPolicyTests
         Assert.Contains("string.Equals(_machineTranslationSource, source", method);
     }
 
+    [Fact]
+    public void Novel_letter_text_is_excluded_before_contextual_ui_lookup()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(
+            Path.Combine(root, "AbyssMod", "Patches", "GeneralTextPatch.cs")
+        );
+        var applyStart = source.IndexOf("private static void ApplyTranslation", StringComparison.Ordinal);
+        var applyEnd = source.IndexOf("private static bool IsNovelLetterText", applyStart, StringComparison.Ordinal);
+        var apply = source.Substring(applyStart, applyEnd - applyStart);
+        var enableStart = source.IndexOf("private static void TranslateStaticUiText", StringComparison.Ordinal);
+        var enableEnd = source.IndexOf("// ─", enableStart, StringComparison.Ordinal);
+        var enable = source.Substring(enableStart, enableEnd - enableStart);
+        var applyGuard = apply.IndexOf("IsNovelLetterText(instance)", StringComparison.Ordinal);
+        var applyLookup = apply.IndexOf("UiTextTranslator.Translate(instance, s)", StringComparison.Ordinal);
+        var enableGuard = enable.IndexOf("IsNovelLetterText(text)", StringComparison.Ordinal);
+        var enableLookup = enable.IndexOf("UiTextTranslator.Translate(text, text.text)", StringComparison.Ordinal);
+
+        Assert.True(applyGuard >= 0 && applyGuard < applyLookup);
+        Assert.Contains("_inTranslation || IsNovelLetterText(instance)", apply);
+        Assert.True(enableGuard >= 0 && enableGuard < enableLookup);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

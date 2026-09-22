@@ -493,12 +493,13 @@ public static class TranslationPatch
     public static void SetLog(ref List<NovelLogData> dataList)
     {
         List<NovelLogData> list = new();
+        string displayName = GetDisplayUserName();
         foreach (var data in dataList)
         {
             string name = RestoreUserPlaceholder(data.Name);
             string message = RestoreUserPlaceholder(data.Message);
 
-            if (TryGetNovel(data.ScriptId, out var translation))
+            if (Config.Translation.Value)
             {
                 if (
                     !string.IsNullOrEmpty(name)
@@ -506,11 +507,14 @@ public static class TranslationPatch
                 )
                     name = tName;
 
-                if (
-                    !string.IsNullOrEmpty(message)
-                    && translation.TryGetValue(message, out string tMessage)
-                )
-                    message = tMessage;
+                TryGetNovel(data.ScriptId, out var translation);
+                MachineTranslator.TryGetCachedTranslation(message, out string cachedTranslation);
+                message = NovelTextTranslation.Resolve(
+                    translation,
+                    message,
+                    cachedTranslation,
+                    displayName
+                );
             }
 
             list.Add(

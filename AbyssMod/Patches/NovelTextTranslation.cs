@@ -9,6 +9,22 @@ public static class NovelTextTranslation
 {
     private const string UserPlaceholder = "<user>";
 
+    public static string Resolve(
+        Dictionary<string, string> translations,
+        string source,
+        string cachedMachineTranslation,
+        string displayName
+    )
+    {
+        if (TryTranslate(translations, source, displayName, out string translated))
+            return translated;
+
+        return ExpandUserPlaceholder(
+            string.IsNullOrEmpty(cachedMachineTranslation) ? source : cachedMachineTranslation,
+            displayName
+        );
+    }
+
     public static bool TryTranslate(
         Dictionary<string, string> translations,
         string source,
