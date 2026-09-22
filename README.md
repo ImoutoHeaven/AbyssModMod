@@ -265,6 +265,7 @@ Nether 金袋通常是 `rarity_level=Gold(3)`，但 `is_rare_drop` 仍可能為 
 | 配置項           | 可選值                                            | 預設值                                            | 說明                                                         |
 | ---------------- | ------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------ |
 | `Enabled`        | `true` / `false`                                  | `false`                                           | 是否啟用 LLM 機翻（詳見下方說明）                            |
+| `NovelMode`      | `Script` / `Sentence`                             | `Script`                                          | 劇情預取模式；`Script` 優先整幕翻譯，無法取得完整劇本、結構校驗失敗或引擎不支援時自動回退逐句翻譯 |
 | `Engine`         | `openai` / `claude` / `sugoi` / `libre`           | `openai`                                          | 翻譯引擎（`openai` 相容 Ollama、DeepSeek、OpenAI 等）        |
 | `Endpoint`       | 任意有效 API 地址                                 | `http://127.0.0.1:11434/v1/chat/completions`      | 翻譯服務 API 地址                                            |
 | `Model`          | 模型名稱                                          | `qwen2.5:3b`                                      | `openai` / `ollama` 引擎使用的模型名稱                       |
@@ -333,11 +334,15 @@ Idle Exploration 的關閉行為也會維持 session 完整性：若在 close �
 工作方式（事件優先，背景執行，不阻塞遊戲）：
 
 1. 遊戲運行中，僅含假名的未命中日文才會按數字模板去重並加入待翻隊列；已譯文字不會再成為翻譯候選。
-2. 新出現的文字會進入高優先級 FIFO，立即由背景調度器嘗試翻譯；啟動遺留項目與週期清理項目走一般 FIFO。每連續處理 4 項高優先級文字後，會處理 1 項一般項目，避免週期重試飢餓。
-3. 請求啟動頻率受 `llmRequestPerSecond` 限制，同時等待回應的數量受 `llmRequestMaxInFlight` 限制。
-4. 請求失敗後會快速低優先級重試 `llmRetryCount` 次；耗盡後只在每次 `llmTranslatePeriod` 清理時重試。
-5. `<...>` 標籤、`{0}` 格式參數及實際/轉義換行會轉成受驗證的 `__ABYSS_TOKEN_n__`；模型未完整保留時不寫入快取並視為失敗。
-6. 成功結果按類別寫入 `translations/other/{類別}/`，畫面下一次文字刷新命中快取後即替換為中文。
+2. `NovelMode=Script` 且遊戲提供完整 `InitCsv` 劇本時，插件會把全部命令、人物名及參數按原始順序組成唯讀 scene，並把含假名且仍缺譯文的文字列為帶穩定 ID 的 targets，一次交給聊天式 LLM 翻譯。
+3. Script 回應必須保持 target 數量、ID、順序與格式 token；完整校驗通過後才整批寫入既有 dialogue 快取。劇本不完整、回應校驗失敗、請求失敗，或使用 `sugoi` / `libre` 時，自動回退 `Sentence` 逐句隊列。
+4. Sentence 模式下，新出現的文字會進入高優先級 FIFO，啟動遺留項目與週期清理項目走一般 FIFO。每連續處理 4 項高優先級文字後，會處理 1 項一般項目，避免週期重試飢餓。
+5. 所有請求共用 `llmRequestPerSecond` 啟動頻率限制及 `llmRequestMaxInFlight` 同時等待上限。
+6. 逐句請求失敗後會快速低優先級重試 `llmRetryCount` 次；耗盡後只在每次 `llmTranslatePeriod` 清理時重試。
+7. `<...>` 標籤、`{0}` 格式參數及實際/轉義換行會轉成受驗證的 `__ABYSS_TOKEN_n__`；模型未完整保留時不寫入快取。
+8. 成功結果按類別寫入 `translations/other/{類別}/`，畫面下一次文字刷新命中快取後即替換為中文。
+
+Script 整幕請求的逾時下限為 120 秒；`TimeoutSeconds` 高於 120 時使用設定值。逐句請求仍直接使用 `TimeoutSeconds`。
 
 機翻固定輸出簡體中文，以便與上游 `zh_Hans` 人工譯文一致。
 

@@ -1,3 +1,5 @@
+#nullable enable
+
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 
@@ -15,7 +17,7 @@ internal static class MachineTranslationCategoryPolicy
         !string.Equals(category, Name, System.StringComparison.Ordinal)
         && !string.Equals(category, NovelTypewriter, System.StringComparison.Ordinal);
 
-    public static string ResolveNameFieldCategory(string contextualCategory, bool isNameField)
+    public static string ResolveNameFieldCategory(string? contextualCategory, bool isNameField)
     {
         if (string.Equals(
                 contextualCategory,
@@ -29,6 +31,56 @@ internal static class MachineTranslationCategoryPolicy
 
     public static bool IsExcludedFromGenericProcessing(string category) =>
         string.Equals(category, NovelTypewriter, System.StringComparison.Ordinal);
+}
+
+internal static class MachineTranslationTemplate
+{
+    private static readonly Regex RuntimePlaceholder = new(@"\{\d+\}", RegexOptions.Compiled);
+
+    private static readonly Regex TagOrNumber = new(
+        @"<[^>]*>|[0-9]+(?:\.[0-9]+)?",
+        RegexOptions.Compiled
+    );
+
+    private static readonly Regex NumericPlaceholder = new(@"\{(\d+)\}", RegexOptions.Compiled);
+
+    public static (string template, string[] numbers) Normalize(string text)
+    {
+        if (string.IsNullOrEmpty(text) || RuntimePlaceholder.IsMatch(text))
+            return (text, System.Array.Empty<string>());
+
+        var numbers = new List<string>();
+        string template = TagOrNumber.Replace(text, match =>
+        {
+            if (match.Value[0] == '<')
+                return match.Value;
+
+            numbers.Add(match.Value);
+            return "{" + (numbers.Count - 1) + "}";
+        });
+        return (template, numbers.ToArray());
+    }
+
+    public static string? Fill(string template, string[] numbers)
+    {
+        if (numbers.Length == 0)
+            return template;
+
+        bool valid = true;
+        string result = NumericPlaceholder.Replace(template, match =>
+        {
+            if (!int.TryParse(match.Groups[1].Value, out int index)
+                || index < 0
+                || index >= numbers.Length)
+            {
+                valid = false;
+                return match.Value;
+            }
+
+            return numbers[index];
+        });
+        return valid ? result : null;
+    }
 }
 
 internal static class MachineTranslationTextProtection

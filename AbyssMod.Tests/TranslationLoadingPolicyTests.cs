@@ -150,6 +150,25 @@ public class TranslationLoadingPolicyTests
         Assert.True(enableGuard >= 0 && enableGuard < enableLookup);
     }
 
+    [Fact]
+    public void Novel_scene_preload_uses_the_id_from_the_same_scenario_data()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(
+            Path.Combine(root, "AbyssMod", "Patches", "TranslationPatch.cs")
+        );
+        var start = source.IndexOf(
+            "public static void PreloadScenarioMachineTranslations",
+            StringComparison.Ordinal
+        );
+        var end = source.IndexOf("[HarmonyPostfix]", start, StringComparison.Ordinal);
+        var method = source.Substring(start, end - start);
+
+        Assert.Contains("typeof(ScenarioData)", source.Substring(start - 200, 200));
+        Assert.Contains("__instance._scriptId", method);
+        Assert.DoesNotContain("PatchManager.NovelId", method);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

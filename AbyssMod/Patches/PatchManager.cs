@@ -7,9 +7,6 @@ namespace AbyssMod.Patches;
 /// </summary>
 public static class PatchManager
 {
-    /// <summary>当前加载的剧情 Novel ID。</summary>
-    public static string NovelId = string.Empty;
-
     /// <summary>
     /// 创建并注册所有 Harmony 补丁。
     /// </summary>

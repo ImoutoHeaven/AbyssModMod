@@ -29,6 +29,29 @@ public class MachineTranslationPrimitivesTests
     }
 
     [Fact]
+    public void Script_reservation_and_sentence_enqueue_have_exactly_one_owner()
+    {
+        for (int i = 0; i < 200; i++)
+        {
+            var queue = new TranslationQueue();
+            bool reserved = false;
+            bool enqueued = false;
+
+            Parallel.Invoke(
+                () => reserved = queue.TryReserve("template", () => false),
+                () => enqueued = queue.Enqueue(
+                    "template",
+                    "dialogue",
+                    foreground: true,
+                    isCompleted: () => false
+                )
+            );
+
+            Assert.True(reserved ^ enqueued);
+        }
+    }
+
+    [Fact]
     public void Three_fast_retries_switch_a_template_to_periodic_only()
     {
         var queue = new TranslationQueue();

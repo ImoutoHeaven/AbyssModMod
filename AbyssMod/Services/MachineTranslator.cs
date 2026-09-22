@@ -6,7 +6,6 @@ using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -36,6 +35,7 @@ public static class MachineTranslator
     private static string _language;
 
     private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private static readonly HttpClient _scriptHttp = new() { Timeout = TimeSpan.FromSeconds(120) };
 
     /// <summary>模板（已数字占位）-> 译文模板。内存单一查找字典。</summary>
     private static readonly ConcurrentDictionary<string, string> _cache = new();
@@ -74,6 +74,7 @@ public static class MachineTranslator
         try
         {
             _http.Timeout = TimeSpan.FromSeconds(Math.Max(5, Config.MTTimeout.Value));
+            _scriptHttp.Timeout = TimeSpan.FromSeconds(Math.Max(120, Config.MTTimeout.Value));
         }
         catch { }
 
@@ -136,11 +137,11 @@ public static class MachineTranslator
         if (!MachineTranslationTextProtection.HasKana(text))
             return text;
 
-        var (template, numbers) = Normalize(text);
+        var (template, numbers) = MachineTranslationTemplate.Normalize(text);
 
         if (_cache.TryGetValue(template, out var tt))
         {
-            var filled = Fill(tt, numbers);
+            var filled = MachineTranslationTemplate.Fill(tt, numbers);
             if (filled != null)
                 return filled;
         }
@@ -148,7 +149,12 @@ public static class MachineTranslator
         if (!Config.MTEnabled.Value)
             return text;
 
-        if (_pending.Enqueue(template, category, foreground: true))
+        if (_pending.Enqueue(
+                template,
+                category,
+                foreground: true,
+                isCompleted: () => _cache.ContainsKey(template)
+            ))
         {
             _logCounters.RecordEventEnqueued();
             _queueSignal.Release();
@@ -173,10 +179,10 @@ public static class MachineTranslator
         if (category == TextClassifier.Name || !MachineTranslationTextProtection.HasKana(text))
             return text;
 
-        var (template, numbers) = Normalize(text);
+        var (template, numbers) = MachineTranslationTemplate.Normalize(text);
         if (_uiCache.TryGet(transformPath, template, out var cached))
         {
-            var filled = Fill(cached, numbers);
+            var filled = MachineTranslationTemplate.Fill(cached, numbers);
             if (filled != null)
                 return filled;
         }
@@ -211,12 +217,75 @@ public static class MachineTranslator
         if (!_initialized || string.IsNullOrEmpty(text))
             return false;
 
-        var (template, numbers) = Normalize(text);
+        var (template, numbers) = MachineTranslationTemplate.Normalize(text);
         if (!_cache.TryGetValue(template, out var cached))
             return false;
 
-        translated = Fill(cached, numbers);
+        translated = MachineTranslationTemplate.Fill(cached, numbers);
         return !string.IsNullOrEmpty(translated);
+    }
+
+    internal static int PreloadNovelScene(
+        string sceneId,
+        NovelScenarioSnapshot scene,
+        IEnumerable<string> candidates
+    )
+    {
+        var candidateList = candidates?
+            .Where(text => !string.IsNullOrWhiteSpace(text)
+                && MachineTranslationTextProtection.HasKana(text))
+            .Distinct(StringComparer.Ordinal)
+            .ToList() ?? new List<string>();
+
+        if (!Config.Translation.Value
+            || !Config.MTEnabled.Value
+            || !_initialized
+            || candidateList.Count == 0)
+            return 0;
+
+        if (!NovelScriptTranslationProtocol.CanUse(
+                Config.MTNovelMode.Value,
+                Config.MTEngine.Value,
+                scene?.IsComplete == true
+            )
+            || string.IsNullOrEmpty(sceneId))
+            return PreloadNovelCandidates(candidateList);
+
+        var reservedTemplates = new HashSet<string>(StringComparer.Ordinal);
+        var targets = new List<NovelScriptTranslationTarget>();
+        foreach (string source in candidateList)
+        {
+            var (template, _) = MachineTranslationTemplate.Normalize(source);
+            if (_pending.TryReserve(template, () => _cache.ContainsKey(template)))
+                reservedTemplates.Add(template);
+            if (reservedTemplates.Contains(template))
+                targets.Add(new NovelScriptTranslationTarget(source, template));
+        }
+
+        NovelScriptTranslationBatch batch;
+        try
+        {
+            batch = new NovelScriptTranslationBatch(sceneId, scene, targets);
+        }
+        catch (Exception e)
+        {
+            ReleaseNovelScriptReservations(reservedTemplates);
+            Logger.Warn($"Novel script MT preparation failed: scene={sceneId}, error={e.Message}");
+            return PreloadNovelCandidates(candidateList);
+        }
+        if (batch.TargetCount == 0)
+        {
+            ReleaseNovelScriptReservations(reservedTemplates);
+            return 0;
+        }
+
+        _ = Task.Run(() => TranslateNovelScriptAsync(
+            sceneId,
+            batch,
+            candidateList,
+            reservedTemplates
+        ));
+        return batch.TargetCount;
     }
 
     public static int PreloadNovelCandidates(IEnumerable<string> candidates)
@@ -230,12 +299,17 @@ public static class MachineTranslator
         int queued = 0;
         foreach (string text in candidates)
         {
-            if (string.IsNullOrWhiteSpace(text))
+            if (string.IsNullOrWhiteSpace(text)
+                || !MachineTranslationTextProtection.HasKana(text))
                 continue;
 
-            var (template, _) = Normalize(text);
-            if (!_cache.ContainsKey(template)
-                && _pending.Enqueue(template, TextClassifier.Dialogue, foreground: false))
+            var (template, _) = MachineTranslationTemplate.Normalize(text);
+            if (_pending.Enqueue(
+                    template,
+                    TextClassifier.Dialogue,
+                    foreground: false,
+                    isCompleted: () => _cache.ContainsKey(template)
+                ))
                 queued++;
         }
 
@@ -246,6 +320,87 @@ public static class MachineTranslator
         }
 
         return queued;
+    }
+
+    private static async Task TranslateNovelScriptAsync(
+        string sceneId,
+        NovelScriptTranslationBatch batch,
+        IReadOnlyList<string> fallbackCandidates,
+        IReadOnlyCollection<string> reservedTemplates
+    )
+    {
+        bool requestSlotAcquired = false;
+        bool succeeded = false;
+        try
+        {
+            while (_initialized && Config.MTEnabled.Value)
+            {
+                if (_inFlightGate.TryAcquire(Math.Max(1, Config.MTRequestMaxInFlight.Value)))
+                {
+                    requestSlotAcquired = true;
+                    break;
+                }
+                await Task.Delay(10);
+            }
+
+            if (!requestSlotAcquired || !_initialized || !Config.MTEnabled.Value)
+                return;
+
+            var delay = _requestRateLimiter.ReserveDelay(
+                DateTime.UtcNow,
+                Math.Max(1, Config.MTRequestPerSecond.Value)
+            );
+            if (delay > TimeSpan.Zero)
+                await Task.Delay(delay);
+            if (!_initialized || !Config.MTEnabled.Value)
+                return;
+
+            string response = await TranslateNovelScriptRequest(batch.Prompt, batch.TargetCount);
+            if (!batch.TryParseResponse(response, out var translations))
+            {
+                Logger.Warn(
+                    $"Novel script MT rejected: scene={sceneId}, targets={batch.TargetCount}; "
+                        + "falling back to sentence queue"
+                );
+            }
+            else
+            {
+                if (WriteToCategoryFile(TextClassifier.Dialogue, translations))
+                {
+                    foreach (var pair in translations)
+                    {
+                        _cache[pair.Key] = pair.Value;
+                        _logCounters.RecordTranslated();
+                    }
+                    succeeded = true;
+                    Logger.Info(
+                        $"Novel script MT completed: scene={sceneId}, translated={translations.Count}"
+                    );
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Logger.Warn($"Novel script MT failed: scene={sceneId}, error={e.Message}");
+        }
+        finally
+        {
+            if (requestSlotAcquired)
+                _inFlightGate.Release();
+            ReleaseNovelScriptReservations(reservedTemplates);
+        }
+
+        if (!succeeded && _initialized && Config.MTEnabled.Value)
+        {
+            int queued = PreloadNovelCandidates(fallbackCandidates);
+            Logger.Info($"Novel script MT fallback queued: scene={sceneId}, queued={queued}");
+        }
+    }
+
+    private static void ReleaseNovelScriptReservations(IEnumerable<string> templates)
+    {
+        foreach (string template in templates)
+            _pending.ReleaseReservation(template);
     }
 
     /// <summary>立即保存缓存与待翻队列（退出时调用）。</summary>
@@ -341,8 +496,6 @@ public static class MachineTranslator
             var translated = await TranslateAsync(job.Template, job.ContextPath);
             if (!string.IsNullOrEmpty(translated))
             {
-                _pending.CompleteSuccess(job);
-
                 if (contextual)
                 {
                     _uiCache.Set(job.ContextPath, job.Template, translated);
@@ -350,10 +503,15 @@ public static class MachineTranslator
                 }
                 else
                 {
+                    if (!WriteToCategoryFile(job.Category, job.Template, translated))
+                    {
+                        CompleteQueuedFailure(job);
+                        return;
+                    }
                     _cache[job.Template] = translated;
-                    WriteToCategoryFile(job.Category, job.Template, translated);
                 }
 
+                _pending.CompleteSuccess(job);
                 if (Interlocked.Increment(ref _cacheDirty) % SaveCacheEvery == 0)
                     SaveAllCaches();
 
@@ -362,33 +520,30 @@ public static class MachineTranslator
                 return;
             }
 
-            var retry = _pending.CompleteFailure(job, Math.Max(0, Config.MTRetryCount.Value));
-            if (retry == TranslationFailureDisposition.FastRetry)
-            {
-                _logCounters.RecordFastRetry();
-                _queueSignal.Release();
-            }
-            else
-                _logCounters.RecordPeriodicOnlyRetry();
-            SavePending();
+            CompleteQueuedFailure(job);
         }
         catch (Exception e)
         {
             Logger.Warn($"MT queued request failed: {e.Message}");
-            var retry = _pending.CompleteFailure(job, Math.Max(0, Config.MTRetryCount.Value));
-            if (retry == TranslationFailureDisposition.FastRetry)
-            {
-                _logCounters.RecordFastRetry();
-                _queueSignal.Release();
-            }
-            else
-                _logCounters.RecordPeriodicOnlyRetry();
-            SavePending();
+            CompleteQueuedFailure(job);
         }
         finally
         {
             _inFlightGate.Release();
         }
+    }
+
+    private static void CompleteQueuedFailure(TranslationJob job)
+    {
+        var retry = _pending.CompleteFailure(job, Math.Max(0, Config.MTRetryCount.Value));
+        if (retry == TranslationFailureDisposition.FastRetry)
+        {
+            _logCounters.RecordFastRetry();
+            _queueSignal.Release();
+        }
+        else
+            _logCounters.RecordPeriodicOnlyRetry();
+        SavePending();
     }
 
     private static TimeSpan TranslatePeriod =>
@@ -428,7 +583,16 @@ public static class MachineTranslator
     /// <summary>
     /// 把单条译文追加写入对应类别的缓存文件（线程安全）。
     /// </summary>
-    private static void WriteToCategoryFile(string category, string template, string translated)
+    private static bool WriteToCategoryFile(string category, string template, string translated) =>
+        WriteToCategoryFile(
+            category,
+            new Dictionary<string, string>(StringComparer.Ordinal) { [template] = translated }
+        );
+
+    private static bool WriteToCategoryFile(
+        string category,
+        IReadOnlyDictionary<string, string> translations
+    )
     {
         var path = CategoryCachePath(category);
         lock (_fileLock)
@@ -447,12 +611,14 @@ public static class MachineTranslator
                     dict = new Dictionary<string, string>();
                     Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 }
-                dict[template] = translated;
-                WriteJson(path, dict);
+                foreach (var pair in translations)
+                    dict[pair.Key] = pair.Value;
+                return WriteJson(path, dict);
             }
             catch (Exception e)
             {
                 Logger.Warn($"WriteToCategoryFile failed ({category}): {e.Message}");
+                return false;
             }
         }
     }
@@ -791,6 +957,9 @@ public static class MachineTranslator
     /// <summary>依语言设置选择对应的系统提示词（简体/繁体台湾）。</summary>
     private static string SystemPrompt => IsTraditional ? SystemPromptHant : SystemPromptHans;
 
+    private static string NovelScriptSystemPrompt =>
+        IsTraditional ? NovelScriptSystemPromptHant : NovelScriptSystemPromptHans;
+
     private const string SystemPromptHans =
         "你是手机游戏《ドットアビス》的日译简体中文本地化译者。"
         + "请把用户给出的日文翻译成简体中文，只输出译文本身，不要解释、不要加引号、不要输出英文。"
@@ -804,6 +973,24 @@ public static class MachineTranslator
         + "最重要：原文中形如 __ABYSS_TOKEN_0__ 的佔位符必須逐字原樣保留，位置、數量和順序都不能改。"
         + "術語：紋章=紋章，衝撃=衝擊，情熱=熱情，会心=會心，スキル=技能，マナ=魔力，"
         + "バリア=護盾，付与=附加，上昇=提升，永続=永續，リトライ=重試，パーティ=隊伍，ソート=排序。";
+
+    private const string NovelScriptSystemPromptHans =
+        "你是手机游戏《ドットアビス》的日译简体中文剧情本地化译者。"
+        + "用户会发送一个严格 JSON 对象：scene 是按原始顺序排列的完整剧本，只用于理解人物、语气、事件和格式；"
+        + "targets 是必须翻译的去重文本。请结合整幕上下文保持称谓、人物口吻和术语一致。"
+        + "只输出严格 JSON，结构必须是 {\"version\":1,\"translations\":[{\"id\":\"t0000\",\"text\":\"译文\"}]}。"
+        + "translations 必须与 targets 数量、ID 和顺序完全一致，不得合并、拆分、遗漏或新增条目；不要输出 scene、Markdown 或解释。"
+        + "scene 中的人名、命令和资源参数只用于语境，不要作为额外条目输出。"
+        + "最重要：每个 source 中形如 __ABYSS_TOKEN_0__ 的占位符必须在对应 text 中逐字原样保留，位置、数量和顺序都不能改。";
+
+    private const string NovelScriptSystemPromptHant =
+        "你是手機遊戲《ドットアビス》的日譯繁體中文（台灣）劇情在地化譯者。"
+        + "使用者會傳送一個嚴格 JSON 物件：scene 是依原始順序排列的完整劇本，只用於理解人物、語氣、事件與格式；"
+        + "targets 是必須翻譯的去重文字。請結合整幕上下文保持稱謂、人物口吻與術語一致。"
+        + "只輸出嚴格 JSON，結構必須是 {\"version\":1,\"translations\":[{\"id\":\"t0000\",\"text\":\"譯文\"}]}。"
+        + "translations 必須與 targets 數量、ID 與順序完全一致，不得合併、拆分、遺漏或新增項目；不要輸出 scene、Markdown 或解釋。"
+        + "scene 中的人名、命令與資源參數只用於語境，不要作為額外項目輸出。"
+        + "最重要：每個 source 中形如 __ABYSS_TOKEN_0__ 的佔位符必須在對應 text 中逐字原樣保留，位置、數量與順序都不能改。";
 
     private static object[] FewShot => IsTraditional ? FewShotHant : FewShotHans;
 
@@ -828,7 +1015,39 @@ public static class MachineTranslator
     /// 需要在 AbyssMod.cfg 设置 Engine=claude、ApiKey=sk-ant-...
     /// 默认 Endpoint 为 https://api.anthropic.com/v1/messages，可自行修改为代理地址。
     /// </summary>
-    private static async Task<string> TranslateClaude(string text, string contextPath)
+    private static async Task<string> TranslateNovelScriptRequest(string prompt, int targetCount)
+    {
+        string engine = (Config.MTEngine.Value ?? "openai").Trim().ToLowerInvariant();
+        int maxTokens = Math.Min(8192, Math.Max(1024, targetCount * 192));
+        return engine switch
+        {
+            "claude" => await TranslateClaude(
+                prompt,
+                contextPath: null,
+                systemPrompt: NovelScriptSystemPrompt,
+                includeFewShot: false,
+                maxTokens: maxTokens,
+                httpClient: _scriptHttp
+            ),
+            "sugoi" or "libre" => null,
+            _ => await TranslateOpenAI(
+                prompt,
+                contextPath: null,
+                systemPrompt: NovelScriptSystemPrompt,
+                includeFewShot: false,
+                httpClient: _scriptHttp
+            ),
+        };
+    }
+
+    private static async Task<string> TranslateClaude(
+        string text,
+        string contextPath,
+        string systemPrompt = null,
+        bool includeFewShot = true,
+        int maxTokens = 512,
+        HttpClient httpClient = null
+    )
     {
         var apiKey  = Config.MTApiKey?.Value ?? "";
         var model   = Config.MTModel.Value ?? "claude-haiku-4-5";
@@ -839,8 +1058,9 @@ public static class MachineTranslator
             endpoint = "https://api.anthropic.com/v1/messages";
 
         var messages = new List<object>();
-        foreach (var fs in FewShot)
-            messages.Add(fs);
+        if (includeFewShot)
+            foreach (var fs in FewShot)
+                messages.Add(fs);
         messages.Add(new
         {
             role = "user",
@@ -850,8 +1070,8 @@ public static class MachineTranslator
         var body = new
         {
             model,
-            max_tokens = 512,
-            system     = SystemPrompt,
+            max_tokens = maxTokens,
+            system     = systemPrompt ?? SystemPrompt,
             messages,
         };
 
@@ -861,7 +1081,7 @@ public static class MachineTranslator
         req.Headers.Add("x-api-key", apiKey);
         req.Headers.Add("anthropic-version", "2023-06-01");
 
-        using var resp = await _http.SendAsync(req);
+        using var resp = await (httpClient ?? _http).SendAsync(req);
         if (!resp.IsSuccessStatusCode)
         {
             var err = await resp.Content.ReadAsStringAsync();
@@ -879,10 +1099,20 @@ public static class MachineTranslator
         return Clean(content);
     }
 
-    private static async Task<string> TranslateOpenAI(string text, string contextPath)
+    private static async Task<string> TranslateOpenAI(
+        string text,
+        string contextPath,
+        string systemPrompt = null,
+        bool includeFewShot = true,
+        HttpClient httpClient = null
+    )
     {
-        var messages = new List<object> { new { role = "system", content = SystemPrompt } };
-        messages.AddRange(FewShot);
+        var messages = new List<object>
+        {
+            new { role = "system", content = systemPrompt ?? SystemPrompt },
+        };
+        if (includeFewShot)
+            messages.AddRange(FewShot);
         messages.Add(new
         {
             role = "user",
@@ -890,7 +1120,12 @@ public static class MachineTranslator
         });
 
         var body = new { model = Config.MTModel.Value, temperature = 0, stream = false, messages };
-        using var resp = await PostJson(Config.MTEndpoint.Value, body, apiKey: Config.MTApiKey?.Value);
+        using var resp = await PostJson(
+            Config.MTEndpoint.Value,
+            body,
+            apiKey: Config.MTApiKey?.Value,
+            httpClient: httpClient
+        );
         if (resp == null)
             return null;
         var json = await resp.Content.ReadAsStringAsync();
@@ -938,7 +1173,12 @@ public static class MachineTranslator
         return Clean(json);
     }
 
-    private static async Task<HttpResponseMessage> PostJson(string url, object body, string apiKey = null)
+    private static async Task<HttpResponseMessage> PostJson(
+        string url,
+        object body,
+        string apiKey = null,
+        HttpClient httpClient = null
+    )
     {
         var payload = JsonSerializer.Serialize(body);
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
@@ -946,7 +1186,7 @@ public static class MachineTranslator
         if (!string.IsNullOrEmpty(apiKey))
             req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
 
-        var resp = await _http.SendAsync(req);
+        var resp = await (httpClient ?? _http).SendAsync(req);
         if (!resp.IsSuccessStatusCode)
         {
             Logger.Warn($"MT endpoint returned {(int)resp.StatusCode}");
@@ -971,44 +1211,6 @@ public static class MachineTranslator
     }
 
     // ──────────────────────────────────────────────────
-    // 数字模板
-    // ──────────────────────────────────────────────────
-
-    private static readonly Regex TagOrNumber = new(
-        @"<[^>]*>|[0-9]+(?:\.[0-9]+)?",
-        RegexOptions.Compiled
-    );
-    private static readonly Regex Placeholder = new(@"\{(\d+)\}", RegexOptions.Compiled);
-
-    private static (string template, string[] numbers) Normalize(string text)
-    {
-        var nums = new List<string>();
-        int i = 0;
-        var template = TagOrNumber.Replace(text, m =>
-        {
-            if (m.Value.Length > 0 && m.Value[0] == '<')
-                return m.Value;
-            nums.Add(m.Value);
-            return "{" + (i++) + "}";
-        });
-        return (template, nums.ToArray());
-    }
-
-    private static string Fill(string template, string[] numbers)
-    {
-        if (numbers.Length == 0)
-            return template;
-        bool ok = true;
-        var result = Placeholder.Replace(template, m =>
-        {
-            int idx = int.Parse(m.Groups[1].Value);
-            if (idx < 0 || idx >= numbers.Length) { ok = false; return m.Value; }
-            return numbers[idx];
-        });
-        return ok ? result : null;
-    }
-
-    // ──────────────────────────────────────────────────
     // 工具
     // ──────────────────────────────────────────────────
 
@@ -1020,7 +1222,7 @@ public static class MachineTranslator
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
-    private static void WriteJson(string path, object data)
+    private static bool WriteJson(string path, object data)
     {
         try
         {
@@ -1028,10 +1230,12 @@ public static class MachineTranslator
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
             File.WriteAllText(path, JsonSerializer.Serialize(data, JsonOpts), Utf8NoBom);
+            return true;
         }
         catch (Exception e)
         {
             Logger.Warn($"Save MT file failed ({Path.GetFileName(path)}): {e.Message}");
+            return false;
         }
     }
 

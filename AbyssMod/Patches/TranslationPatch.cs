@@ -42,7 +42,6 @@ public static class TranslationPatch
     public static void InitNovelController(NovelController __instance)
     {
         _novelController = __instance;
-        PatchManager.NovelId = string.Empty;
         ClearStaticMessage();
         ClearMachineTranslationMessage();
     }
@@ -72,38 +71,55 @@ public static class TranslationPatch
         if (!Config.Translation.Value)
             return;
 
-        PatchManager.NovelId = novelId;
         Plugin.Log.LogInfo($"NovelId: {novelId}");
         Plugin.Trans.EnsureNovelTranslationLoaded(novelId);
     }
 
     [HarmonyPostfix]
-    [HarmonyPatch(typeof(NovelScriptCommands), nameof(NovelScriptCommands.InitCsv))]
-    public static void PreloadScenarioMachineTranslations(NovelScriptCommands __instance)
+    [HarmonyPatch(typeof(ScenarioData), "Project_Novel_IScenarioData_GetScript")]
+    public static void PreloadScenarioMachineTranslations(
+        ScenarioData __instance,
+        NovelScriptCommands __result
+    )
     {
-        if (!Config.Translation.Value || !Config.MTEnabled.Value || __instance == null)
+        if (!Config.Translation.Value
+            || !Config.MTEnabled.Value
+            || __instance == null
+            || __result == null)
             return;
 
         try
         {
+            string sceneId = __instance._scriptId;
+            if (string.IsNullOrEmpty(sceneId))
+                return;
+
             var rows = new System.Collections.Generic.List<
                 System.Collections.Generic.IReadOnlyList<string>
-            >(__instance.Count);
-            for (int i = 0; i < __instance.Count; i++)
+            >(__result.Count);
+            for (int i = 0; i < __result.Count; i++)
             {
-                NovelArguments args = __instance[i];
+                NovelArguments args = __result[i];
                 if (args?._list == null)
                     continue;
 
-                var row = new string[args._list.Count];
-                for (int j = 0; j < row.Length; j++)
-                    row[j] = args.GetString(j);
-                rows.Add(row);
+                try
+                {
+                    var row = new string[args._list.Count];
+                    for (int j = 0; j < row.Length; j++)
+                        row[j] = args.GetString(j);
+                    rows.Add(row);
+                }
+                catch { }
             }
 
-            var candidates = NovelScenarioCandidateCollector.Collect(rows);
+            var scene = NovelScenarioCandidateCollector.Capture(
+                rows,
+                rows.Count == __result.Count
+            );
+            var candidates = scene.Candidates;
             var pending = new System.Collections.Generic.List<string>(candidates.Count);
-            TryGetNovel(PatchManager.NovelId, out var staticTranslations);
+            TryGetNovel(sceneId, out var staticTranslations);
             foreach (string candidate in candidates)
             {
                 if (staticTranslations != null
@@ -120,9 +136,14 @@ public static class TranslationPatch
                 pending.Add(candidate);
             }
 
-            int queued = MachineTranslator.PreloadNovelCandidates(pending);
+            int queued = MachineTranslator.PreloadNovelScene(
+                sceneId,
+                scene,
+                pending
+            );
             Logger.Info(
-                $"Novel MT preloaded: novel={PatchManager.NovelId}, "
+                $"Novel MT preloaded: novel={sceneId}, "
+                    + $"mode={Config.MTNovelMode.Value}, complete={scene.IsComplete}, "
                     + $"candidates={pending.Count}, queued={queued}"
             );
         }

@@ -90,4 +90,30 @@ public class MachineTranslationTextProtectionTests
         Assert.True(protectedText.TryRestore("中" + protectedText.Tokens[0] + "文", out var restored));
         Assert.Equal("中" + newline + "文", restored);
     }
+
+    [Fact]
+    public void Numeric_templates_preserve_runtime_format_placeholders_end_to_end()
+    {
+        var (template, numbers) = MachineTranslationTemplate.Normalize(
+            "ダメージ{0}、固定値100"
+        );
+
+        Assert.Equal("ダメージ{0}、固定値100", template);
+        Assert.Empty(numbers);
+        Assert.Equal(
+            "伤害{0}，固定值100",
+            MachineTranslationTemplate.Fill("伤害{0}，固定值100", numbers)
+        );
+    }
+
+    [Fact]
+    public void Numeric_templates_still_restore_literal_numbers_without_runtime_placeholders()
+    {
+        var (template, numbers) = MachineTranslationTemplate.Normalize("ランク123");
+
+        Assert.Equal("ランク{0}", template);
+        Assert.Equal(["123"], numbers);
+        Assert.Equal("等级123", MachineTranslationTemplate.Fill("等级{0}", numbers));
+        Assert.Null(MachineTranslationTemplate.Fill("等级{1}", numbers));
+    }
 }

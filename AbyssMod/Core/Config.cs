@@ -79,6 +79,7 @@ namespace AbyssMod
 
         #region MachineTranslation
         public static ConfigEntry<bool> MTEnabled;
+        public static ConfigEntry<NovelMachineTranslationMode> MTNovelMode;
         public static ConfigEntry<string> MTEngine;
         public static ConfigEntry<string> MTEndpoint;
         public static ConfigEntry<string> MTModel;
@@ -391,6 +392,12 @@ namespace AbyssMod
                 "Enabled",
                 false,
                 "是否启用机翻预处理：平时收集字典未命中的日文，启动时后台批量调用本地翻译引擎翻译并缓存（非实时，需自行运行翻译服务，如 ollama）"
+            );
+            MTNovelMode = Plugin.ConfigFile.Bind(
+                "MachineTranslation",
+                "NovelMode",
+                NovelMachineTranslationMode.Script,
+                "剧情机翻模式：Script 在取得完整剧本时整幕翻译并严格校验结构，失败自动回退 Sentence；Sentence 始终逐句翻译"
             );
             MTEngine = Plugin.ConfigFile.Bind(
                 "MachineTranslation",

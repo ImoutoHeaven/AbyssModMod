@@ -64,6 +64,7 @@ internal sealed class TranslationQueue
 
     private readonly object _lock = new();
     private readonly Dictionary<string, PendingTranslation> _pending = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _reservations = new(StringComparer.Ordinal);
     private readonly Queue<TranslationJob> _foreground = new();
     private readonly Queue<TranslationJob> _background = new();
     private int _foregroundDequeuesSinceBackground;
@@ -86,10 +87,21 @@ internal sealed class TranslationQueue
         }
     }
 
-    public bool Enqueue(string template, string category, bool foreground)
+    public bool Enqueue(string template, string category, bool foreground) =>
+        Enqueue(template, category, foreground, static () => false);
+
+    public bool Enqueue(
+        string template,
+        string category,
+        bool foreground,
+        Func<bool> isCompleted
+    )
     {
         lock (_lock)
         {
+            if (_reservations.Contains(template) || isCompleted())
+                return false;
+
             if (!_pending.TryGetValue(template, out var pending))
             {
                 pending = new PendingTranslation { Category = category, Template = template };
@@ -98,6 +110,25 @@ internal sealed class TranslationQueue
 
             return EnqueueNoLock(template, pending, foreground);
         }
+    }
+
+    public bool TryReserve(string template, Func<bool> isCompleted)
+    {
+        lock (_lock)
+        {
+            if (_pending.ContainsKey(template)
+                || _reservations.Contains(template)
+                || isCompleted())
+                return false;
+
+            return _reservations.Add(template);
+        }
+    }
+
+    public void ReleaseReservation(string template)
+    {
+        lock (_lock)
+            _reservations.Remove(template);
     }
 
     public bool EnqueueContextual(
@@ -132,12 +163,6 @@ internal sealed class TranslationQueue
             pending.Template ??= template;
             _pending.TryAdd(template, pending);
         }
-    }
-
-    public bool Contains(string template)
-    {
-        lock (_lock)
-            return _pending.ContainsKey(template);
     }
 
     public bool Remove(string template)
