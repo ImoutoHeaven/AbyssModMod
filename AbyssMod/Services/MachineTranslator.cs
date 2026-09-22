@@ -219,6 +219,35 @@ public static class MachineTranslator
         return !string.IsNullOrEmpty(translated);
     }
 
+    public static int PreloadNovelCandidates(IEnumerable<string> candidates)
+    {
+        if (!Config.Translation.Value
+            || !Config.MTEnabled.Value
+            || !_initialized
+            || candidates == null)
+            return 0;
+
+        int queued = 0;
+        foreach (string text in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                continue;
+
+            var (template, _) = Normalize(text);
+            if (!_cache.ContainsKey(template)
+                && _pending.Enqueue(template, TextClassifier.Dialogue, foreground: false))
+                queued++;
+        }
+
+        if (queued > 0)
+        {
+            _queueSignal.Release();
+            SavePending();
+        }
+
+        return queued;
+    }
+
     /// <summary>立即保存缓存与待翻队列（退出时调用）。</summary>
     public static void Save()
     {

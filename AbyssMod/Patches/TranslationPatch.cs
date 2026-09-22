@@ -42,6 +42,7 @@ public static class TranslationPatch
     public static void InitNovelController(NovelController __instance)
     {
         _novelController = __instance;
+        PatchManager.NovelId = string.Empty;
         ClearStaticMessage();
         ClearMachineTranslationMessage();
     }
@@ -71,8 +72,64 @@ public static class TranslationPatch
         if (!Config.Translation.Value)
             return;
 
+        PatchManager.NovelId = novelId;
         Plugin.Log.LogInfo($"NovelId: {novelId}");
         Plugin.Trans.EnsureNovelTranslationLoaded(novelId);
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(NovelScriptCommands), nameof(NovelScriptCommands.InitCsv))]
+    public static void PreloadScenarioMachineTranslations(NovelScriptCommands __instance)
+    {
+        if (!Config.Translation.Value || !Config.MTEnabled.Value || __instance == null)
+            return;
+
+        try
+        {
+            var rows = new System.Collections.Generic.List<
+                System.Collections.Generic.IReadOnlyList<string>
+            >(__instance.Count);
+            for (int i = 0; i < __instance.Count; i++)
+            {
+                NovelArguments args = __instance[i];
+                if (args?._list == null)
+                    continue;
+
+                var row = new string[args._list.Count];
+                for (int j = 0; j < row.Length; j++)
+                    row[j] = args.GetString(j);
+                rows.Add(row);
+            }
+
+            var candidates = NovelScenarioCandidateCollector.Collect(rows);
+            var pending = new System.Collections.Generic.List<string>(candidates.Count);
+            TryGetNovel(PatchManager.NovelId, out var staticTranslations);
+            foreach (string candidate in candidates)
+            {
+                if (staticTranslations != null
+                        && staticTranslations.TryGetValue(candidate, out string translated)
+                        && !string.IsNullOrEmpty(translated))
+                    continue;
+                if (!string.Equals(
+                        candidate,
+                        TextTranslator.TranslateKnown(TextClassifier.Dialogue, candidate),
+                        System.StringComparison.Ordinal
+                    ))
+                    continue;
+
+                pending.Add(candidate);
+            }
+
+            int queued = MachineTranslator.PreloadNovelCandidates(pending);
+            Logger.Info(
+                $"Novel MT preloaded: novel={PatchManager.NovelId}, "
+                    + $"candidates={pending.Count}, queued={queued}"
+            );
+        }
+        catch (System.Exception e)
+        {
+            Logger.Warn($"Novel MT preload failed: {e.Message}");
+        }
     }
 
     [HarmonyPostfix]
@@ -179,7 +236,9 @@ public static class TranslationPatch
         // resolve the MT cache before the game creates the individual letter TMP objects.
         string original = message;
         string source = TextTranslator.Process(TextClassifier.Dialogue, original);
-        string resolved = MachineTranslator.Handle(TextClassifier.Dialogue, source);
+        string resolved = string.Equals(original, source, System.StringComparison.Ordinal)
+            ? ResolveMachineTranslation(source)
+            : source;
         if (parentWindow != null
             && !string.Equals(original, resolved, System.StringComparison.Ordinal))
         {
@@ -338,7 +397,7 @@ public static class TranslationPatch
             return;
         }
 
-        string resolved = MachineTranslator.Handle(TextClassifier.Dialogue, source);
+        string resolved = ResolveMachineTranslation(source);
         if (!string.Equals(source, resolved, System.StringComparison.Ordinal))
         {
             TrackMachineTranslationMessage(_staticMessageWindow, _staticMessageText, source);
@@ -473,15 +532,14 @@ public static class TranslationPatch
     [HarmonyPatch(typeof(NovelModelDotBalloon), nameof(NovelModelDotBalloon.StartBalloonMessage))]
     public static void SetBalloon(CommandDotMessageData messageData)
     {
-        if (TryGetCurrentNovel(out var translation))
-        {
-            string message = messageData.Message;
-            if (
-                !string.IsNullOrEmpty(message)
-                && translation.TryGetValue(message, out string tMessage)
-            )
-                messageData.Message = tMessage;
-        }
+        messageData.Message = ResolveImmediateNovelText(messageData.Message);
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(typeof(NovelModelSelect), nameof(NovelModelSelect.SetSelect))]
+    public static void TranslateSelections(ref string __1)
+    {
+        __1 = ResolveImmediateNovelText(__1);
     }
 
     [HarmonyPrefix]
@@ -501,14 +559,7 @@ public static class TranslationPatch
     public static void TranslateCenterText(CommandMessageTextData data)
     {
         data.Message = RestoreUserPlaceholder(data.Message);
-
-        if (TryGetCurrentNovel(out var translation)
-            && !string.IsNullOrEmpty(data.Message)
-            && translation.TryGetValue(data.Message, out string translated))
-            data.Message = translated;
-
-        if (ContainsUserPlaceholder(data.Message))
-            data.Message = ExpandUserPlaceholder(data.Message, GetDisplayUserName());
+        data.Message = ResolveImmediateNovelText(data.Message);
     }
 
     [HarmonyPostfix]
@@ -576,5 +627,34 @@ public static class TranslationPatch
     private static string ExpandUserPlaceholder(string value, string displayName)
     {
         return NovelTextTranslation.ExpandUserPlaceholder(value, displayName);
+    }
+
+    private static string ResolveImmediateNovelText(string message)
+    {
+        if (string.IsNullOrEmpty(message))
+            return message;
+
+        if (TryGetCurrentNovel(out var translation)
+            && NovelTextTranslation.TryTranslate(
+                translation,
+                message,
+                GetDisplayUserName(),
+                out string translated
+            ))
+            return translated;
+
+        string source = TextTranslator.Process(TextClassifier.Dialogue, message);
+        if (!string.Equals(message, source, System.StringComparison.Ordinal))
+            return ExpandUserPlaceholder(source, GetDisplayUserName());
+
+        string resolved = ResolveMachineTranslation(source);
+        return ExpandUserPlaceholder(resolved, GetDisplayUserName());
+    }
+
+    private static string ResolveMachineTranslation(string source)
+    {
+        if (!Config.Translation.Value)
+            return source;
+        return MachineTranslator.Handle(TextClassifier.Dialogue, source);
     }
 }

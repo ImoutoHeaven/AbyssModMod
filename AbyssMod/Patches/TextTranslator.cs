@@ -13,7 +13,13 @@ public static class TextTranslator
     ///   - 若开启翻译且字典精确命中 → 返回中文译文
     ///   - 否则若开启收集且文本含日文假名 → 记录到 dump
     /// </summary>
-    public static string Process(string category, string text)
+    public static string Process(string category, string text) =>
+        Process(category, text, collectMissing: true);
+
+    public static string TranslateKnown(string category, string text) =>
+        Process(category, text, collectMissing: false);
+
+    private static string Process(string category, string text, bool collectMissing)
     {
         if (string.IsNullOrEmpty(text))
             return text;
@@ -56,7 +62,8 @@ public static class TextTranslator
                 return templated;
         }
 
-        if (Config.CollectText.Value
+        if (collectMissing
+            && Config.CollectText.Value
             && HasKana(text)
             && (texts == null || !texts.ContainsKey(text))
             && (names == null || !names.ContainsKey(text)))

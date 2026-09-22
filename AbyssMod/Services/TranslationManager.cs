@@ -3,9 +3,13 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Absf;
 using AbyssMod;
 using AbyssMod.Patches;
 using BepInEx.Unity.IL2CPP.Utils.Collections;
+using Project;
+using Project.Master;
+using Project.Master.NoaMessagePack;
 using TMPro;
 using Utility.Fonts;
 using Utility.Toast;
@@ -69,6 +73,7 @@ public class TranslationManager
     private Task _loadTask;
 
     private readonly ConcurrentDictionary<string, Task> _loadingNovels = new();
+    private readonly ConcurrentDictionary<string, byte> _blockedNovels = new();
     private readonly NovelTranslationLoadPolicy _novelLoadPolicy = new(TimeSpan.FromSeconds(30));
     private volatile TranslationSnapshot _snapshot = TranslationSnapshot.Empty;
 
@@ -325,7 +330,7 @@ public class TranslationManager
         Logger.Info($"Text fallback '{label}' merged. Added: {merged} (source: {source.Count})");
     }
 
-    public async Task GetNovelTranslationAsync(string novelId)
+    private async Task GetNovelTranslationAsync(string novelId)
     {
         if (Novels.ContainsKey(novelId))
             return;
@@ -371,9 +376,10 @@ public class TranslationManager
     public void RequestNovelTranslation(string novelId)
     {
         if (string.IsNullOrEmpty(novelId)
+            || !_novelLoadPolicy.CanRequest(novelId, DateTimeOffset.UtcNow)
+            || !CanLoadRemoteNovel(novelId)
             || Novels.ContainsKey(novelId)
-            || _loadingNovels.ContainsKey(novelId)
-            || !_novelLoadPolicy.CanRequest(novelId, DateTimeOffset.UtcNow))
+            || _loadingNovels.ContainsKey(novelId))
             return;
 
         _ = Task.Run(() => GetNovelTranslationAsync(novelId));
@@ -382,11 +388,121 @@ public class TranslationManager
     public void EnsureNovelTranslationLoaded(string novelId)
     {
         if (string.IsNullOrEmpty(novelId)
-            || Novels.ContainsKey(novelId)
-            || !_novelLoadPolicy.CanRequest(novelId, DateTimeOffset.UtcNow))
+            || !_novelLoadPolicy.CanRequest(novelId, DateTimeOffset.UtcNow)
+            || !CanLoadRemoteNovel(novelId)
+            || Novels.ContainsKey(novelId))
             return;
 
         GetNovelTranslationAsync(novelId).GetAwaiter().GetResult();
+    }
+
+    private bool CanLoadRemoteNovel(string novelId)
+    {
+        bool allowed = CanLoadRemoteCharacterNovel(novelId);
+        if (allowed)
+        {
+            _blockedNovels.TryRemove(novelId, out _);
+            return true;
+        }
+
+        Novels.TryRemove(novelId, out _);
+        _novelLoadPolicy.MarkFailed(novelId, DateTimeOffset.UtcNow);
+        if (_blockedNovels.TryAdd(novelId, 0))
+            Logger.Info($"Upstream scenario translation skipped by character availability policy: {novelId}");
+        return false;
+    }
+
+    private static bool CanLoadRemoteCharacterNovel(string novelId)
+    {
+        string family = CharacterNovelTranslationPolicy.GetFamily(novelId);
+        if (family == null)
+            return true;
+        bool failClosed = CharacterNovelTranslationPolicy.IsKnownCharacterScript(novelId);
+
+        try
+        {
+            MasterDataStore store = Engine.Get<MasterDataStore>();
+            MCharacters[] characters = store?.GetCache<MCharacters>();
+            MNovelCharacters[] characterNovels = store?.GetCache<MNovelCharacters>();
+            MNovelCharacterSkins[] skinNovels = store?.GetCache<MNovelCharacterSkins>();
+            MCharacterSkins[] skins = store?.GetCache<MCharacterSkins>();
+            IServerTimeAccessor serverTime = Engine.Get<IServerTimeAccessor>();
+            if (characters == null || serverTime == null)
+                return !failClosed;
+
+            for (int i = 0; i < (characterNovels?.Length ?? 0); i++)
+            {
+                var novel = characterNovels[i];
+                if (novel != null
+                    && string.Equals(
+                        family,
+                        CharacterNovelTranslationPolicy.GetFamily(novel.script_id),
+                        StringComparison.Ordinal
+                    ))
+                    return CharacterNovelTranslationPolicy.CanLoadRemote(
+                        novelId,
+                        novel.script_id,
+                        IsCharacterOpen(
+                            characters,
+                            novel.m_character_id,
+                            serverTime.NowTime
+                        )
+                    );
+            }
+
+            for (int i = 0; i < (skinNovels?.Length ?? 0); i++)
+            {
+                var novel = skinNovels[i];
+                if (novel == null
+                    || !string.Equals(
+                        family,
+                        CharacterNovelTranslationPolicy.GetFamily(novel.script_id),
+                        StringComparison.Ordinal
+                    ))
+                    continue;
+
+                for (int j = 0; j < (skins?.Length ?? 0); j++)
+                {
+                    var skin = skins[j];
+                    if (skin != null && skin.id == novel.m_character_skin_id)
+                        return CharacterNovelTranslationPolicy.CanLoadRemote(
+                            novelId,
+                            novel.script_id,
+                            IsCharacterOpen(
+                                characters,
+                                skin.m_character_id,
+                                serverTime.NowTime
+                            )
+                        );
+                }
+
+                return false;
+            }
+
+            return !failClosed;
+        }
+        catch (Exception e)
+        {
+            Logger.Warn($"Character novel open_at check failed [{novelId}]: {e.Message}");
+            return !failClosed;
+        }
+    }
+
+    private static bool IsCharacterOpen(
+        MCharacters[] characters,
+        long characterId,
+        Il2CppSystem.DateTime now
+    )
+    {
+        // ponytail: scene-start master scans stay linear; index them if profiling shows a cost.
+        for (int i = 0; i < characters.Length; i++)
+        {
+            var character = characters[i];
+            if (character != null && character.id == characterId)
+                return DateTimeExtensions.IsBetween(now, character.open_at, null);
+        }
+
+        return false;
     }
 
 }
