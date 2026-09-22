@@ -29,26 +29,63 @@ public class MachineTranslationPrimitivesTests
     }
 
     [Fact]
-    public void Script_reservation_and_sentence_enqueue_have_exactly_one_owner()
+    public void Script_reservation_wins_over_a_racing_sentence_enqueue()
     {
         for (int i = 0; i < 200; i++)
         {
             var queue = new TranslationQueue();
             bool reserved = false;
-            bool enqueued = false;
 
             Parallel.Invoke(
                 () => reserved = queue.TryReserve("template", () => false),
-                () => enqueued = queue.Enqueue(
-                    "template",
-                    "dialogue",
-                    foreground: true,
-                    isCompleted: () => false
-                )
+                () =>
+                {
+                    queue.Enqueue(
+                        "template",
+                        "dialogue",
+                        foreground: true,
+                        isCompleted: () => false
+                    );
+                }
             );
 
-            Assert.True(reserved ^ enqueued);
+            Assert.True(reserved);
+            Assert.False(queue.Enqueue(
+                "template",
+                "dialogue",
+                foreground: true,
+                isCompleted: () => false
+            ));
         }
+    }
+
+    [Fact]
+    public void Script_reservation_reports_the_filter_reason()
+    {
+        var cached = new TranslationQueue();
+        Assert.False(cached.TryReserve("cached", () => true, out var cachedStatus));
+        Assert.Equal(TranslationReservationStatus.AlreadyCached, cachedStatus);
+
+        var queuedPending = new TranslationQueue();
+        queuedPending.Enqueue("pending", "dialogue", foreground: false);
+        Assert.True(queuedPending.TryReserve("pending", () => false, out var reclaimedStatus));
+        Assert.Equal(TranslationReservationStatus.ReservedFromPending, reclaimedStatus);
+        Assert.Equal(0, queuedPending.Count);
+
+        var inFlightPending = new TranslationQueue();
+        inFlightPending.Enqueue("pending", "dialogue", foreground: false);
+        Assert.True(inFlightPending.TryDequeue(out _));
+        Assert.False(inFlightPending.TryReserve("pending", () => false, out var pendingStatus));
+        Assert.Equal(TranslationReservationStatus.AlreadyPending, pendingStatus);
+
+        var reserved = new TranslationQueue();
+        Assert.True(reserved.TryReserve("reserved", () => false));
+        Assert.False(reserved.TryReserve("reserved", () => false, out var reservedStatus));
+        Assert.Equal(TranslationReservationStatus.AlreadyReserved, reservedStatus);
+
+        var available = new TranslationQueue();
+        Assert.True(available.TryReserve("available", () => false, out var availableStatus));
+        Assert.Equal(TranslationReservationStatus.Reserved, availableStatus);
     }
 
     [Fact]

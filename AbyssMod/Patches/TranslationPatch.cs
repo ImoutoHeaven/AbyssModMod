@@ -30,7 +30,6 @@ public static class TranslationPatch
     private static StaticNovelMessageState _staticMessageState;
     private static string _machineTranslationSource;
     private static string _lastRefreshedMachineTranslationSource;
-    private static string _lastRefreshDiagnostic;
     private static bool _refreshingMessage;
     private static string NovelId
     {
@@ -119,37 +118,43 @@ public static class TranslationPatch
             );
             var candidates = scene.Candidates;
             var pending = new System.Collections.Generic.List<string>(candidates.Count);
+            int staticHits = 0;
+            int knownHits = 0;
             TryGetNovel(sceneId, out var staticTranslations);
             foreach (string candidate in candidates)
             {
                 if (staticTranslations != null
                         && staticTranslations.TryGetValue(candidate, out string translated)
                         && !string.IsNullOrEmpty(translated))
+                {
+                    staticHits++;
                     continue;
-                if (!string.Equals(
-                        candidate,
-                        TextTranslator.TranslateKnown(TextClassifier.Dialogue, candidate),
-                        System.StringComparison.Ordinal
-                    ))
+                }
+
+                string known = TextTranslator.TranslateKnown(TextClassifier.Dialogue, candidate);
+                if (!string.Equals(candidate, known, System.StringComparison.Ordinal))
+                {
+                    knownHits++;
                     continue;
+                }
 
                 pending.Add(candidate);
             }
 
-            int queued = MachineTranslator.PreloadNovelScene(
+            Logger.Info(
+                $"[NovelScriptMT] capture scene={sceneId} rows={rows.Count}/{__result.Count} "
+                    + $"complete={scene.IsComplete} kanaCandidates={candidates.Count} "
+                    + $"staticHits={staticHits} knownHits={knownHits} unresolved={pending.Count}"
+            );
+            MachineTranslator.PreloadNovelScene(
                 sceneId,
                 scene,
                 pending
             );
-            Logger.Info(
-                $"Novel MT preloaded: novel={sceneId}, "
-                    + $"mode={Config.MTNovelMode.Value}, complete={scene.IsComplete}, "
-                    + $"candidates={pending.Count}, queued={queued}"
-            );
         }
         catch (System.Exception e)
         {
-            Logger.Warn($"Novel MT preload failed: {e.Message}");
+            Logger.Warn($"[NovelScriptMT] capture-failed error={e.Message}");
         }
     }
 
@@ -356,13 +361,6 @@ public static class TranslationPatch
                 lastRefreshedSource: _lastRefreshedMachineTranslationSource,
                 translated: translated
             );
-            string diagnostic = $"Novel MT refresh: typing={_messageWindow._isPlay}, "
-                + $"shouldRefresh={shouldRefresh}, source='{Abbreviate(_machineTranslationSource)}'";
-            if (!string.Equals(diagnostic, _lastRefreshDiagnostic, System.StringComparison.Ordinal))
-            {
-                _lastRefreshDiagnostic = diagnostic;
-                Logger.Info(diagnostic);
-            }
             if (!shouldRefresh)
                 return;
 
@@ -370,7 +368,6 @@ public static class TranslationPatch
             translated = NovelTextTranslation.ExpandUserPlaceholder(translated, GetDisplayUserName());
             ReplayMessage(_messageWindow, _messageText, translated);
             _lastRefreshedMachineTranslationSource = _machineTranslationSource;
-            Logger.Info($"Novel MT refreshed: '{Abbreviate(_machineTranslationSource)}'");
         }
         catch (System.Exception e)
         {
@@ -444,8 +441,6 @@ public static class TranslationPatch
         _messageText = messageText;
         _machineTranslationSource = source;
         _lastRefreshedMachineTranslationSource = null;
-        _lastRefreshDiagnostic = null;
-        Logger.Info($"Novel MT refresh candidate: '{Abbreviate(source)}'");
     }
 
     private static void ClearStaticMessage()
@@ -462,7 +457,6 @@ public static class TranslationPatch
         _messageText = null;
         _machineTranslationSource = null;
         _lastRefreshedMachineTranslationSource = null;
-        _lastRefreshDiagnostic = null;
     }
 
     private static void ReplayMessage(
@@ -485,9 +479,6 @@ public static class TranslationPatch
             _refreshingMessage = false;
         }
     }
-
-    private static string Abbreviate(string text) =>
-        text.Length <= 80 ? text : text.Substring(0, 80) + "...";
 
     [HarmonyPrefix]
     [HarmonyPatch(typeof(NovelModelMessageLog), nameof(NovelModelMessageLog.Add))]

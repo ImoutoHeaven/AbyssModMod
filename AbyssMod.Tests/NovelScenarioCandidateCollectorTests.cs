@@ -123,16 +123,24 @@ public class NovelScenarioCandidateCollectorTests
 
         Assert.False(batch.TryParseResponse(
             """{"version":1,"translations":[]}""",
-            out _
+            out _,
+            out string countReason
         ));
+        Assert.Equal("count-mismatch expected=1 actual=0", countReason);
         Assert.False(batch.TryParseResponse(
             """{"version":1,"translations":[{"id":"wrong","text":"欢迎回来"}]}""",
-            out _
+            out _,
+            out string idReason
         ));
+        Assert.Equal("id-mismatch index=0 expected=t0000 actual=wrong", idReason);
         Assert.False(batch.TryParseResponse(
             """{"version":1,"translations":[{"id":"t0000","text":"欢迎回来"}]}""",
-            out _
+            out _,
+            out string tokenReason
         ));
+        Assert.Equal("token-mismatch id=t0000", tokenReason);
+        Assert.False(batch.TryParseResponse("not-json", out _, out string jsonReason));
+        Assert.Equal("invalid-json", jsonReason);
     }
 
     [Fact]
@@ -166,6 +174,48 @@ public class NovelScenarioCandidateCollectorTests
         Assert.Equal("欢迎回来，<user><br>我一直在等你。", translations[source]);
     }
 
+    [Fact]
+    public void Scene_coalescer_keeps_the_largest_complete_capture_until_the_latest_generation()
+    {
+        var coalescer = new NovelScriptSceneCoalescer();
+        NovelScenarioSnapshot shortScene = NovelScenarioCandidateCollector.Capture(
+            [["message", "A", "短い"]],
+            isComplete: true
+        );
+        NovelScenarioSnapshot fullScene = NovelScenarioCandidateCollector.Capture(
+            [
+                ["message", "A", "短い"],
+                ["message", "B", "長い場面です"],
+            ],
+            isComplete: true
+        );
+        NovelScenarioSnapshot largerButIncomplete = NovelScenarioCandidateCollector.Capture(
+            [
+                ["message", "A", "短い"],
+                ["message", "B", "長い場面です"],
+                ["message", "C", "未完成です"],
+            ],
+            isComplete: false
+        );
+
+        int generation1 = coalescer.Submit("scene", shortScene, shortScene.Candidates, out _);
+        int generation2 = coalescer.Submit("scene", fullScene, fullScene.Candidates, out _);
+        int generation3 = coalescer.Submit(
+            "scene",
+            largerButIncomplete,
+            largerButIncomplete.Candidates,
+            out int selectedRows
+        );
+
+        Assert.False(coalescer.TryTake("scene", generation1, out _));
+        Assert.False(coalescer.TryTake("scene", generation2, out _));
+        Assert.True(coalescer.TryTake("scene", generation3, out var work));
+        Assert.NotNull(work);
+        Assert.Equal(2, selectedRows);
+        Assert.True(work.Scene.IsComplete);
+        Assert.Equal(fullScene.Candidates, work.Candidates);
+    }
+
     [Theory]
     [InlineData(NovelMachineTranslationMode.Script, "openai", true, true)]
     [InlineData(NovelMachineTranslationMode.Script, "ollama", true, true)]
@@ -181,5 +231,52 @@ public class NovelScenarioCandidateCollectorTests
     )
     {
         Assert.Equal(expected, NovelScriptTranslationProtocol.CanUse(mode, engine, complete));
+    }
+
+    [Theory]
+    [InlineData(0, 4)]
+    [InlineData(3, 4)]
+    [InlineData(5, 6)]
+    public void Script_mode_retries_at_least_three_times_before_sentence_fallback(
+        int configuredRetries,
+        int expectedAttempts
+    )
+    {
+        Assert.Equal(
+            expectedAttempts,
+            NovelScriptTranslationProtocol.GetMaximumAttempts(configuredRetries)
+        );
+    }
+
+    [Fact]
+    public void Script_retry_prompt_carries_the_last_rejection_reason_and_full_scene()
+    {
+        const string scenePrompt = "{\"version\":1,\"scene\":[]}";
+
+        Assert.Equal(
+            scenePrompt,
+            NovelScriptTranslationProtocol.BuildRetryPrompt(scenePrompt, previousFailure: null)
+        );
+        string retryPrompt = NovelScriptTranslationProtocol.BuildRetryPrompt(
+            scenePrompt,
+            "token-mismatch id=t0042"
+        );
+        Assert.Contains("token-mismatch id=t0042", retryPrompt);
+        Assert.EndsWith(scenePrompt, retryPrompt);
+    }
+
+    [Fact]
+    public void Script_retry_registry_survives_restart_until_scene_translation_succeeds()
+    {
+        var registry = new NovelScriptRetryRegistry();
+        Assert.True(registry.Mark("hmr_11120100031"));
+
+        Assert.True(NovelScriptRetryRegistry.TryDeserialize(
+            registry.Serialize(),
+            out var restored
+        ));
+        Assert.True(restored.Contains("hmr_11120100031"));
+        Assert.True(restored.Complete("hmr_11120100031"));
+        Assert.False(restored.Contains("hmr_11120100031"));
     }
 }

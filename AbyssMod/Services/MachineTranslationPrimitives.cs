@@ -12,6 +12,15 @@ internal enum TranslationFailureDisposition
     PeriodicOnly,
 }
 
+internal enum TranslationReservationStatus
+{
+    Reserved,
+    ReservedFromPending,
+    AlreadyCached,
+    AlreadyPending,
+    AlreadyReserved,
+}
+
 internal readonly record struct TranslationJob(
     string Key,
     string Template,
@@ -112,16 +121,44 @@ internal sealed class TranslationQueue
         }
     }
 
-    public bool TryReserve(string template, Func<bool> isCompleted)
+    public bool TryReserve(string template, Func<bool> isCompleted) =>
+        TryReserve(template, isCompleted, out _);
+
+    public bool TryReserve(
+        string template,
+        Func<bool> isCompleted,
+        out TranslationReservationStatus status
+    )
     {
         lock (_lock)
         {
-            if (_pending.ContainsKey(template)
-                || _reservations.Contains(template)
-                || isCompleted())
+            if (isCompleted())
+            {
+                status = TranslationReservationStatus.AlreadyCached;
                 return false;
+            }
+            if (_pending.TryGetValue(template, out var pending))
+            {
+                if (!pending.InFlight)
+                {
+                    _pending.Remove(template);
+                    _reservations.Add(template);
+                    status = TranslationReservationStatus.ReservedFromPending;
+                    return true;
+                }
 
-            return _reservations.Add(template);
+                status = TranslationReservationStatus.AlreadyPending;
+                return false;
+            }
+            if (_reservations.Contains(template))
+            {
+                status = TranslationReservationStatus.AlreadyReserved;
+                return false;
+            }
+
+            _reservations.Add(template);
+            status = TranslationReservationStatus.Reserved;
+            return true;
         }
     }
 
@@ -129,6 +166,12 @@ internal sealed class TranslationQueue
     {
         lock (_lock)
             _reservations.Remove(template);
+    }
+
+    public bool ContainsPending(string template)
+    {
+        lock (_lock)
+            return _pending.ContainsKey(template);
     }
 
     public bool EnqueueContextual(

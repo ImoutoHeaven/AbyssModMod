@@ -34,6 +34,146 @@ internal sealed class NovelScenarioSnapshot
     public bool IsComplete { get; }
 }
 
+internal sealed record NovelScriptSceneWork(
+    NovelScenarioSnapshot Scene,
+    IReadOnlyList<string> Candidates
+);
+
+internal sealed class NovelScriptSceneCoalescer
+{
+    private readonly object _lock = new();
+    private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+
+    public int Submit(
+        string sceneId,
+        NovelScenarioSnapshot scene,
+        IReadOnlyList<string> candidates,
+        out int selectedRows
+    )
+    {
+        lock (_lock)
+        {
+            int generation = 1;
+            NovelScriptSceneWork selected = new(scene, candidates.ToArray());
+            if (_entries.TryGetValue(sceneId, out Entry? current))
+            {
+                generation = current.Generation + 1;
+                if (!IsBetter(scene, current.Work.Scene))
+                    selected = current.Work;
+            }
+
+            _entries[sceneId] = new Entry(generation, selected);
+            selectedRows = selected.Scene.Rows.Count;
+            return generation;
+        }
+    }
+
+    public bool TryTake(
+        string sceneId,
+        int generation,
+        out NovelScriptSceneWork? work
+    )
+    {
+        lock (_lock)
+        {
+            if (!_entries.TryGetValue(sceneId, out Entry? current)
+                || current.Generation != generation)
+            {
+                work = null;
+                return false;
+            }
+
+            _entries.Remove(sceneId);
+            work = current.Work;
+            return true;
+        }
+    }
+
+    private static bool IsBetter(
+        NovelScenarioSnapshot incoming,
+        NovelScenarioSnapshot current
+    )
+    {
+        if (incoming.IsComplete != current.IsComplete)
+            return incoming.IsComplete;
+        return incoming.Rows.Count >= current.Rows.Count;
+    }
+
+    private sealed record Entry(int Generation, NovelScriptSceneWork Work);
+}
+
+internal sealed class NovelScriptRetryRegistry
+{
+    private readonly object _lock = new();
+    private readonly HashSet<string> _scenes;
+
+    public NovelScriptRetryRegistry()
+        : this(Array.Empty<string>()) { }
+
+    private NovelScriptRetryRegistry(IEnumerable<string> scenes)
+    {
+        _scenes = new HashSet<string>(scenes, StringComparer.Ordinal);
+    }
+
+    public int Count
+    {
+        get
+        {
+            lock (_lock)
+                return _scenes.Count;
+        }
+    }
+
+    public bool Contains(string sceneId)
+    {
+        lock (_lock)
+            return _scenes.Contains(sceneId);
+    }
+
+    public bool Mark(string sceneId)
+    {
+        lock (_lock)
+            return !string.IsNullOrEmpty(sceneId) && _scenes.Add(sceneId);
+    }
+
+    public bool Complete(string sceneId)
+    {
+        lock (_lock)
+            return _scenes.Remove(sceneId);
+    }
+
+    public string Serialize()
+    {
+        lock (_lock)
+            return JsonSerializer.Serialize(
+                _scenes.OrderBy(scene => scene, StringComparer.Ordinal).ToArray()
+            );
+    }
+
+    public static bool TryDeserialize(string? json, out NovelScriptRetryRegistry registry)
+    {
+        registry = new NovelScriptRetryRegistry();
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        try
+        {
+            string[]? scenes = JsonSerializer.Deserialize<string[]>(json);
+            if (scenes == null)
+                return false;
+
+            registry = new NovelScriptRetryRegistry(
+                scenes.Where(scene => !string.IsNullOrEmpty(scene))
+            );
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+}
+
 internal static class NovelScenarioCandidateCollector
 {
     private static readonly HashSet<string> MessageCommands = new(
@@ -118,6 +258,20 @@ internal static class NovelScriptTranslationProtocol
 
         string normalized = (engine ?? "openai").Trim().ToLowerInvariant();
         return normalized != "sugoi" && normalized != "libre";
+    }
+
+    public static int GetMaximumAttempts(int configuredRetries) =>
+        1 + Math.Max(3, configuredRetries);
+
+    public static string BuildRetryPrompt(string prompt, string? previousFailure)
+    {
+        if (string.IsNullOrEmpty(previousFailure))
+            return prompt;
+
+        return "上一次整幕响应未通过验证，原因："
+            + previousFailure
+            + "。请从头生成完整 JSON，逐项核对数量、ID、顺序和所有 token。\n"
+            + prompt;
     }
 
 }
@@ -209,11 +363,20 @@ internal sealed class NovelScriptTranslationBatch
     public bool TryParseResponse(
         string? response,
         out Dictionary<string, string> translations
+    ) => TryParseResponse(response, out translations, out _);
+
+    public bool TryParseResponse(
+        string? response,
+        out Dictionary<string, string> translations,
+        out string rejectionReason
     )
     {
         translations = new Dictionary<string, string>(StringComparer.Ordinal);
         if (string.IsNullOrWhiteSpace(response))
+        {
+            rejectionReason = "empty-response";
             return false;
+        }
 
         try
         {
@@ -221,33 +384,71 @@ internal sealed class NovelScriptTranslationBatch
                 StripCodeFence(response),
                 JsonOptions
             );
-            if (document?.Version != NovelScriptTranslationProtocol.Version
-                || document.Translations == null
-                || document.Translations.Count != _targets.Count)
+            if (document == null)
+            {
+                rejectionReason = "invalid-json";
                 return false;
+            }
+            if (document.Version != NovelScriptTranslationProtocol.Version)
+            {
+                rejectionReason = $"version-mismatch expected={NovelScriptTranslationProtocol.Version} actual={document.Version}";
+                return false;
+            }
+            if (document.Translations == null)
+            {
+                rejectionReason = "missing-translations";
+                return false;
+            }
+            if (document.Translations.Count != _targets.Count)
+            {
+                rejectionReason = $"count-mismatch expected={_targets.Count} actual={document.Translations.Count}";
+                return false;
+            }
 
             for (int i = 0; i < _targets.Count; i++)
             {
                 TargetState expected = _targets[i];
                 TranslationPayload? actual = document.Translations[i];
-                if (actual == null
-                    || !string.Equals(actual.Id, expected.Id, StringComparison.Ordinal)
-                    || string.IsNullOrWhiteSpace(actual.Text)
-                    || !expected.Protected.TryRestore(actual.Text.Trim(), out string restored)
-                    || string.IsNullOrWhiteSpace(restored))
+                if (actual == null)
+                {
+                    rejectionReason = $"null-entry index={i}";
                     return false;
+                }
+                if (!string.Equals(actual.Id, expected.Id, StringComparison.Ordinal))
+                {
+                    rejectionReason = $"id-mismatch index={i} expected={expected.Id} actual={actual.Id}";
+                    return false;
+                }
+                if (string.IsNullOrWhiteSpace(actual.Text))
+                {
+                    rejectionReason = $"empty-text id={expected.Id}";
+                    return false;
+                }
+                if (!expected.Protected.TryRestore(actual.Text.Trim(), out string restored))
+                {
+                    rejectionReason = $"token-mismatch id={expected.Id}";
+                    return false;
+                }
+                if (string.IsNullOrWhiteSpace(restored))
+                {
+                    rejectionReason = $"empty-restored-text id={expected.Id}";
+                    return false;
+                }
 
                 translations.Add(expected.Template, restored);
             }
 
+            rejectionReason = "ok";
             return true;
         }
         catch (JsonException)
         {
+            rejectionReason = "invalid-json";
             return false;
         }
         catch (ArgumentException)
         {
+            rejectionReason = "duplicate-template";
             return false;
         }
     }

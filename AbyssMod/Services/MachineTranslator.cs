@@ -46,6 +46,10 @@ public static class MachineTranslator
 
     /// <summary>待翻译模板及其重试状态。</summary>
     private static readonly TranslationQueue _pending = new();
+    private static readonly NovelScriptSceneCoalescer _novelScriptScenes = new();
+    private static NovelScriptRetryRegistry _novelScriptRetries = new();
+    private static string _novelScriptRetryPath;
+    private const int NovelScriptCoalesceDelayMs = 500;
     private static readonly SemaphoreSlim _queueSignal = new(0);
     private static readonly RequestStartRateLimiter _requestRateLimiter = new();
     private static readonly RequestInFlightGate _inFlightGate = new();
@@ -80,6 +84,7 @@ public static class MachineTranslator
 
         Directory.CreateDirectory(otherDir);
         _pendingPath = Path.Combine(otherDir, $"{language}.pending.json");
+        _novelScriptRetryPath = Path.Combine(otherDir, $"{language}.script-retry.json");
         _uiCachePath = Path.Combine(
             otherDir,
             TranslationPaths.UiTexts,
@@ -90,6 +95,7 @@ public static class MachineTranslator
         LoadContextualUiCache();
         PruneGraduatedKeys(); // 移除已被 add-on/ 收录的重复 key
         LoadPending();
+        LoadNovelScriptRetries();
 
         Task.Run(TranslationLoop);
         Task.Run(PeriodicQueueLoop);
@@ -98,7 +104,7 @@ public static class MachineTranslator
         Logger.Info(
             $"MachineTranslator (event queue mode) initialized. Enabled={Config.MTEnabled.Value}, "
                 + $"language={langLabel}, cached={_cache.Count}, uiCached={_uiCache.Count}, "
-                + $"pending={_pending.Count}"
+                + $"pending={_pending.Count}, scriptRetries={_novelScriptRetries.Count}"
         );
     }
 
@@ -225,7 +231,7 @@ public static class MachineTranslator
         return !string.IsNullOrEmpty(translated);
     }
 
-    internal static int PreloadNovelScene(
+    internal static void PreloadNovelScene(
         string sceneId,
         NovelScenarioSnapshot scene,
         IEnumerable<string> candidates
@@ -237,11 +243,85 @@ public static class MachineTranslator
             .Distinct(StringComparer.Ordinal)
             .ToList() ?? new List<string>();
 
+        bool shouldCoalesce = candidateList.Count > 0
+            && !string.IsNullOrEmpty(sceneId)
+            && NovelScriptTranslationProtocol.CanUse(
+                Config.MTNovelMode.Value,
+                Config.MTEngine.Value,
+                scene?.IsComplete == true
+            );
+        if (!shouldCoalesce)
+        {
+            PrepareNovelScene(sceneId, scene, candidateList);
+            return;
+        }
+
+        int generation = _novelScriptScenes.Submit(
+            sceneId,
+            scene,
+            candidateList,
+            out int selectedRows
+        );
+        Logger.Info(
+            $"[NovelScriptMT] coalesce-wait scene={sceneId} generation={generation} "
+                + $"incomingRows={scene.Rows.Count} selectedRows={selectedRows} "
+                + $"delayMs={NovelScriptCoalesceDelayMs}"
+        );
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(NovelScriptCoalesceDelayMs);
+            if (!_novelScriptScenes.TryTake(sceneId, generation, out var work) || work == null)
+                return;
+
+            Logger.Info(
+                $"[NovelScriptMT] coalesce-dispatch scene={sceneId} generation={generation} "
+                    + $"rows={work.Scene.Rows.Count} candidates={work.Candidates.Count}"
+            );
+            try
+            {
+                PrepareNovelScene(sceneId, work.Scene, work.Candidates);
+            }
+            catch (Exception e)
+            {
+                MarkNovelScriptRetry(sceneId);
+                int queued = PreloadNovelCandidates(work.Candidates);
+                Logger.Warn(
+                    $"[NovelScriptMT] coalesce-dispatch-failed scene={sceneId} "
+                        + $"error={e.Message} fallbackQueued={queued}"
+                );
+            }
+        });
+    }
+
+    private static int PrepareNovelScene(
+        string sceneId,
+        NovelScenarioSnapshot scene,
+        IReadOnlyList<string> candidateList
+    )
+    {
+
         if (!Config.Translation.Value
             || !Config.MTEnabled.Value
             || !_initialized
             || candidateList.Count == 0)
+        {
+            if (candidateList.Count == 0
+                && scene?.IsComplete == true
+                && !string.IsNullOrEmpty(sceneId))
+                CompleteNovelScriptRetry(sceneId);
+            string reason = !Config.Translation.Value
+                ? "translation-disabled"
+                : !Config.MTEnabled.Value
+                    ? "mt-disabled"
+                    : !_initialized
+                        ? "translator-not-ready"
+                        : "no-candidates";
+            Logger.Info(
+                $"[NovelScriptMT] no-request scene={sceneId ?? "<none>"} reason={reason} "
+                    + $"candidates={candidateList.Count}"
+            );
             return 0;
+        }
 
         if (!NovelScriptTranslationProtocol.CanUse(
                 Config.MTNovelMode.Value,
@@ -249,18 +329,86 @@ public static class MachineTranslator
                 scene?.IsComplete == true
             )
             || string.IsNullOrEmpty(sceneId))
-            return PreloadNovelCandidates(candidateList);
+        {
+            string engine = (Config.MTEngine.Value ?? "openai").Trim().ToLowerInvariant();
+            string reason = string.IsNullOrEmpty(sceneId)
+                ? "missing-scene-id"
+                : Config.MTNovelMode.Value != NovelMachineTranslationMode.Script
+                    ? "sentence-mode"
+                    : scene?.IsComplete != true
+                        ? "incomplete-scene"
+                        : $"unsupported-engine:{engine}";
+            if (!string.IsNullOrEmpty(sceneId)
+                && Config.MTNovelMode.Value == NovelMachineTranslationMode.Script)
+                MarkNovelScriptRetry(sceneId);
+            int sentenceQueued = PreloadNovelCandidates(candidateList);
+            Logger.Info(
+                $"[NovelScriptMT] sentence-fallback scene={sceneId ?? "<none>"} reason={reason} "
+                    + $"candidates={candidateList.Count} queued={sentenceQueued}"
+            );
+            return sentenceQueued;
+        }
 
         var reservedTemplates = new HashSet<string>(StringComparer.Ordinal);
         var targets = new List<NovelScriptTranslationTarget>();
+        int cached = 0;
+        int pending = 0;
+        int reclaimedPending = 0;
+        int cachedOverrides = 0;
+        int reservedElsewhere = 0;
+        int normalizedDuplicates = 0;
+        bool retryPriority = _novelScriptRetries.Contains(sceneId);
+        if (!retryPriority)
+        {
+            retryPriority = candidateList.Any(source =>
+            {
+                var (template, _) = MachineTranslationTemplate.Normalize(source);
+                return _pending.ContainsPending(template);
+            });
+            if (retryPriority)
+                MarkNovelScriptRetry(sceneId);
+        }
         foreach (string source in candidateList)
         {
             var (template, _) = MachineTranslationTemplate.Normalize(source);
-            if (_pending.TryReserve(template, () => _cache.ContainsKey(template)))
-                reservedTemplates.Add(template);
             if (reservedTemplates.Contains(template))
+            {
                 targets.Add(new NovelScriptTranslationTarget(source, template));
+                normalizedDuplicates++;
+                continue;
+            }
+
+            bool cachedTemplate = _cache.ContainsKey(template);
+            if (retryPriority && cachedTemplate)
+                cachedOverrides++;
+            if (_pending.TryReserve(
+                    template,
+                    () => !retryPriority && _cache.ContainsKey(template),
+                    out var status
+                ))
+            {
+                reservedTemplates.Add(template);
+                targets.Add(new NovelScriptTranslationTarget(source, template));
+                if (status == TranslationReservationStatus.ReservedFromPending)
+                    reclaimedPending++;
+                continue;
+            }
+
+            switch (status)
+            {
+                case TranslationReservationStatus.AlreadyCached:
+                    cached++;
+                    break;
+                case TranslationReservationStatus.AlreadyPending:
+                    pending++;
+                    break;
+                case TranslationReservationStatus.AlreadyReserved:
+                    reservedElsewhere++;
+                    break;
+            }
         }
+        if (reclaimedPending > 0)
+            SavePending();
 
         NovelScriptTranslationBatch batch;
         try
@@ -270,12 +418,32 @@ public static class MachineTranslator
         catch (Exception e)
         {
             ReleaseNovelScriptReservations(reservedTemplates);
-            Logger.Warn($"Novel script MT preparation failed: scene={sceneId}, error={e.Message}");
-            return PreloadNovelCandidates(candidateList);
+            MarkNovelScriptRetry(sceneId);
+            int sentenceQueued = PreloadNovelCandidates(candidateList);
+            Logger.Warn(
+                $"[NovelScriptMT] prepare-failed scene={sceneId} error={e.Message} "
+                    + $"fallbackQueued={sentenceQueued}"
+            );
+            return sentenceQueued;
         }
+
+        Logger.Info(
+            $"[NovelScriptMT] prepared scene={sceneId} rows={scene.Rows.Count} "
+                + $"candidates={candidateList.Count} targets={batch.TargetCount} "
+                + $"cached={cached} pending={pending} reclaimedPending={reclaimedPending} "
+                + $"cachedOverrides={cachedOverrides} retryPriority={retryPriority} "
+                + $"reservedElsewhere={reservedElsewhere} "
+                + $"normalizedDuplicates={normalizedDuplicates} promptChars={batch.Prompt.Length}"
+        );
         if (batch.TargetCount == 0)
         {
             ReleaseNovelScriptReservations(reservedTemplates);
+            Logger.Info(
+                $"[NovelScriptMT] no-request scene={sceneId} reason=no-new-targets "
+                    + $"cached={cached} pending={pending} reclaimedPending={reclaimedPending} "
+                    + $"cachedOverrides={cachedOverrides} retryPriority={retryPriority} "
+                    + $"reservedElsewhere={reservedElsewhere}"
+            );
             return 0;
         }
 
@@ -283,8 +451,15 @@ public static class MachineTranslator
             sceneId,
             batch,
             candidateList,
-            reservedTemplates
+            reservedTemplates,
+            retryPriority,
+            retryPriority && pending == 0 && reservedElsewhere == 0
         ));
+        Logger.Info(
+            $"[NovelScriptMT] scheduled scene={sceneId} targets={batch.TargetCount} "
+                + $"promptChars={batch.Prompt.Length} "
+                + $"maxAttempts={NovelScriptTranslationProtocol.GetMaximumAttempts(Config.MTRetryCount.Value)}"
+        );
         return batch.TargetCount;
     }
 
@@ -326,11 +501,18 @@ public static class MachineTranslator
         string sceneId,
         NovelScriptTranslationBatch batch,
         IReadOnlyList<string> fallbackCandidates,
-        IReadOnlyCollection<string> reservedTemplates
+        IReadOnlyCollection<string> reservedTemplates,
+        bool retryPriority,
+        bool clearRetryMarkerOnSuccess
     )
     {
         bool requestSlotAcquired = false;
         bool succeeded = false;
+        string fallbackReason = "request-failed";
+        int attempts = 0;
+        int maximumAttempts = NovelScriptTranslationProtocol.GetMaximumAttempts(
+            Config.MTRetryCount.Value
+        );
         try
         {
             while (_initialized && Config.MTEnabled.Value)
@@ -344,44 +526,118 @@ public static class MachineTranslator
             }
 
             if (!requestSlotAcquired || !_initialized || !Config.MTEnabled.Value)
-                return;
-
-            var delay = _requestRateLimiter.ReserveDelay(
-                DateTime.UtcNow,
-                Math.Max(1, Config.MTRequestPerSecond.Value)
-            );
-            if (delay > TimeSpan.Zero)
-                await Task.Delay(delay);
-            if (!_initialized || !Config.MTEnabled.Value)
-                return;
-
-            string response = await TranslateNovelScriptRequest(batch.Prompt, batch.TargetCount);
-            if (!batch.TryParseResponse(response, out var translations))
             {
-                Logger.Warn(
-                    $"Novel script MT rejected: scene={sceneId}, targets={batch.TargetCount}; "
-                        + "falling back to sentence queue"
+                Logger.Info(
+                    $"[NovelScriptMT] cancelled scene={sceneId} stage=request-slot "
+                        + $"initialized={_initialized} enabled={Config.MTEnabled.Value}"
                 );
+                return;
             }
-            else
+
+            for (int attempt = 1;
+                 attempt <= maximumAttempts && _initialized && Config.MTEnabled.Value;
+                 attempt++)
             {
-                if (WriteToCategoryFile(TextClassifier.Dialogue, translations))
+                attempts = attempt;
+                var delay = _requestRateLimiter.ReserveDelay(
+                    DateTime.UtcNow,
+                    Math.Max(1, Config.MTRequestPerSecond.Value)
+                );
+                if (delay > TimeSpan.Zero)
+                    await Task.Delay(delay);
+                if (!_initialized || !Config.MTEnabled.Value)
+                    break;
+
+                try
                 {
-                    foreach (var pair in translations)
-                    {
-                        _cache[pair.Key] = pair.Value;
-                        _logCounters.RecordTranslated();
-                    }
-                    succeeded = true;
-                    Logger.Info(
-                        $"Novel script MT completed: scene={sceneId}, translated={translations.Count}"
+                    string requestPrompt = NovelScriptTranslationProtocol.BuildRetryPrompt(
+                        batch.Prompt,
+                        attempt == 1 ? null : fallbackReason
                     );
+                    Logger.Info(
+                        $"[NovelScriptMT] request-start scene={sceneId} "
+                            + $"attempt={attempt}/{maximumAttempts} targets={batch.TargetCount} "
+                            + $"promptChars={requestPrompt.Length} engine={Config.MTEngine.Value}"
+                    );
+                    string response = await TranslateNovelScriptRequest(
+                        requestPrompt,
+                        batch.TargetCount
+                    );
+                    Logger.Info(
+                        $"[NovelScriptMT] response scene={sceneId} "
+                            + $"attempt={attempt}/{maximumAttempts} chars={response?.Length ?? 0}"
+                    );
+                    if (!batch.TryParseResponse(
+                            response,
+                            out var translations,
+                            out string rejectionReason
+                        ))
+                    {
+                        fallbackReason = rejectionReason;
+                        Logger.Warn(
+                            $"[NovelScriptMT] response-rejected scene={sceneId} "
+                                + $"attempt={attempt}/{maximumAttempts} targets={batch.TargetCount} "
+                                + $"reason={rejectionReason}"
+                        );
+                    }
+                    else if (!WriteToCategoryFile(TextClassifier.Dialogue, translations))
+                    {
+                        fallbackReason = "persist-failed";
+                        Logger.Warn(
+                            $"[NovelScriptMT] persist-failed scene={sceneId} "
+                                + $"attempt={attempt}/{maximumAttempts} "
+                                + $"translations={translations.Count}"
+                        );
+                    }
+                    else
+                    {
+                        foreach (var pair in translations)
+                        {
+                            _cache[pair.Key] = pair.Value;
+                            _logCounters.RecordTranslated();
+                        }
+                        succeeded = true;
+                        if (clearRetryMarkerOnSuccess)
+                            CompleteNovelScriptRetry(sceneId);
+                        Logger.Info(
+                            $"[NovelScriptMT] completed scene={sceneId} "
+                                + $"attempt={attempt}/{maximumAttempts} "
+                                + $"translated={translations.Count} persisted=true "
+                                + $"retryMarkerCleared={clearRetryMarkerOnSuccess}"
+                        );
+                        if (retryPriority && !clearRetryMarkerOnSuccess)
+                            Logger.Info(
+                                $"[NovelScriptMT] script-retry retained scene={sceneId} "
+                                    + "reason=incomplete-target-coverage"
+                            );
+                        break;
+                    }
+                }
+                catch (Exception e)
+                {
+                    fallbackReason = "request-exception";
+                    Logger.Warn(
+                        $"[NovelScriptMT] request-failed scene={sceneId} "
+                            + $"attempt={attempt}/{maximumAttempts} error={e.Message}"
+                    );
+                }
+
+                if (!succeeded && attempt < maximumAttempts)
+                {
+                    int retryDelayMs = attempt * 1000;
+                    Logger.Info(
+                        $"[NovelScriptMT] retry scene={sceneId} "
+                            + $"nextAttempt={attempt + 1}/{maximumAttempts} "
+                            + $"reason={fallbackReason} delayMs={retryDelayMs}"
+                    );
+                    await Task.Delay(retryDelayMs);
                 }
             }
         }
         catch (Exception e)
         {
-            Logger.Warn($"Novel script MT failed: scene={sceneId}, error={e.Message}");
+            fallbackReason = "request-exception";
+            Logger.Warn($"[NovelScriptMT] request-failed scene={sceneId} error={e.Message}");
         }
         finally
         {
@@ -392,8 +648,13 @@ public static class MachineTranslator
 
         if (!succeeded && _initialized && Config.MTEnabled.Value)
         {
+            MarkNovelScriptRetry(sceneId);
             int queued = PreloadNovelCandidates(fallbackCandidates);
-            Logger.Info($"Novel script MT fallback queued: scene={sceneId}, queued={queued}");
+            Logger.Info(
+                $"[NovelScriptMT] sentence-fallback scene={sceneId} "
+                    + $"reason={fallbackReason} attempts={attempts}/{maximumAttempts} "
+                    + $"candidates={fallbackCandidates.Count} queued={queued}"
+            );
         }
     }
 
@@ -915,6 +1176,60 @@ public static class MachineTranslator
     {
         lock (_pendingFileLock)
             WriteJson(_pendingPath, _pending.Snapshot());
+    }
+
+    private static readonly object _novelScriptRetryFileLock = new();
+
+    private static void LoadNovelScriptRetries()
+    {
+        _novelScriptRetries = new NovelScriptRetryRegistry();
+        if (string.IsNullOrEmpty(_novelScriptRetryPath)
+            || !File.Exists(_novelScriptRetryPath))
+            return;
+
+        try
+        {
+            string json = File.ReadAllText(_novelScriptRetryPath, Utf8NoBom);
+            if (NovelScriptRetryRegistry.TryDeserialize(json, out var loaded))
+                _novelScriptRetries = loaded;
+            else
+                Logger.Warn("[NovelScriptMT] script-retry state ignored: invalid JSON");
+        }
+        catch (Exception e)
+        {
+            Logger.Warn($"[NovelScriptMT] script-retry state load failed: {e.Message}");
+        }
+    }
+
+    private static void MarkNovelScriptRetry(string sceneId)
+    {
+        if (_novelScriptRetries.Mark(sceneId))
+            SaveNovelScriptRetries();
+    }
+
+    private static void CompleteNovelScriptRetry(string sceneId)
+    {
+        if (_novelScriptRetries.Complete(sceneId))
+            SaveNovelScriptRetries();
+    }
+
+    private static void SaveNovelScriptRetries()
+    {
+        lock (_novelScriptRetryFileLock)
+        {
+            try
+            {
+                File.WriteAllText(
+                    _novelScriptRetryPath,
+                    _novelScriptRetries.Serialize(),
+                    Utf8NoBom
+                );
+            }
+            catch (Exception e)
+            {
+                Logger.Warn($"[NovelScriptMT] script-retry state save failed: {e.Message}");
+            }
+        }
     }
 
     // ──────────────────────────────────────────────────

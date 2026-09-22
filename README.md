@@ -334,13 +334,15 @@ Idle Exploration 的關閉行為也會維持 session 完整性：若在 close �
 工作方式（事件優先，背景執行，不阻塞遊戲）：
 
 1. 遊戲運行中，僅含假名的未命中日文才會按數字模板去重並加入待翻隊列；已譯文字不會再成為翻譯候選。
-2. `NovelMode=Script` 且遊戲提供完整 `InitCsv` 劇本時，插件會把全部命令、人物名及參數按原始順序組成唯讀 scene，並把含假名且仍缺譯文的文字列為帶穩定 ID 的 targets，一次交給聊天式 LLM 翻譯。
-3. Script 回應必須保持 target 數量、ID、順序與格式 token；完整校驗通過後才整批寫入既有 dialogue 快取。劇本不完整、回應校驗失敗、請求失敗，或使用 `sugoi` / `libre` 時，自動回退 `Sentence` 逐句隊列。
-4. Sentence 模式下，新出現的文字會進入高優先級 FIFO，啟動遺留項目與週期清理項目走一般 FIFO。每連續處理 4 項高優先級文字後，會處理 1 項一般項目，避免週期重試飢餓。
-5. 所有請求共用 `llmRequestPerSecond` 啟動頻率限制及 `llmRequestMaxInFlight` 同時等待上限。
-6. 逐句請求失敗後會快速低優先級重試 `llmRetryCount` 次；耗盡後只在每次 `llmTranslatePeriod` 清理時重試。
-7. `<...>` 標籤、`{0}` 格式參數及實際/轉義換行會轉成受驗證的 `__ABYSS_TOKEN_n__`；模型未完整保留時不寫入快取。
-8. 成功結果按類別寫入 `translations/other/{類別}/`，畫面下一次文字刷新命中快取後即替換為中文。
+2. `NovelMode=Script` 會在同一 scene 的 500 毫秒合併視窗內重置等待，合併連續捕獲並優先保留完整且行數最多的劇本，再把全部命令、人物名及參數按原始順序組成唯讀 scene。
+3. 含假名且仍缺譯文的文字會成為帶穩定 ID 的 targets；Script 回應必須保持 target 數量、ID、順序與格式 token，完整校驗及持久化通過後才整批發布到既有 dialogue 快取。
+4. Script 初次失敗後至少重試 3 次；重試 prompt 會附上上一輪的精確拒絕原因。全部嘗試失敗、劇本不完整，或使用 `sugoi` / `libre` 時才回退 `Sentence` 逐句隊列。
+5. Scene fallback 狀態會持久化到 `translations/other/{語言}.script-retry.json`。下一次取得完整 scene 時，Script 會忽略 fallback 產生的機翻快取並優先接管尚未開始執行的 Sentence pending；已經 in-flight 的逐句請求會安全完成，不會被強制取消。
+6. Sentence 模式下，新出現的文字會進入高優先級 FIFO，啟動遺留項目與週期清理項目走一般 FIFO。每連續處理 4 項高優先級文字後，會處理 1 項一般項目，避免週期重試飢餓。
+7. 所有請求共用 `llmRequestPerSecond` 啟動頻率限制及 `llmRequestMaxInFlight` 同時等待上限。
+8. 逐句請求失敗後會快速低優先級重試 `llmRetryCount` 次；耗盡後只在每次 `llmTranslatePeriod` 清理時重試。
+9. `<...>` 標籤、`{0}` 格式參數及實際/轉義換行會轉成受驗證的 `__ABYSS_TOKEN_n__`；模型未完整保留時不寫入快取。
+10. 成功結果按類別寫入 `translations/other/{類別}/`，畫面下一次文字刷新命中快取後即替換為中文。
 
 Script 整幕請求的逾時下限為 120 秒；`TimeoutSeconds` 高於 120 時使用設定值。逐句請求仍直接使用 `TimeoutSeconds`。
 
