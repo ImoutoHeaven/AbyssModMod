@@ -48,6 +48,7 @@
     <Compile Include="..\AbyssMod\Services\TavernFirstCardRetryFlow.cs" Link="TavernFirstCardRetryFlow.cs" />
     <Compile Include="..\AbyssMod\Services\ConfigAutoReloadState.cs" Link="ConfigAutoReloadState.cs" />
     <Compile Include="..\AbyssMod\Core\UpstreamTranslationPolicy.cs" Link="UpstreamTranslationPolicy.cs" />
+    <Compile Include="..\AbyssMod\Patches\PatchPreflightPolicy.cs" Link="PatchPreflightPolicy.cs" />
     <Compile Include="..\AbyssMod\Models\Manifest.cs" Link="Manifest.cs" />
   </ItemGroup>
 </Project>

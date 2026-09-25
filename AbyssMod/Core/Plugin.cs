@@ -47,6 +47,25 @@ public class Plugin : BasePlugin
         ConfigFile = base.Config;
         Log.LogInfo($"Plugin {MyPluginInfo.PLUGIN_GUID} is loaded!");
 
+        // 启动前兼容性门：先确认全部已登记补丁目标可解析，再做任何配置副作用与 Harmony 安装。
+        PatchManager.PreflightOutcome preflight = PatchManager.Preflight();
+        if (!preflight.Ok)
+        {
+            foreach (string failure in preflight.Failures)
+                Log.LogError("[AbyssMod precheck] " + failure);
+
+            throw new InvalidOperationException(
+                $"AbyssMod patch target precheck failed ({preflight.Failures.Count} of "
+                    + $"{preflight.SiteCount} sites): "
+                    + string.Join(" | ", preflight.Failures)
+            );
+        }
+
+        Logger.Info(
+            $"[AbyssMod precheck] passed: classes={preflight.ClassCount}, "
+                + $"sites={preflight.SiteCount}, distinctTargets={preflight.ResolvedTargets.Count}"
+        );
+
         AddComponent<ToastUI>();
         AbyssMod.Config.Initialize();
             Logger.Info(

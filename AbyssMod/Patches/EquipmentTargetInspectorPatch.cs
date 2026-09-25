@@ -26,21 +26,19 @@ internal static class QuestPreviewEquipmentCallbackPatchShared
             Type controllerType = projectAssembly.GetType(binding.TypeName, false);
             if (controllerType == null)
             {
-                Logger.Warn(
+                throw new MissingMemberException(
                     $"[F6][EquipmentTarget][Binding] outcome=missing-type type={binding.TypeName}"
                 );
-                continue;
             }
 
             MethodInfo selected = ResolveInitializer(controllerType, binding);
             if (selected == null)
             {
-                Logger.Warn(
+                throw new MissingMethodException(
                     $"[F6][EquipmentTarget][Binding] outcome=missing-method type={binding.TypeName} "
                         + $"preferred={binding.MethodName} callbackIndex={binding.ActionParameterIndex} "
                         + "parameter=Il2CppSystem.Action<Project.Common.IContentModel>"
                 );
-                continue;
             }
 
             Logger.Info(
@@ -204,11 +202,10 @@ public static class IdleExplorationQuestPreviewEquipmentDirectPatch
             Type parameterType = projectAssembly.GetType(binding.ParameterTypeName, false);
             if (ownerType == null || parameterType == null)
             {
-                Logger.Warn(
+                throw new MissingMemberException(
                     $"[F6][EquipmentTarget][Binding] outcome=missing-direct-type "
                         + $"type={binding.TypeName} parameter={binding.ParameterTypeName}"
                 );
-                continue;
             }
 
             MethodInfo[] candidates = ownerType
@@ -231,12 +228,11 @@ public static class IdleExplorationQuestPreviewEquipmentDirectPatch
                 .ToArray();
             if (candidates.Length != 1)
             {
-                Logger.Warn(
+                throw new MissingMethodException(
                     $"[F6][EquipmentTarget][Binding] outcome=missing-direct-method "
                         + $"type={binding.TypeName} method={binding.MethodName} "
                         + $"parameter={binding.ParameterTypeName} candidates={candidates.Length}"
                 );
-                continue;
             }
 
             Logger.Info(
@@ -304,11 +300,10 @@ public static class EventQuestPreviewContextPatch
             Type parameterType = projectAssembly.GetType(binding.ParameterTypeName, false);
             if (ownerType == null || parameterType == null)
             {
-                Logger.Warn(
+                throw new MissingMemberException(
                     $"[F6][EquipmentTarget][Binding] outcome=missing-context-type "
                         + $"type={binding.TypeName} parameter={binding.ParameterTypeName}"
                 );
-                continue;
             }
 
             MethodInfo[] candidates = ownerType
@@ -332,12 +327,11 @@ public static class EventQuestPreviewContextPatch
                 .ToArray();
             if (candidates.Length != 1)
             {
-                Logger.Warn(
+                throw new MissingMethodException(
                     $"[F6][EquipmentTarget][Binding] outcome=missing-context-method "
                         + $"type={binding.TypeName} method={binding.MethodName} "
                         + $"parameter={binding.ParameterTypeName} candidates={candidates.Length}"
                 );
-                continue;
             }
 
             Logger.Info(
