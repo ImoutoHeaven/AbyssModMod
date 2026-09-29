@@ -15,14 +15,28 @@ internal static class CharacterNovelTranslationPolicy
             || isOpen;
     }
 
+    // The prefix selects the master table (hmn_/hmr_ character novels, men_ home novels).
+    // A men_ home novel shares its character and route key with the hmn_ rows, so men_ maps
+    // to hmn_ while every other prefix keeps its own namespace.
     public static string? GetFamily(string novelId)
     {
         if (string.IsNullOrEmpty(novelId)
-            || novelId.IndexOf('_') < 0
             || !char.IsDigit(novelId[novelId.Length - 1]))
             return null;
 
-        return novelId.Substring(0, novelId.Length - 1);
+        int separator = novelId.IndexOf('_');
+        if (separator < 0)
+            return null;
+
+        string prefix = novelId.Substring(0, separator);
+        if (prefix == "men")
+            prefix = "hmn";
+
+        int start = separator + 1;
+        string key = start < novelId.Length - 1
+            ? novelId.Substring(start, novelId.Length - start - 1)
+            : string.Empty;
+        return prefix + ":" + key;
     }
 
     public static bool IsKnownCharacterScript(string novelId) =>

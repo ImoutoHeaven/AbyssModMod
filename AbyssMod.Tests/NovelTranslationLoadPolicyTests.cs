@@ -15,6 +15,10 @@ public class NovelTranslationLoadPolicyTests
         Assert.False(CharacterNovelTranslationPolicy.CanLoadRemote(
             "men_11120100002", "men_11120100001", isOpen: false));
         Assert.True(CharacterNovelTranslationPolicy.CanLoadRemote(
+            "men_10080100001", "hmn_10080100001", isOpen: true));
+        Assert.False(CharacterNovelTranslationPolicy.CanLoadRemote(
+            "men_10080100001", "hmn_10080100001", isOpen: false));
+        Assert.True(CharacterNovelTranslationPolicy.CanLoadRemote(
             "hmr_11120100022",
             "hmr_11120100021",
             isOpen: true));
@@ -24,6 +28,25 @@ public class NovelTranslationLoadPolicyTests
             isOpen: false));
         Assert.True(CharacterNovelTranslationPolicy.CanLoadRemote(
             "main_01001", "hmn_11120100002", isOpen: false));
+    }
+
+    [Fact]
+    public void Character_prefixes_stay_isolated_on_the_same_numeric_key()
+    {
+        Assert.True(CharacterNovelTranslationPolicy.CanLoadRemote(
+            "mas_10080100002", "hmn_10080100001", isOpen: false));
+        Assert.True(CharacterNovelTranslationPolicy.CanLoadRemote(
+            "hmr_10080100001", "hmn_10080100001", isOpen: false));
+        Assert.False(CharacterNovelTranslationPolicy.CanLoadRemote(
+            "hmn_1", "hmn_2", isOpen: false));
+        Assert.True(CharacterNovelTranslationPolicy.CanLoadRemote(
+            "hmn_1", "hmr_2", isOpen: false));
+        Assert.True(CharacterNovelTranslationPolicy.CanLoadRemote(
+            "hmn_1008010000x", "hmn_10080100001", isOpen: false));
+        Assert.True(CharacterNovelTranslationPolicy.CanLoadRemote(
+            "hmn_", "hmn_10080100001", isOpen: false));
+        Assert.True(CharacterNovelTranslationPolicy.CanLoadRemote(
+            null!, "hmn_10080100001", isOpen: false));
     }
 
     [Fact]
