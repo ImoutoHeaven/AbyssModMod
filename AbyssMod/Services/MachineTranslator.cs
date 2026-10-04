@@ -1445,7 +1445,11 @@ public static class MachineTranslator
             return null;
         var json = await resp.Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(json);
-        var content = doc.RootElement
+        // 部分代理网关把标准响应包在 {"data": {...}, "success": true} 里
+        var root = doc.RootElement;
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var wrapped))
+            root = wrapped;
+        var content = root
             .GetProperty("choices")[0]
             .GetProperty("message")
             .GetProperty("content")
