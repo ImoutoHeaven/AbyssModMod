@@ -1419,7 +1419,8 @@ public static class MachineTranslator
         string contextPath,
         string systemPrompt = null,
         bool includeFewShot = true,
-        HttpClient httpClient = null
+        HttpClient httpClient = null,
+        bool stream = true
     )
     {
         var messages = new List<object>
@@ -1434,7 +1435,7 @@ public static class MachineTranslator
             content = BuildTranslationInput(text, contextPath),
         });
 
-        var body = new { model = Config.MTModel.Value, temperature = 0, stream = false, messages };
+        var body = new { model = Config.MTModel.Value, temperature = 0, stream, messages };
         using var resp = await PostJson(
             Config.MTEndpoint.Value,
             body,
@@ -1444,17 +1445,7 @@ public static class MachineTranslator
         if (resp == null)
             return null;
         var json = await resp.Content.ReadAsStringAsync();
-        using var doc = JsonDocument.Parse(json);
-        // 部分代理网关把标准响应包在 {"data": {...}, "success": true} 里
-        var root = doc.RootElement;
-        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var wrapped))
-            root = wrapped;
-        var content = root
-            .GetProperty("choices")[0]
-            .GetProperty("message")
-            .GetProperty("content")
-            .GetString();
-        return Clean(content);
+        return Clean(OpenAiResponse.Read(json));
     }
 
     private static async Task<string> TranslateLibre(string text)

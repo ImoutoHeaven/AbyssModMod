@@ -17,6 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\AbyssMod\Services\OpenAiResponse.cs" Link="OpenAiResponse.cs" />
     <Compile Include="..\AbyssMod\Services\MachineTranslationPrimitives.cs" Link="MachineTranslationPrimitives.cs" />
     <Compile Include="..\AbyssMod\Services\MachineTranslationTextProtection.cs" Link="MachineTranslationTextProtection.cs" />
     <Compile Include="..\AbyssMod\Patches\NovelMessageRefreshPolicy.cs" Link="NovelMessageRefreshPolicy.cs" />
